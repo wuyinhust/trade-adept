@@ -8,6 +8,7 @@ import { Cloud } from './cloud.js';
 import { DB } from './data.js';
 import { Exchange } from './exchange.js';
 import { escapeHtml, handleError, toast, safeCall, validate, EventBus } from './utils.js';
+import { UI } from './ui.js';
 
 const App = {
     currentPage: 'dashboard',
@@ -16,13 +17,13 @@ const App = {
     // ==================== 页面模块懒加载 ====================
     _pageModules: {},
     _pageModulePaths: {
-        dashboard: './js/dashboard.js',
-        orders: './js/orders.js',
-        customers: './js/customers.js',
-        factories: './js/factories.js',
-        profit: './js/profit.js',
-        shipping: './js/shipping.js',
-        settings: './js/settings.js'
+        dashboard: './dashboard.js',
+        orders: './orders.js',
+        customers: './customers.js',
+        factories: './factories.js',
+        profit: './profit.js',
+        shipping: './shipping.js',
+        settings: './settings.js'
     },
     _pendingSearch: null,
 
@@ -53,6 +54,7 @@ const App = {
     validate,
 
     async init() {
+        UI.init();
         // === 全局错误边界 ===
         window.addEventListener('error', e => {
             // 只处理应用代码错误，忽略资源加载失败和 SDK 内部错误
@@ -70,7 +72,7 @@ const App = {
         });
 
         // 检查登录状态
-        const loggedIn = Auth.init();
+        const loggedIn = await Auth.init();
         if (loggedIn) {
             await this.showApp();
         } else {
@@ -90,7 +92,7 @@ const App = {
             document.getElementById('loginPage').style.display = 'none';
             document.getElementById('app').style.display = 'flex';
 
-            // 初始化主题（优先 localStorage，其次系统偏好）
+            // 初始化主题（保留已保存的偏好，首次默认浅色）
             this.initTheme();
 
             // 显示加载遮罩
@@ -111,7 +113,7 @@ const App = {
 
             // 强制修复旧版本污染的利润数据（v45+ 一次性数据迁移）
             // 旧代码对 HK 公司错误地乘了汇率，导致 profitRMB / orderAmountRMB 异常
-            Exchange.recalcAllOrders();
+            if (!DB._preserveImportedValues) Exchange.recalcAllOrders();
 
             this.updateCloudStatus();
             this.renderCompanySelect();
@@ -137,7 +139,7 @@ const App = {
                 DB._backupToLocal();
 
                 // ★ 第二���：sendBeacon（尽力而为，可能因网络/REST API 格式而失败）
-                if (!DB._cloudReady || !navigator.sendBeacon) return;
+                if (DB._businessAPI || !DB._cloudReady || !navigator.sendBeacon) return;
 
                 const base = `https://${Cloud.envId}.service.tcloudbase.com/database`;
                 const data = {
@@ -229,7 +231,7 @@ const App = {
                 console.warn('[App] 退出登录前刷新失败:', e.message);
             }
         }
-        Auth.logout();
+        await Auth.logout();
         // 清理状态
         this.charts = {};
         document.getElementById('pageContent').innerHTML = '';
@@ -239,7 +241,7 @@ const App = {
     },
 
     // ==================== 主题切换 ====================
-    THEME_KEY: 'grandware_theme',
+    THEME_KEY: 'trade_workspace_theme',
 
     toggleTheme() {
         const current = document.documentElement.getAttribute('data-theme');
@@ -251,18 +253,19 @@ const App = {
         document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
         localStorage.setItem(this.THEME_KEY, theme);
         this._updateThemeToggleUI(theme);
+        UI.refreshCharts(this.charts);
     },
 
     _updateThemeToggleUI(theme) {
         const icon = document.getElementById('themeToggleIcon');
         const label = document.getElementById('themeToggleLabel');
-        if (icon) icon.textContent = theme === 'dark' ? '☀️' : '🌙';
+        if (icon) icon.innerHTML = UI.icon(theme === 'dark' ? 'sun' : 'moon');
         if (label) label.textContent = theme === 'dark' ? '浅色模式' : '暗色模式';
     },
 
     initTheme() {
         const saved = localStorage.getItem(this.THEME_KEY);
-        const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        const theme = saved || 'light';
         this._applyTheme(theme);
     },
 
@@ -483,7 +486,15 @@ const App = {
         this.closeMobileSidebar();
 
         const hash = window.location.hash.slice(2) || 'dashboard';
-        const [page, param] = hash.split('/');
+        const [page, encodedParam] = hash.split('/');
+        let param = encodedParam;
+        if (encodedParam) {
+            try {
+                param = decodeURIComponent(encodedParam);
+            } catch (_) {
+                /* Keep malformed routes inert. */
+            }
+        }
 
         // 权限检查：不允许访问的页面重定向到总览
         const visible = Auth.getVisiblePages();
@@ -495,6 +506,8 @@ const App = {
         // 更新导航高亮
         document.querySelectorAll('.nav-item').forEach(item => {
             item.classList.toggle('active', item.dataset.page === page);
+            if (item.dataset.page === page) item.setAttribute('aria-current', 'page');
+            else item.removeAttribute('aria-current');
         });
 
         // 更新页面标题
@@ -537,6 +550,11 @@ const App = {
 
             const renderFn = moduleMap[page] || moduleMap.dashboard;
             renderFn();
+            content.dataset.page = page;
+            if (page !== 'dashboard' && !param) {
+                this.renderPageIntro(content, page, titles[page]);
+            }
+            UI.decorate(content);
 
             // 处理待执行的全局搜索
             if (this._pendingSearch && page === 'orders') {
@@ -563,6 +581,37 @@ const App = {
     },
 
     // ==================== 全局搜索 ====================
+    renderPageIntro(content, page, title) {
+        const descriptions = {
+            orders: '跟进订单、生产与收款，让每一步进展清晰可见。',
+            customers: '维护客户与联系人，连接每一段业务往来。',
+            factories: '集中管理合作工厂、生产资料与关联订单。',
+            profit: '查看经营结果与成本结构，掌握每笔订单的收益。',
+            shipping: '跟进出运、报关与单证，让交付有据可查。',
+            settings: '管理法人汇率与业务快照。'
+        };
+        const company = DB.companies.find(item => item.id === DB.currentCompanyId)?.name || '';
+        const scope = Auth.canSeeAll() ? '全部公司数据 · 当前账套：' + company : '当前账套：' + company;
+        const intro = document.createElement('section');
+        intro.className = 'page-intro';
+        intro.innerHTML =
+            '<div><div class="page-eyebrow">' +
+            escapeHtml(this.workspaceName || 'Trade Workspace') +
+            '</div><h2>' +
+            escapeHtml(title) +
+            '</h2><p class="page-description">' +
+            escapeHtml(descriptions[page] || '') +
+            '</p><span class="scope-label">' +
+            escapeHtml(scope) +
+            '</span></div>';
+        content.prepend(intro);
+    },
+
+    async openNewOrder() {
+        await this._loadPageModule('orders');
+        Orders.showAddForm();
+    },
+
     setupGlobalSearch() {
         const input = document.getElementById('globalSearch');
         let debounceTimer;
@@ -617,6 +666,7 @@ const App = {
 
     // ==================== 模态框 ====================
     showModal(title, bodyHtml, options = {}) {
+        this._modalTrigger = document.activeElement;
         const container = document.getElementById('modalContainer');
         const sizeClass = options.large ? 'modal-large' : '';
         const footerHtml =
@@ -637,13 +687,16 @@ const App = {
                 </div>
             </div>
         `;
+        UI.focusDialog(container, () => this.closeModal());
     },
 
     closeModal() {
         document.getElementById('modalContainer').innerHTML = '';
+        if (this._modalTrigger?.isConnected) this._modalTrigger.focus();
     },
 
     showConfirm(message, onConfirm) {
+        this._modalTrigger = document.activeElement;
         const container = document.getElementById('modalContainer');
         container.innerHTML = `
             <div class="modal-overlay">
@@ -664,6 +717,7 @@ const App = {
             App.closeModal();
             onConfirm();
         });
+        UI.focusDialog(container, () => this.closeModal());
     },
 
     // ==================== 工具方法 ====================

@@ -9,6 +9,15 @@ package-lock.json
 # 测试
 tests/
 coverage/
+e2e/
+server/
+cloudfunctions/
+docs/
+local-preview/
+.github/
+.husky/
+*.sqlite3*
+demo-credentials.json
 
 # 开发工具配置
 .eslintrc*

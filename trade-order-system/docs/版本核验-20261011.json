@@ -1,0 +1,41 @@
+{
+  "checkedAt": "2026-10-11",
+  "method": "Read-only GET of public static assets; no CloudBase query or write",
+  "onlineUrl": "https://grandware-d9gb4owez89cb9df9-1460064035.tcloudbaseapp.com/",
+  "observedOnlineAssetVersion": "v40",
+  "requirementsBaseline": "v56 PDF",
+  "localUiBaseline": "v57 before this review; v58 after API integration",
+  "repositoryCommit": "Unavailable; source workspace has no Git repository or remote",
+  "files": [
+    {
+      "file": "index.html",
+      "zipSha256": "1a318f98eb5c61983bf4bb154188f8a62b8d5ebe1beba834d3263405c10650c6",
+      "onlineSha256": "7fa58a259bb623c4700c1049a2bfb25a46fa930fca01a3b4d1d05deb294409a8",
+      "localSha256AtReview": "59fbea1f35a40064345dcdcd2aa7fbed8ddb1f176bd8635efb36859d32dd4e90"
+    },
+    {
+      "file": "js/auth.js",
+      "zipSha256": "f4adad07b5b514ceda1203c5fe18c43ca5e4da36e90e95cd70e012d1b7d994c5",
+      "onlineSha256": "8e32d07207b962272402c92205fd5aca556d2d3bbbdba37daf15ed465a065420",
+      "localSha256AtReview": "a62ccc2a9594cd331a6f8ce950fe1f84f94839163f3f5e54875834ebbaa647e2"
+    },
+    {
+      "file": "js/data.js",
+      "zipSha256": "9ca7abd48be2fa279e1f23b3e0326d94f1a66e3e0c2d8e8532ac695a99ef026b",
+      "onlineSha256": "b9ae05a569a03b30cf2190897ca7103742d1edf6200bf03f45cd01beb9b1dd2d",
+      "localSha256AtReview": "9490db0fc87190a4f4249179bb49957150d70f9a385d244c7de254040fdda6d8"
+    },
+    {
+      "file": "js/cloud.js",
+      "zipSha256": "5d5077d232ba3b63b8bd893f9af3a6412726e26f6dd980f8fe05764b99af31b3",
+      "onlineSha256": "d6341b791279417fee5137d452449761058ceaddd521746b3e6c68398e5e09fc",
+      "localSha256AtReview": "cfc53abc10080558658b4e4b04554923be5cca850e18a84c08f5f0fd43298d4a"
+    },
+    {
+      "file": "js/exchange.js",
+      "zipSha256": "d7e12be9798d668d185c44f4d8094605585714864c50e6cd983c6025e3775644",
+      "onlineSha256": "563fca4c4dfaf4a06162f84657902483c00603a3a72732bb27d31344882e2bfb",
+      "localSha256AtReview": "d19e9df50bbc3b5b97533d117d13621342faa8cffbebd1170adf4e64fa25e789"
+    }
+  ]
+}

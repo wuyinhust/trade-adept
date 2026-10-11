@@ -8,20 +8,75 @@ import { Exchange } from './exchange.js';
 import { escapeHtml, toast, validate } from './utils.js';
 
 const Profit = {
+    reportCurrency: null,
+
+    getAnalysis(filter = {}) {
+        // Use authorized records rather than the legacy mixed-currency aggregates.
+        const visibleOrders = DB.getOrders();
+        let rawOrders = visibleOrders;
+        if (filter.startDate) rawOrders = rawOrders.filter(order => order.orderDate >= filter.startDate);
+        if (filter.endDate) rawOrders = rawOrders.filter(order => order.orderDate <= filter.endDate);
+        if (filter.customerId && filter.customerId !== 'all') {
+            rawOrders = rawOrders.filter(order => String(order.customerId) === String(filter.customerId));
+        }
+        const financials = rawOrders.map(order => ({ order, metrics: Exchange.getOrderFinancials(order) }));
+        const companyCurrency = Exchange.getOrderFinancials({ companyId: DB.currentCompanyId }).currency;
+        const currencies = [
+            ...new Set([companyCurrency, ...visibleOrders.map(order => Exchange.getOrderFinancials(order).currency)])
+        ].sort();
+        if (!currencies.includes(this.reportCurrency)) this.reportCurrency = companyCurrency;
+        const orders = financials
+            .filter(item => item.metrics.currency === this.reportCurrency)
+            .map(({ order, metrics }) => ({
+                ...order,
+                // Report copies only: never persist normalized legacy display fields.
+                orderAmountRMB: metrics.revenue,
+                factoryCostRMB: metrics.factoryCost,
+                freightCostUSD: metrics.freightCost,
+                insuranceCostUSD: metrics.insuranceCost,
+                otherCostUSD: metrics.otherCost,
+                taxRebate: metrics.taxRebate,
+                profitRMB: metrics.profit,
+                profitRate: metrics.profitRate,
+                settlementCurrency: metrics.currency,
+                formulaPolicy: metrics.policy
+            }));
+        const byCustomer = Object.create(null);
+        const byCategory = Object.create(null);
+        const byMonth = Object.create(null);
+        const aggregate = (target, key, order) => {
+            target[key] ||= { revenue: 0, cost: 0, profit: 0, count: 0 };
+            target[key].revenue += order.orderAmountRMB;
+            target[key].cost +=
+                order.factoryCostRMB + order.freightCostUSD + order.insuranceCostUSD + order.otherCostUSD;
+            target[key].profit += order.profitRMB;
+            target[key].count++;
+        };
+        orders.forEach(order => {
+            aggregate(byCustomer, `${order.customerName || '未命名客户'} (${order.customerId || ''})`, order);
+            aggregate(byCategory, order.productCategory || '未分类', order);
+            aggregate(byMonth, String(order.orderDate || '').slice(0, 7) || '未填日期', order);
+        });
+        return { orders, byCustomer, byCategory, byMonth, currencies, currency: this.reportCurrency };
+    },
+
     render(container) {
-        const analysis = DB.getProfitAnalysis();
+        this.reportCurrency = null;
+        const analysis = this.getAnalysis();
         const customers = DB.getCustomers();
         const months = Object.keys(analysis.byMonth).sort();
         const last6Months = months.slice(-6);
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
-        const costCurrency = isHK ? 'USD' : 'CNY';
-        const profitCurrency = isHK ? 'USD' : 'CNY';
-
+        const isHK = analysis.currency === 'USD';
+        const costCurrency = analysis.currency;
+        const profitCurrency = analysis.currency;
         container.innerHTML = `
             <div class="filter-bar">
+                <select id="profitCurrencyFilter" class="filter-select" aria-label="结算币种" onchange="Profit.refresh()">
+                    ${analysis.currencies.map(currency => `<option value="${escapeHtml(currency)}" ${currency === analysis.currency ? 'selected' : ''}>${escapeHtml(currency)} · 分币种统计</option>`).join('')}
+                </select>
                 <select id="profitCustomerFilter" class="filter-select" onchange="Profit.refresh()">
                     <option value="all">所有客户</option>
-                    ${customers.map(c => `<option value="${c.id}">${c.company}</option>`).join('')}
+                    ${customers.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.company)}</option>`).join('')}
                 </select>
                 <input type="date" id="profitStartDate" class="filter-input" onchange="Profit.refresh()">
                 <input type="date" id="profitEndDate" class="filter-input" onchange="Profit.refresh()">
@@ -29,6 +84,8 @@ const Profit = {
                     <button class="btn btn-secondary" onclick="Profit.exportExcel()">📥 导出利润明细</button>
                 </div>
             </div>
+
+            <p class="text-sm text-gray mb-4">金额按所选结算币种分别汇总，其他币种不会合并相加。利润保留订单已保存的核算结果；成本按订单公式版本显示。</p>
 
             <div class="stats-grid">
                 <div class="stat-card">
@@ -43,10 +100,16 @@ const Profit = {
                     <div class="stat-card-header"><div class="stat-icon orange">🏭</div></div>
                     <div class="stat-label">总成本 (${costCurrency})</div>
                     <div class="stat-value" id="totalCost">${(() => {
-                        const rate = DB.getExchangeRate();
-                        const cr = isHK ? 1 : rate;
                         return App.formatMoney(
-                            analysis.orders.reduce((s, o) => s + o.factoryCostRMB + ((o.freightCostUSD || 0) + (o.insuranceCostUSD || 0) + (o.otherCostUSD || 0)) * cr, 0),
+                            analysis.orders.reduce(
+                                (s, o) =>
+                                    s +
+                                    o.factoryCostRMB +
+                                    (o.freightCostUSD || 0) +
+                                    (o.insuranceCostUSD || 0) +
+                                    (o.otherCostUSD || 0),
+                                0
+                            ),
                             costCurrency
                         );
                     })()}</div>
@@ -130,9 +193,9 @@ const Profit = {
                                 .map(
                                     o => `
                                 <tr>
-                                    <td><span class="table-link" onclick="window.location.hash='#/orders/${o.id}'">${o.id}</span></td>
-                                    <td>${o.customerName}</td>
-                                    <td class="text-sm">${o.productName}</td>
+                                    <td><span class="table-link" onclick="window.location.hash='#/orders/${encodeURIComponent(o.id)}'">${escapeHtml(o.companyOperationNo || o.id)}</span></td>
+                                    <td>${escapeHtml(o.customerName)}</td>
+                                    <td class="text-sm">${escapeHtml(o.productName)}</td>
                                     <td>${App.formatDate(o.orderDate)}</td>
                                     <td class="text-right">${App.formatMoney(isHK ? o.orderAmountUSD : o.orderAmountRMB, isHK ? 'USD' : 'CNY')}</td>
                                     <td class="text-right text-danger">${App.formatMoney(o.factoryCostRMB, costCurrency)}</td>
@@ -154,20 +217,38 @@ const Profit = {
     },
 
     refresh() {
+        this.reportCurrency = document.getElementById('profitCurrencyFilter')?.value || this.reportCurrency;
         const filter = {
             customerId: document.getElementById('profitCustomerFilter')?.value || 'all',
             startDate: document.getElementById('profitStartDate')?.value || '',
             endDate: document.getElementById('profitEndDate')?.value || ''
         };
-        const analysis = DB.getProfitAnalysis(filter);
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
-        const costCurrency = isHK ? 'USD' : 'CNY';
-        const profitCurrency = isHK ? 'USD' : 'CNY';
+        const analysis = this.getAnalysis(filter);
+        const isHK = analysis.currency === 'USD';
+        const costCurrency = analysis.currency;
+        const profitCurrency = analysis.currency;
         // 更新统计
+        const labels = {
+            totalRevenue: `总营收 (${profitCurrency})`,
+            totalCost: `总成本 (${costCurrency})`,
+            totalProfit: `总利润 (${profitCurrency})`
+        };
+        Object.entries(labels).forEach(([id, label]) => {
+            const title = document.getElementById(id)?.previousElementSibling;
+            if (title) title.textContent = label;
+        });
+        const tableHeaders = document.getElementById('profitTableBody')?.closest('table')?.querySelectorAll('thead th');
+        if (tableHeaders) {
+            ['营收', '工厂成本', '其他费', '利润'].forEach((label, index) => {
+                tableHeaders[index + 4].textContent = `${label}(${profitCurrency})`;
+            });
+        }
         const totalRev = analysis.orders.reduce((s, o) => s + (isHK ? o.orderAmountUSD : o.orderAmountRMB), 0);
-        const rate = DB.getExchangeRate();
-        const cr = isHK ? 1 : rate;
-        const totalCost = analysis.orders.reduce((s, o) => s + o.factoryCostRMB + ((o.freightCostUSD || 0) + (o.insuranceCostUSD || 0) + (o.otherCostUSD || 0)) * cr, 0);
+        const totalCost = analysis.orders.reduce(
+            (s, o) =>
+                s + o.factoryCostRMB + (o.freightCostUSD || 0) + (o.insuranceCostUSD || 0) + (o.otherCostUSD || 0),
+            0
+        );
         const totalProfit = analysis.orders.reduce((s, o) => s + o.profitRMB, 0);
         document.getElementById('totalRevenue').textContent = App.formatMoney(totalRev, profitCurrency);
         document.getElementById('totalCost').textContent = App.formatMoney(totalCost, costCurrency);
@@ -184,7 +265,7 @@ const Profit = {
                     .map(
                         o => `
                 <tr>
-                    <td><span class="table-link" onclick="window.location.hash='#/orders/${App.escapeHtml(o.id)}'">${App.escapeHtml(o.id)}</span></td>
+                    <td><span class="table-link" onclick="window.location.hash='#/orders/${encodeURIComponent(o.id)}'">${App.escapeHtml(o.companyOperationNo || o.id)}</span></td>
                     <td>${App.escapeHtml(o.customerName)}</td>
                     <td class="text-sm">${App.escapeHtml(o.productName)}</td>
                     <td>${App.formatDate(o.orderDate)}</td>
@@ -208,7 +289,7 @@ const Profit = {
     },
 
     renderCharts(analysis) {
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
+        const isHK = analysis.currency === 'USD';
         const currencySymbol = isHK ? '$' : '¥';
         // 月度利润趋势
         const months = Object.keys(analysis.byMonth).sort();
@@ -333,12 +414,9 @@ const Profit = {
 
         // 成本结构
         const totalFactory = analysis.orders.reduce((s, o) => s + o.factoryCostRMB, 0);
-        const rate = DB.getExchangeRate();
-        // HK 公司全部美金交易，不乘汇率
-        const costRate = isHK ? 1 : rate;
-        const totalFreight = analysis.orders.reduce((s, o) => s + o.freightCostUSD * costRate, 0);
-        const totalInsurance = analysis.orders.reduce((s, o) => s + o.insuranceCostUSD * costRate, 0);
-        const totalOther = analysis.orders.reduce((s, o) => s + o.otherCostUSD * costRate, 0);
+        const totalFreight = analysis.orders.reduce((s, o) => s + o.freightCostUSD, 0);
+        const totalInsurance = analysis.orders.reduce((s, o) => s + o.insuranceCostUSD, 0);
+        const totalOther = analysis.orders.reduce((s, o) => s + o.otherCostUSD, 0);
         const ctx4 = document.getElementById('costStructureChart');
         if (ctx4) {
             App.charts.cost = new Chart(ctx4, {
@@ -374,19 +452,21 @@ const Profit = {
             startDate: document.getElementById('profitStartDate')?.value || '',
             endDate: document.getElementById('profitEndDate')?.value || ''
         };
-        const analysis = DB.getProfitAnalysis(filter);
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
-        const cc = isHK ? 'USD' : 'RMB';
+        const analysis = this.getAnalysis(filter);
+        const cc = analysis.currency;
         const headers = [
             'id',
             'customerName',
             'productName',
             'orderDate',
+            'settlementCurrency',
+            'formulaPolicy',
             'orderAmountRMB',
             'factoryCostRMB',
             'freightCostUSD',
             'insuranceCostUSD',
             'otherCostUSD',
+            'taxRebate',
             'profitRMB',
             'profitRate'
         ];
@@ -395,17 +475,20 @@ const Profit = {
             customerName: '客户',
             productName: '产品',
             orderDate: '下单日期',
+            settlementCurrency: '结算币种',
+            formulaPolicy: '核算公式版本',
             orderAmountRMB: `订单金额(${cc})`,
             factoryCostRMB: `工厂成本(${cc})`,
             freightCostUSD: `运费(${cc})`,
             insuranceCostUSD: `保险费(${cc})`,
             otherCostUSD: `其他费用(${cc})`,
+            taxRebate: `退税(${cc})`,
             profitRMB: `利润(${cc})`,
             profitRate: '利润率(%)'
         };
         App.exportExcel(
             analysis.orders,
-            '利润明细_' + new Date().toISOString().split('T')[0] + '.xlsx',
+            '利润明细_' + cc + '_' + new Date().toISOString().split('T')[0] + '.xlsx',
             headers,
             labels
         );

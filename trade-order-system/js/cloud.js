@@ -157,7 +157,6 @@ const Cloud = {
 
         // 检查 init
         let initOk = false;
-        let initErr = null;
         try {
             if (!this._app) {
                 this._app = sdk.init({
@@ -173,7 +172,7 @@ const Cloud = {
                 detail: `env=${this.envId}, region=${this.region}`
             });
         } catch (e) {
-            initErr = e.message || String(e);
+            const initErr = e.message || String(e);
             log.push({
                 step: '2. SDK init',
                 ok: false,
@@ -201,9 +200,10 @@ const Cloud = {
             log.push({
                 step: '5. getLoginState',
                 ok: !!(loginState && loginState.user && loginState.user.uid),
-                detail: loginState && loginState.user
-                    ? `uid: ${loginState.user.uid.substring(0, 16)}...`
-                    : '登录状态无效: ' + JSON.stringify(loginState).slice(0, 200)
+                detail:
+                    loginState && loginState.user
+                        ? `uid: ${loginState.user.uid.substring(0, 16)}...`
+                        : '登录状态无效: ' + JSON.stringify(loginState).slice(0, 200)
             });
 
             // 权限测试
@@ -219,7 +219,10 @@ const Cloud = {
                 detail: '写入成功，doc id: ' + (writeResult?.id || 'null')
             });
             if (writeResult && writeResult.id) {
-                await coll.doc(writeResult.id).remove().catch(() => {});
+                await coll
+                    .doc(writeResult.id)
+                    .remove()
+                    .catch(() => {});
             }
 
             const readResult = await coll.where({ dataType: this.DATA_TYPE }).limit(1).get();

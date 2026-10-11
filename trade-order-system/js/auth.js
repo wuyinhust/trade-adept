@@ -1,6 +1,6 @@
 /**
  * 权限管理模块 - 登录、角色、数据过滤
- * 安全策略：密码使用 SHA-256 哈希存储，永不明文保存
+ * 身份来自服务端会话；浏览器不包含账号凭据。
  */
 
 import { CONSTANTS } from './constants.js';
@@ -13,116 +13,13 @@ const Auth = {
     // 当前登录用户
     currentUser: null,
 
-    // ==================== 用户数据库（密码为 SHA-256 哈希） ====================
-    users: [
-        {
-            id: 'U001',
-            username: 'David',
-            passwordHash: 'f283230b435d9874fd9ff9aa7c7522f4e67c437c2ed9222992bba1e50965eddf',
-            name: 'David',
-            role: 'admin',
-            teamId: null
-        },
-        {
-            id: 'U002',
-            username: 'Lily',
-            passwordHash: '72b1d48623678a54fe80bed51d3f6aa1112f1da46e655560001303933c3be7c2',
-            name: 'Lily',
-            role: 'finance',
-            teamId: null
-        },
-        // Team A
-        {
-            id: 'U003',
-            username: 'Vivian',
-            passwordHash: '010f7a6cfc4661bdeac2e07948153bcf482f4dc778f45867911d9f9a67d789d0',
-            name: 'Vivian',
-            role: 'manager',
-            teamId: 'TEAM-A'
-        },
-        {
-            id: 'U005',
-            username: 'Michale',
-            passwordHash: '424bac2baf00bcf569229ec0aa4697e69ac8a9d5e9a4fe61c855be9e97950d53',
-            name: 'Michale',
-            role: 'salesperson',
-            teamId: 'TEAM-A'
-        },
-        {
-            id: 'U006',
-            username: 'Alex',
-            passwordHash: 'd457705b292a8019b8afddb270bb8719d59c9108269550e7591cec8b4d666afa',
-            name: 'Alex',
-            role: 'salesperson',
-            teamId: 'TEAM-A',
-            visibleCompanyIds: ['CO-WY', 'CO-GW']
-        },
-        {
-            id: 'U007',
-            username: 'Anna',
-            passwordHash: '56c7604022a19e3faffc68489f9cf2a3db7b1fd51b2f2715c1d68b6371200bb0',
-            name: 'Anna',
-            role: 'document',
-            teamId: 'TEAM-A'
-        },
-        {
-            id: 'U011',
-            username: 'Sue',
-            passwordHash: 'eb03d0ca592799d39282dc9b06a037e392d3b70612bfea126ac73855983ab689',
-            name: 'Sue',
-            role: 'salesperson',
-            teamId: 'TEAM-A',
-            visibleCompanyIds: ['CO-LK']
-        },
-        // Team B
-        {
-            id: 'U004',
-            username: 'Galen',
-            passwordHash: 'd72836fb1445992a2aad026db748cb3cd2049685024be7797514d93352c362b9',
-            name: 'Galen',
-            role: 'manager',
-            teamId: 'TEAM-B'
-        },
-        {
-            id: 'U008',
-            username: 'Nicole',
-            passwordHash: '000474d5f9528881bf1e75c4a4dc0697f635a539d384525e22633b058dd92740',
-            name: 'Nicole',
-            role: 'salesperson',
-            teamId: 'TEAM-B'
-        },
-        {
-            id: 'U009',
-            username: 'Jack',
-            passwordHash: 'c0b9f3feb7f992d1d8384ad4a83d75ae99e161ed5f3bce64f4ab7a5e758f347d',
-            name: 'Jack',
-            role: 'document',
-            teamId: 'TEAM-B'
-        },
-        {
-            id: 'U010',
-            username: 'Melody',
-            passwordHash: '15834a6c8f827b82e53f5f6ef4aa2907b7c1f9ca2ac3d407c8690721c13755fd',
-            name: 'Melody',
-            role: 'document',
-            teamId: 'TEAM-B'
-        }
-    ],
-
-    // ==================== 团队定义 ====================
-    teams: {
-        'TEAM-A': {
-            name: 'A组',
-            managerId: 'U003',
-            memberIds: ['U005', 'U006', 'U007', 'U011'],
-            visibleCompanyIds: null
-        },
-        'TEAM-B': {
-            name: 'B组',
-            managerId: 'U004',
-            memberIds: ['U008', 'U009', 'U010'],
-            visibleCompanyIds: ['CO-WY', 'CO-GW']
-        } // 为语 + Grandware HK
+    // Directory and roles are supplied by the authenticated business API.
+    users: [],
+    teams: {},
+    _provider: null,
+    _serverDataAuthorized: false,
+    configureProvider(provider) {
+        this._provider = provider;
     },
 
     // ==================== 密码安全 ====================
@@ -136,20 +33,17 @@ const Auth = {
     },
 
     // ==================== 登录 ====================
-    init() {
-        const saved = sessionStorage.getItem(this.SESSION_KEY);
-        if (saved) {
-            try {
-                const session = JSON.parse(saved);
-                const user = this.users.find(u => u.id === session.userId);
-                if (user) {
-                    this.currentUser = user;
-                    return true;
-                }
-            } catch (e) {}
-        }
+    async init() {
         this.currentUser = null;
-        return false;
+        sessionStorage.removeItem(this.SESSION_KEY);
+        if (!this._provider) return false;
+        try {
+            const user = await this._provider.restoreSession();
+            this.currentUser = user || null;
+            return !!user;
+        } catch (_) {
+            return false;
+        }
     },
 
     /** 读取锁状态：{ attempts, lockedUntil } 或 null */
@@ -174,37 +68,17 @@ const Auth = {
     },
 
     async login(username, password) {
-        if (!username || !password) {
-            return { success: false, error: '请输入用户名和密码' };
-        }
-
-        // 检查是否被锁定
-        const lock = this._getLockoutState();
-        if (lock && lock.lockedUntil) {
-            const remaining = lock.lockedUntil - Date.now();
-            if (remaining > 0) {
-                const mins = Math.ceil(remaining / 60000);
-                return { success: false, error: `登录尝试次数过多，请 ${mins} 分钟后重试` };
-            }
-            // 锁已过期，清除
-            this._clearLockout();
-        }
-
-        const user = this.users.find(u => u.username === username);
-        if (!user) {
-            await this._hashPassword(password);
-            this._recordFailedAttempt();
-            return { success: false, error: '用户名或密码错误' };
-        }
-        const inputHash = await this._hashPassword(password);
-        if (inputHash === user.passwordHash) {
+        if (!username || !password) return { success: false, error: '请输入用户名和密码' };
+        if (!this._provider) return { success: false, error: '请启动数据库服务后登录工作区' };
+        try {
+            const user = await this._provider.login(username, password);
+            if (!user) return { success: false, error: '用户名或密码错误' };
             this.currentUser = user;
-            sessionStorage.setItem(this.SESSION_KEY, JSON.stringify({ userId: user.id }));
             this._clearLockout();
             return { success: true, user };
+        } catch (e) {
+            return { success: false, error: e.message || '登录失败，请稍后重试' };
         }
-        this._recordFailedAttempt();
-        return { success: false, error: '用户名或密码错误' };
     },
 
     /** 记录一次失败尝试，达到上限则锁定 */
@@ -217,7 +91,8 @@ const Auth = {
         this._setLockoutState(state);
     },
 
-    logout() {
+    async logout() {
+        if (this._provider) await this._provider.logout();
         this.currentUser = null;
         sessionStorage.removeItem(this.SESSION_KEY);
         // 清理云端会话
@@ -225,66 +100,65 @@ const Auth = {
     },
 
     // ==================== 角色判断 ====================
+    roleType() {
+        return this.currentUser?.baseRole || this.currentUser?.role;
+    },
     isAdmin() {
-        return this.currentUser?.role === 'admin';
+        return this.roleType() === 'admin';
     },
     isFinance() {
-        return this.currentUser?.role === 'finance';
+        return this.roleType() === 'finance';
     },
     isManager() {
-        return this.currentUser?.role === 'manager';
+        return this.roleType() === 'manager';
     },
     isSalesperson() {
-        return this.currentUser?.role === 'salesperson';
+        return this.roleType() === 'salesperson';
     },
     isDocument() {
-        return this.currentUser?.role === 'document';
+        return this.roleType() === 'document';
     },
 
     /** 是否能看到全量数据（admin + finance） */
     canSeeAll() {
-        return this.currentUser && (this.currentUser.role === 'admin' || this.currentUser.role === 'finance');
+        if (!this.currentUser) return false;
+        if (this._serverDataAuthorized) return this.currentUser.scope === 'tenant';
+        return this.isAdmin() || this.isFinance();
     },
 
-    /** 是否能看到利润分析 */
+    hasCapability(name) {
+        const caps = this.currentUser?.permissions;
+        if (Array.isArray(caps)) return caps.includes(name) || caps.includes('*');
+        if (caps && typeof caps === 'object') return !!(caps[name] || caps['*']);
+        return null;
+    },
+
     canSeeProfit() {
-        return (
-            this.currentUser &&
-            (this.currentUser.role === 'admin' ||
-                this.currentUser.role === 'finance' ||
-                this.currentUser.role === 'manager' ||
-                this.currentUser.role === 'salesperson')
-        );
+        const permitted = this.hasCapability('finance.read');
+        return permitted === null ? !!(this.isAdmin() || this.isFinance()) : permitted;
     },
-
-    /** 是否能看到财务敏感数据（工厂成本、利润） */
     canSeeFinancials() {
-        return (
-            this.currentUser &&
-            (this.currentUser.role === 'admin' ||
-                this.currentUser.role === 'finance' ||
-                this.currentUser.role === 'manager' ||
-                this.currentUser.role === 'salesperson')
-        );
+        const permitted = this.hasCapability('finance.read');
+        return permitted === null ? !!(this.isAdmin() || this.isFinance()) : permitted;
     },
-
-    /** 是否能看到系统设置 */
     canSeeSettings() {
-        return (
-            this.currentUser &&
-            (this.currentUser.role === 'admin' ||
-                this.currentUser.role === 'finance' ||
-                this.currentUser.role === 'manager')
-        );
+        if (this._serverDataAuthorized) {
+            return ['rates.write', 'snapshots.read', 'accounts.configure'].some(cap => this.hasCapability(cap));
+        }
+        return !!(this.isAdmin() || this.isFinance());
     },
 
     /** 是否能修改订单 */
     canEdit() {
+        const permitted = this.hasCapability('edit');
+        if (permitted !== null) return permitted;
         return true; // 所有角色都能编辑自己的订单（经理能编辑团队的）
     },
 
     /** 是否能删除订单（admin/manager 全量可删，salesperson 可删自己的，具体见 canDeleteOrder） */
     canDelete() {
+        const permitted = this.hasCapability('delete');
+        if (permitted !== null) return permitted;
         return (
             this.currentUser &&
             (this.currentUser.role === 'admin' ||
@@ -296,11 +170,24 @@ const Auth = {
     /** 是否能删除某笔具体订单：admin/manager 可删任意可见订单，salesperson 仅可删自己创建/归属自己的订单 */
     canDeleteOrder(order) {
         if (!this.currentUser || !order) return false;
+        if (this.hasCapability('delete') === false) return false;
+        if (this._serverDataAuthorized) {
+            if (this.currentUser.scope === 'tenant') return true;
+            const actors =
+                this.currentUser.scope === 'team'
+                    ? [
+                          this.currentUser.id,
+                          ...(this.teams[this.currentUser.teamId]?.memberIds || []),
+                          this.teams[this.currentUser.teamId]?.managerId
+                      ]
+                    : [this.currentUser.id];
+            return actors.includes(order.createdBy) || actors.includes(order.salespersonId);
+        }
         if (this.currentUser.role === 'admin' || this.currentUser.role === 'manager') return true;
         if (this.currentUser.role === 'salesperson') {
             return Boolean(
                 (order.salespersonId && order.salespersonId === this.currentUser.id) ||
-                    (order.createdBy && order.createdBy === this.currentUser.id)
+                (order.createdBy && order.createdBy === this.currentUser.id)
             );
         }
         return false; // finance / document 不可删除
@@ -309,11 +196,12 @@ const Auth = {
     /** 获取当前用户可见的公司ID列表。null = 全部公司可见 */
     getVisibleCompanyIds() {
         if (!this.currentUser) return [];
+        if (this._serverDataAuthorized) return this.currentUser.visibleCompanyIds || [];
         if (this.canSeeAll()) return null; // admin/finance 看全部
         // 用户级限制优先于团队级
         if (this.currentUser.visibleCompanyIds) return this.currentUser.visibleCompanyIds;
         const team = this.teams[this.currentUser.teamId];
-        if (!team) return null; // 无团队默认全部
+        if (!team) return []; // 未配置授权默认拒绝
         return team.visibleCompanyIds || null; // null = 团队无限制
     },
 
@@ -358,6 +246,7 @@ const Auth = {
      *  3. 经理/单证员：团队内所有成员（含单证员，他们也有新建订单权限）创建的订单对团队可见
      */
     filterOrders(orders) {
+        if (this._serverDataAuthorized) return orders;
         const ids = this.getVisibleSalespersonIds();
         if (ids === null) return orders; // 全部可见
         const myId = this.currentUser ? this.currentUser.id : null;
@@ -378,6 +267,7 @@ const Auth = {
 
     /** 过滤出运列表 */
     filterShipments(shipments, allOrders) {
+        if (this._serverDataAuthorized) return shipments;
         const ids = this.getVisibleSalespersonIds();
         if (ids === null) return shipments;
         const visibleOrderIds = new Set(allOrders.filter(o => ids.includes(o.salespersonId)).map(o => o.id));
@@ -386,6 +276,7 @@ const Auth = {
 
     /** 过滤单证列表 */
     filterInvoices(invoices, allOrders) {
+        if (this._serverDataAuthorized) return invoices;
         const ids = this.getVisibleSalespersonIds();
         if (ids === null) return invoices;
         const visibleOrderIds = new Set(allOrders.filter(o => ids.includes(o.salespersonId)).map(o => o.id));
@@ -396,6 +287,7 @@ const Auth = {
      *  注：salespersonId 为 null/undefined 的旧数据，业务员不可见（仅 admin/finance/manager 可见）
      */
     filterCustomers(customers, allOrders) {
+        if (this._serverDataAuthorized) return customers;
         const ids = this.getVisibleSalespersonIds();
         if (ids === null) return customers; // null = 全部可见
         const myId = this.currentUser ? this.currentUser.id : null;
@@ -411,6 +303,7 @@ const Auth = {
 
     /** 获取可见客户的 ID 集合（基于可见订单） */
     getVisibleCustomerIds(allOrders) {
+        if (this._serverDataAuthorized) return null;
         const ids = this.getVisibleSalespersonIds();
         if (ids === null) return null;
         const visibleOrders = ids ? allOrders.filter(o => ids.includes(o.salespersonId)) : allOrders;
@@ -419,25 +312,18 @@ const Auth = {
 
     /** 获取页面可访问列表 */
     getVisiblePages() {
-        // David(admin) 和 Lily(finance) 可以看到所有页面
-        if (this.canSeeAll()) {
-            return ['dashboard', 'orders', 'customers', 'factories', 'shipping', 'profit', 'settings'];
-        }
-        // 业务员：自己的订单/客户 + 全部工厂管理 + 自己订单的利润分析/物流单证
-        if (this.isSalesperson()) {
-            return ['dashboard', 'orders', 'customers', 'factories', 'shipping', 'profit'];
-        }
-        // 单证员：团队业务员的订单/物流单证 + 全部工厂管理（不可看利润分析、客户信息、总利润）
-        if (this.isDocument()) {
-            return ['dashboard', 'orders', 'factories', 'shipping'];
-        }
-        // 经理可以看到团队相关页面 + 利润分析 + 系统设置
-        return ['dashboard', 'orders', 'customers', 'factories', 'shipping', 'profit', 'settings'];
+        if (!this.currentUser) return [];
+        if (Array.isArray(this.currentUser.pages)) return this.currentUser.pages;
+        const pages = ['dashboard', 'orders', 'customers', 'factories', 'shipping'];
+        if (this.canSeeProfit()) pages.push('profit');
+        if (this.canSeeSettings()) pages.push('settings');
+        return pages;
     },
 
     /** 检查是否可以查看某个订单 */
     canViewOrder(orderId, allOrders) {
         if (!this.currentUser) return false;
+        if (this._serverDataAuthorized) return allOrders.some(order => order.id === orderId && !order.deleted);
         if (this.canSeeAll()) return true;
         const order = allOrders.find(o => o.id === orderId);
         if (!order) return false;

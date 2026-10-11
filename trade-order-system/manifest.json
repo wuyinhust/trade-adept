@@ -1,6 +1,6 @@
 {
-    "name": "Grandware@once",
-    "short_name": "Grandware",
+    "name": "Trade Workspace",
+    "short_name": "Trade",
     "description": "外贸订单跟踪系统",
     "start_url": "/",
     "display": "standalone",

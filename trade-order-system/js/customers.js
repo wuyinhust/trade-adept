@@ -384,6 +384,7 @@ const Customers = {
         }
 
         const fd = new FormData(event.target);
+        const pendingId = customerId || event.target.dataset.pendingRecordId || null;
         const contacts = this.collectContacts();
 
         // 主要联系人为 contacts 第一项
@@ -400,8 +401,8 @@ const Customers = {
             paymentTerms: fd.get('paymentTerms'),
             contacts: contacts
         };
-        if (customerId) {
-            const updated = DB.updateCustomer(customerId, data);
+        if (pendingId) {
+            const updated = DB.updateCustomer(pendingId, data);
             if (!updated) {
                 App.toast('⚠️ 客户不存在，无法更新', 'error');
                 return;
@@ -412,6 +413,7 @@ const Customers = {
                 App.toast('⚠️ 客户创建失败，请检查必填字段', 'error');
                 return;
             }
+            event.target.dataset.pendingRecordId = newCustomer.id;
         }
 
         const ok = await DB.flush();
@@ -529,9 +531,9 @@ const Customers = {
     // ==================== 联系人管理 ====================
 
     renderContactRow(index, ct = {}) {
-        const esc = s => (s || '').replace(/"/g, '&quot;');
+        const esc = s => App.escapeHtml(String(s || ''));
         return `
-            <div class="contact-card" id="contactRow${index}">
+            <div class="contact-card" id="contactRow${index}" data-contact-id="${esc(ct.id)}">
                 <div class="contact-card-header">
                     <span class="contact-card-title">联系人 #${index + 1}</span>
                     <button type="button" class="btn btn-sm btn-danger" onclick="Customers.removeContactRow(${index})">✕ 删除</button>
@@ -620,7 +622,6 @@ const Customers = {
         if (!container) return [];
         const rows = container.querySelectorAll('.contact-card');
         const contacts = [];
-        let contactIdCounter = Date.now();
         rows.forEach(row => {
             const byField = suffix => {
                 const el = row.querySelector(`[name*="${suffix}"]`);
@@ -628,8 +629,12 @@ const Customers = {
             };
             const name = byField('contact_name');
             if (!name) return; // 跳过空姓名的联系人
+            // Preserve identity when editing; the API replaces the submitted array,
+            // so removed rows remain removed instead of being unioned back in.
+            const contactId = row.dataset.contactId || 'CONT-' + crypto.randomUUID();
+            row.dataset.contactId = contactId;
             contacts.push({
-                id: 'CONT-NEW-' + contactIdCounter++,
+                id: contactId,
                 name: name,
                 position: byField('contact_position'),
                 email: byField('contact_email'),
@@ -750,13 +755,13 @@ const Customers = {
                 c => `
             <tr>
                 <td class="text-sm">${c._rowIndex}</td>
-                <td class="font-semi">${c.company || '-'}</td>
-                <td class="text-sm">${(c.companyAddress || '').slice(0, 30)}</td>
-                <td>${c.country}</td>
-                <td>${c.contact || '-'}</td>
-                <td>${c.position || '-'}</td>
-                <td class="text-sm">${c.mobilePhone || '-'}</td>
-                <td class="text-sm">${c.paymentTerms}</td>
+                <td class="font-semi">${App.escapeHtml(c.company || '-')}</td>
+                <td class="text-sm">${App.escapeHtml((c.companyAddress || '').slice(0, 30))}</td>
+                <td>${App.escapeHtml(c.country)}</td>
+                <td>${App.escapeHtml(c.contact || '-')}</td>
+                <td>${App.escapeHtml(c.position || '-')}</td>
+                <td class="text-sm">${App.escapeHtml(c.mobilePhone || '-')}</td>
+                <td class="text-sm">${App.escapeHtml(c.paymentTerms)}</td>
             </tr>
         `
             )

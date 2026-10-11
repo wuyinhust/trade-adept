@@ -12,7 +12,10 @@ import { DB } from './data.js';
 const Exchange = {
     /** 判断是否国内公司（人民币结算） */
     isDomestic(companyId) {
-        return companyId === 'CO-GR' || companyId === 'CO-WY';
+        const company = DB.companies?.find(c => c.id === companyId);
+        return company?.settlementCurrency
+            ? company.settlementCurrency === 'CNY'
+            : companyId === 'CO-GR' || companyId === 'CO-WY';
     },
 
     /** 获取当前公司汇率 */
@@ -32,8 +35,13 @@ const Exchange = {
      *  国内公司：含退税 = (收入 - 工厂成本) + 退税 - 货代费 - 其他
      *  HK 公司：美金结算，不含退税 = 订单金额 - 工厂成本 - 其他
      */
-    calcOrderProfit(orderAmountUSD, factoryCostRMB, freightCostUSD, insuranceCostUSD, otherCostUSD, companyId) {
+    calcOrderProfit(orderAmountUSD, factoryCostRMB, freightCostUSD, insuranceCostUSD, otherCostUSD, companyId, policy) {
         const rate = DB.getExchangeRate(companyId);
+        const formula = policy || DB.companies?.find(c => c.id === companyId)?.profitPolicy;
+        if (this.isDomestic(companyId) && formula === 'grandware-v40') {
+            const rebate = (factoryCostRMB / 1.13) * ((insuranceCostUSD || 0) / 100);
+            return orderAmountUSD * rate - factoryCostRMB - (freightCostUSD || 0) - (otherCostUSD || 0) + rebate;
+        }
         if (this.isDomestic(companyId)) {
             // 国内公司：含退税，所有 USD 费用需按汇率转为 RMB
             const revenue = orderAmountUSD * rate;
@@ -45,6 +53,42 @@ const Exchange = {
         }
         // HK 公司：美金结算
         return orderAmountUSD - factoryCostRMB - otherCostUSD;
+    },
+
+    getOrderFinancials(order) {
+        const domestic = this.isDomestic(order.companyId);
+        const rate = DB.getExchangeRate(order.companyId);
+        const policy =
+            order.formulaVersion || DB.companies?.find(c => c.id === order.companyId)?.profitPolicy || 'legacy-usd-v56';
+        const n = value => Number(value) || 0;
+        const currency = domestic ? 'CNY' : 'USD';
+        const revenue =
+            domestic && Number.isFinite(order.orderAmountRMB)
+                ? order.orderAmountRMB
+                : n(order.orderAmountUSD) * (domestic ? rate : 1);
+        const factoryCost = n(order.factoryCostRMB);
+        const legacy = policy === 'grandware-v40';
+        const freightCost = domestic ? n(order.freightCostUSD) * (legacy ? 1 : rate) : 0;
+        const insuranceCost = domestic && !legacy ? n(order.insuranceCostUSD) * rate : 0;
+        const otherCost = n(order.otherCostUSD) * (domestic && !legacy ? rate : 1);
+        const taxRebate = domestic ? (factoryCost / 1.13) * (legacy ? n(order.insuranceCostUSD) / 100 : 0.13) : 0;
+        const totalCost = factoryCost + freightCost + insuranceCost + otherCost;
+        const computedProfit = revenue - totalCost + taxRebate;
+        const profit = Number.isFinite(order.profitRMB) ? order.profitRMB : computedProfit;
+        return {
+            currency,
+            revenue,
+            factoryCost,
+            freightCost,
+            insuranceCost,
+            otherCost,
+            taxRebate,
+            totalCost,
+            profit,
+            computedProfit,
+            profitRate: revenue ? (profit / revenue) * 100 : 0,
+            policy
+        };
     },
 
     /** 重算全量订单利润（汇率变更后调用）

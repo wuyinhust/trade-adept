@@ -451,7 +451,8 @@ describe('DB — Orders CRUD', () => {
             companyId: 'CO-GR', orderAmountUSD: 1000, factoryCostRMB: 5000,
             freightCostUSD: 100, insuranceCostUSD: 13, otherCostUSD: 50
         });
-        expect(order.id).toBe('GR25M001');
+        expect(order.id).toMatch(/^ORD-[0-9a-f-]{36}$/);
+        expect(order.companyOperationNo).toBe('GR25M001');
         expect(order.orderAmountRMB).toBeGreaterThan(0);
         expect(order.profitRMB).toBeDefined();
         expect(order.profitRate).toBeDefined();

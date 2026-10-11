@@ -9,6 +9,8 @@ global.TextDecoder = TextDecoder;
 // Mock Web Crypto API
 const nodeCrypto = require('crypto');
 const mockCrypto = {
+    randomUUID: () => nodeCrypto.randomUUID(),
+    getRandomValues: values => nodeCrypto.webcrypto.getRandomValues(values),
     subtle: {
         async digest(algorithm, data) {
             const buf = Buffer.from(data);

@@ -42,7 +42,7 @@ const Orders = {
                     <option value="已到港">已到港</option>
                     <option value="已签收">已签收</option>
                 </select>
-                ${Auth.isManager() || Auth.isSalesperson() || Auth.isDocument() ? `<span class="filter-info">👤 当前查看：${Auth.isManager() ? '我团队的订单' : (Auth.isDocument() ? '我团队及自己创建的订单' : '我的订单')}</span>` : ''}
+                ${Auth.isManager() || Auth.isSalesperson() || Auth.isDocument() ? `<span class="filter-info">👤 当前查看：${Auth.isManager() ? '我团队的订单' : Auth.isDocument() ? '我团队及自己创建的订单' : '我的订单'}</span>` : ''}
                 <div style="margin-left:auto;display:flex;gap:8px">
                     <button class="btn btn-secondary" onclick="Orders.exportExcel()">📥 导出Excel</button>
                     <button class="btn btn-secondary" onclick="Orders.importExcel()">📤 导入Excel</button>
@@ -69,7 +69,7 @@ const Orders = {
                                 <th>下单日期</th>
                                 <th>出运日期</th>
                                 <th class="text-right">订单金额(USD)</th>
-                                ${showFinance ? '<th class="text-right">工厂成本(' + (DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK' ? 'USD' : 'RMB') + ')</th><th class="text-right">利润率</th>' : ''}
+                                ${showFinance ? '<th class="text-right">工厂成本(结算币种)</th><th class="text-right">利润率</th>' : ''}
                                 <th>收款状态</th>
                                 <th>工厂付款状态</th>
                                 <th>出运状态</th>
@@ -122,7 +122,7 @@ const Orders = {
         tbody.innerHTML = orders
             .map(o => {
                 const checked = this.selectedOrders.has(o.id) ? 'checked' : '';
-                const isListHK = o.companyId === 'CO-GW' || o.companyId === 'CO-LK';
+                const isListHK = !Exchange.isDomestic(o.companyId);
                 return `
             <tr>
                 <td class="checkbox-col"><input type="checkbox" ${checked} onchange="Orders.toggleSelect('${App.escapeHtml(o.id)}')"></td>
@@ -201,11 +201,13 @@ const Orders = {
         const docs = DB.getInvoicesByOrder(orderId);
         const showFinance = Auth.canSeeFinancials();
         const canDel = Auth.canDeleteOrder(order);
-        const isDomestic = order.companyId === 'CO-GR' || order.companyId === 'CO-WY';
-        const isHK = order.companyId === 'CO-GW' || order.companyId === 'CO-LK';
+        const isDomestic = Exchange.isDomestic(order.companyId);
+        const isHK = !Exchange.isDomestic(order.companyId);
+        const financials = Exchange.getOrderFinancials(order);
+        const legacyRmbFees = financials.policy === 'grandware-v40';
         const detailFinanceTitle = isDomestic ? '订单信息' : '财务明细';
 
-        document.getElementById('pageTitle').textContent = '订单详情 - ' + orderId;
+        document.getElementById('pageTitle').textContent = '订单详情 - ' + (order.companyOperationNo || orderId);
 
         container.innerHTML = `
             <div class="flex gap-3 mb-4">
@@ -257,7 +259,7 @@ const Orders = {
                 <div class="card-header"><span class="card-title">基本信息</span></div>
                 <div class="card-body">
                     <div class="detail-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-                        <div class="detail-item"><div class="detail-label">公司操作单号</div><div class="detail-value">${App.escapeHtml(order.id)}</div></div>
+                        <div class="detail-item"><div class="detail-label">公司操作单号</div><div class="detail-value">${App.escapeHtml(order.companyOperationNo || order.id)}</div></div>
                         <div class="detail-item"><div class="detail-label">客户订单号</div><div class="detail-value">${App.escapeHtml(order.customerOrderNo) || '-'}</div></div>
                         <div class="detail-item"><div class="detail-label">订单状态</div><div class="detail-value">${App.getStatusBadge(order.status)}</div></div>
                         <div class="detail-item"><div class="detail-label">客户</div><div class="detail-value">${App.escapeHtml(order.customerName)}</div></div>
@@ -316,10 +318,10 @@ const Orders = {
                                 isHK
                                     ? ''
                                     : `
-                            <tr><td>货代费 (RMB)</td><td class="text-right text-danger">${App.formatMoney(order.freightCostUSD, 'CNY')}</td></tr>
-                            <tr><td>退税率 (%)</td><td class="text-right text-danger">${order.insuranceCostUSD.toFixed(2)}%</td></tr>`
+                            <tr><td>${legacyRmbFees ? '货代费 (RMB)' : '运费 (USD)'}</td><td class="text-right text-danger">${App.formatMoney(order.freightCostUSD, legacyRmbFees ? 'CNY' : 'USD')}</td></tr>
+                            <tr><td>${legacyRmbFees ? '退税率 (%)' : '保险费 (USD)'}</td><td class="text-right text-danger">${legacyRmbFees ? Number(order.insuranceCostUSD || 0).toFixed(2) + '%' : App.formatMoney(order.insuranceCostUSD, 'USD')}</td></tr>`
                             }
-                            <tr><td>${isDomestic ? '其他费用 (RMB)' : '其他费用 (USD)'}</td><td class="text-right text-danger">${App.formatMoney(order.otherCostUSD, isHK ? 'USD' : 'CNY')}</td></tr>
+                            <tr><td>${isDomestic && legacyRmbFees ? '其他费用 (RMB)' : '其他费用 (USD)'}</td><td class="text-right text-danger">${App.formatMoney(order.otherCostUSD, isDomestic && legacyRmbFees ? 'CNY' : 'USD')}</td></tr>
                             <tr style="border-top:2px solid var(--gray-300)"><td class="font-bold">利润 (${isHK ? 'USD' : 'RMB'})</td><td class="text-right font-bold ${App.getProfitColor(order.profitRate)}">${App.formatMoney(order.profitRMB, isHK ? 'USD' : 'CNY')}</td></tr>
                             <tr><td class="text-gray">利润率</td><td class="text-right font-bold ${App.getProfitColor(order.profitRate)}">${order.profitRate.toFixed(2)}%</td></tr>
                         </tbody>
@@ -365,19 +367,20 @@ const Orders = {
         const today = new Date().toISOString().split('T')[0];
         const showFinance = Auth.canSeeFinancials();
         const showSalesSelect = Auth.canSeeAll();
-        const isDomestic = DB.currentCompanyId === 'CO-GR' || DB.currentCompanyId === 'CO-WY';
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
+        const isDomestic = Exchange.isDomestic(DB.currentCompanyId);
+        const isHK = !Exchange.isDomestic(DB.currentCompanyId);
         this._isHK = isHK; // 供工厂卡片使用
         const financeTitle = isDomestic ? '💰 订单信息' : '💰 财务信息 (USD)';
         const factoryCostLabel = isHK ? '工厂成本 (USD)' : '工厂成本 (RMB)';
-        const otherLabel = isDomestic ? '其他费用 (RMB)' : '其他费用 (USD)';
+        const legacyRmbFees = DB.getCurrentCompany()?.profitPolicy === 'grandware-v40';
+        const otherLabel = isDomestic && legacyRmbFees ? '其他费用 (RMB)' : '其他费用 (USD)';
         const profitLabel = isHK ? '预计利润 (USD)' : '预计利润 (RMB)';
-        const freightLabel = isDomestic ? '货代费 (RMB)' : '';
-        const insuranceLabel = isDomestic ? '退税率 (%)' : '';
+        const freightLabel = isDomestic ? (legacyRmbFees ? '货代费 (RMB)' : '运费 (USD)') : '';
+        const insuranceLabel = isDomestic ? (legacyRmbFees ? '退税率 (%)' : '保险费 (USD)') : '';
         const opNoPreview = DB.generateCompanyOperationNo(DB.currentCompanyId, Auth.currentUser?.id || 'U005');
 
         const bodyHtml = `
-            <form id="orderForm" onsubmit="Orders.saveOrder(event); return false;">
+            <form id="orderForm" data-company-id="${App.escapeHtml(DB.currentCompanyId)}" onsubmit="Orders.saveOrder(event); return false;">
                 ${
                     showSalesSelect
                         ? `
@@ -389,19 +392,19 @@ const Orders = {
                                 .filter(u => u.role === 'salesperson' || u.role === 'manager')
                                 .map(
                                     u =>
-                                        `<option value="${u.id}" ${Auth.currentUser && Auth.currentUser.id === u.id ? 'selected' : ''}>${u.name} (${u.role === 'manager' ? '经理' : '业务员'})</option>`
+                                        `<option value="${App.escapeHtml(u.id)}" ${Auth.currentUser && Auth.currentUser.id === u.id ? 'selected' : ''}>${App.escapeHtml(u.name)} (${u.role === 'manager' ? '经理' : '业务员'})</option>`
                                 )
                                 .join('')}
                         </select>
                     </div>
                 </div>`
-                        : `<input type="hidden" name="salespersonId" value="${Auth.currentUser ? Auth.currentUser.id : ''}">`
+                        : `<input type="hidden" name="salespersonId" value="${App.escapeHtml(Auth.currentUser?.id ?? '')}">`
                 }
                 <div class="form-group">
                     <label class="form-label">客户 <span class="required">*</span></label>
                     <select class="form-select" name="customerId" required onchange="Orders.onCustomerChange(this)">
                         <option value="">请选择客户</option>
-                        ${customers.map(c => `<option value="${c.id}" data-payment="${c.paymentTerms}">${c.company} (${c.country})</option>`).join('')}
+                        ${customers.map(c => `<option value="${App.escapeHtml(c.id)}" data-payment="${App.escapeHtml(c.paymentTerms)}">${App.escapeHtml(c.company)} (${App.escapeHtml(c.country)})</option>`).join('')}
                     </select>
                 </div>
                 <div class="form-group">
@@ -488,7 +491,7 @@ const Orders = {
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">公司操作单号 <span class="required">*</span></label>
-                        <input type="text" class="form-input" name="companyOperationNo" required placeholder="${isDomestic ? (DB.currentCompanyId === 'CO-GR' ? 'GR' : 'WY') : 'OP'}26A001（留空自动生成）" value="${opNoPreview}">
+                        <input type="text" class="form-input" name="companyOperationNo" placeholder="${App.escapeHtml(DB.getCurrentCompany()?.orderPrefix || 'OP')}${String(new Date().getFullYear()).slice(2)}A001（留空自动生成）" value="${App.escapeHtml(opNoPreview)}">
                     </div>
                 </div>
                 <hr style="border:none;border-top:1px solid var(--gray-200);margin:16px 0">
@@ -516,7 +519,7 @@ const Orders = {
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">公司操作单号 <span class="required">*</span></label>
-                        <input type="text" class="form-input" name="companyOperationNo" required placeholder="${isDomestic ? (DB.currentCompanyId === 'CO-GR' ? 'GR' : 'WY') : 'OP'}26A001（留空自动生成）" value="${opNoPreview}">
+                        <input type="text" class="form-input" name="companyOperationNo" placeholder="${App.escapeHtml(DB.getCurrentCompany()?.orderPrefix || 'OP')}${String(new Date().getFullYear()).slice(2)}A001（留空自动生成）" value="${App.escapeHtml(opNoPreview)}">
                     </div>
                 </div>`
                 }
@@ -569,15 +572,19 @@ const Orders = {
         const customer = customers.find(c => String(c.id) === String(order.customerId));
         const showFinance = Auth.canSeeFinancials();
         const showSalesSelect = Auth.canSeeAll();
-        const isDomestic = order.companyId === 'CO-GR' || order.companyId === 'CO-WY';
-        const isHK = order.companyId === 'CO-GW' || order.companyId === 'CO-LK';
+        const isDomestic = Exchange.isDomestic(order.companyId);
+        const isHK = !Exchange.isDomestic(order.companyId);
         this._isHK = isHK; // 供工厂卡片使用
         const financeTitle = isDomestic ? '💰 订单信息' : '💰 财务信息 (USD)';
         const factoryCostLabel = isHK ? '工厂成本 (USD)' : '工厂成本 (RMB)';
-        const otherLabel = isDomestic ? '其他费用 (RMB)' : '其他费用 (USD)';
+        const companyPolicy = DB.companies.find(
+            company => String(company.id) === String(order.companyId)
+        )?.profitPolicy;
+        const legacyRmbFees = (order.formulaVersion || companyPolicy) === 'grandware-v40';
+        const otherLabel = isDomestic && legacyRmbFees ? '其他费用 (RMB)' : '其他费用 (USD)';
         const profitLabel = isHK ? '预计利润 (USD)' : '预计利润 (RMB)';
-        const freightLabel = isDomestic ? '货代费 (RMB)' : '';
-        const insuranceLabel = isDomestic ? '退税率 (%)' : '';
+        const freightLabel = isDomestic ? (legacyRmbFees ? '货代费 (RMB)' : '运费 (USD)') : '';
+        const insuranceLabel = isDomestic ? (legacyRmbFees ? '退税率 (%)' : '保险费 (USD)') : '';
 
         // 构建工厂数据（新模型优先，兼容旧数据）
         const factoryDataList =
@@ -598,7 +605,7 @@ const Orders = {
         const factoryCardsHtml = factoryDataList.map((fd, idx) => this.createFactoryRow(idx, fd)).join('');
 
         const bodyHtml = `
-            <form id="orderForm" onsubmit="Orders.saveOrder(event, '${orderId}'); return false;">
+            <form id="orderForm" data-company-id="${App.escapeHtml(order.companyId)}" data-formula-version="${App.escapeHtml(order.formulaVersion || '')}" onsubmit="Orders.saveOrder(event, '${orderId}'); return false;">
                 ${
                     showSalesSelect
                         ? `
@@ -610,18 +617,18 @@ const Orders = {
                                 .filter(u => u.role === 'salesperson' || u.role === 'manager')
                                 .map(
                                     u =>
-                                        `<option value="${u.id}" ${u.id === (order.salespersonId || '') ? 'selected' : ''}>${u.name}</option>`
+                                        `<option value="${App.escapeHtml(u.id)}" ${u.id === (order.salespersonId || '') ? 'selected' : ''}>${App.escapeHtml(u.name)}</option>`
                                 )
                                 .join('')}
                         </select>
                     </div>
                 </div>`
-                        : `<input type="hidden" name="salespersonId" value="${order.salespersonId || ''}">`
+                        : `<input type="hidden" name="salespersonId" value="${App.escapeHtml(order.salespersonId ?? '')}">`
                 }
                 <div class="form-group">
                     <label class="form-label">客户 <span class="required">*</span></label>
                     <select class="form-select" name="customerId" required onchange="Orders.onCustomerChange(this)">
-                        ${customers.map(c => `<option value="${c.id}" ${String(c.id) === String(order.customerId) ? 'selected' : ''}>${c.company} (${c.country})</option>`).join('')}
+                        ${customers.map(c => `<option value="${App.escapeHtml(c.id)}" ${String(c.id) === String(order.customerId) ? 'selected' : ''}>${App.escapeHtml(c.company)} (${App.escapeHtml(c.country)})</option>`).join('')}
                     </select>
                 </div>
                 <div class="form-group">
@@ -633,11 +640,11 @@ const Orders = {
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">客户订单号 <span class="required">*</span></label>
-                        <input type="text" class="form-input" name="customerOrderNo" required value="${(order.customerOrderNo || '').replace(/"/g, '&quot;')}">
+                        <input type="text" class="form-input" name="customerOrderNo" required value="${App.escapeHtml(order.customerOrderNo ?? '')}">
                     </div>
                     <div class="form-group">
                         <label class="form-label">下单日期</label>
-                        <input type="date" class="form-input" name="orderDate" value="${order.orderDate}">
+                        <input type="date" class="form-input" name="orderDate" value="${App.escapeHtml(order.orderDate ?? '')}">
                     </div>
                 </div>
                 <div class="form-row">
@@ -652,7 +659,7 @@ const Orders = {
                             ? `
                     <div class="form-group">
                         <label class="form-label">海外港口</label>
-                        <input type="text" class="form-input" name="overseasPort" value="${(order.overseasPort || '').replace(/"/g, '&quot;')}" placeholder="例：Los Angeles / Hamburg / Dubai">
+                        <input type="text" class="form-input" name="overseasPort" value="${App.escapeHtml(order.overseasPort ?? '')}" placeholder="例：Los Angeles / Hamburg / Dubai">
                     </div>`
                             : ''
                     }
@@ -666,11 +673,11 @@ const Orders = {
                 <div class="form-row-3">
                     <div class="form-group">
                         <label class="form-label">订单金额 (USD)</label>
-                        <input type="number" step="0.01" class="form-input" name="orderAmountUSD" value="${order.orderAmountUSD}" oninput="Orders.calcProfit()">
+                        <input type="number" step="0.01" class="form-input" name="orderAmountUSD" value="${App.escapeHtml(order.orderAmountUSD ?? '')}" oninput="Orders.calcProfit()">
                     </div>
                     <div class="form-group">
                         <label class="form-label">${factoryCostLabel} <span class="text-xs text-gray" style="font-weight:400">自动计算</span></label>
-                        <input type="number" step="0.01" class="form-input" name="factoryCostRMB" value="${order.factoryCostRMB}" readonly style="background:var(--gray-100);color:var(--gray-600)">
+                        <input type="number" step="0.01" class="form-input" name="factoryCostRMB" value="${App.escapeHtml(order.factoryCostRMB ?? '')}" readonly style="background:var(--gray-100);color:var(--gray-600)">
                     </div>
                     ${
                         isHK
@@ -678,7 +685,7 @@ const Orders = {
                             : `
                     <div class="form-group">
                         <label class="form-label">${freightLabel}</label>
-                        <input type="number" step="0.01" class="form-input" name="freightCostUSD" value="${order.freightCostUSD}" oninput="Orders.calcProfit()">
+                        <input type="number" step="0.01" class="form-input" name="freightCostUSD" value="${App.escapeHtml(order.freightCostUSD ?? '')}" oninput="Orders.calcProfit()">
                     </div>`
                     }
                 </div>
@@ -689,22 +696,22 @@ const Orders = {
                             : `
                     <div class="form-group">
                         <label class="form-label">${insuranceLabel}</label>
-                        <input type="number" step="0.01" class="form-input" name="insuranceCostUSD" value="${order.insuranceCostUSD}" oninput="Orders.calcProfit()">
+                        <input type="number" step="0.01" class="form-input" name="insuranceCostUSD" value="${App.escapeHtml(order.insuranceCostUSD ?? '')}" oninput="Orders.calcProfit()">
                     </div>`
                     }
                     <div class="form-group">
                         <label class="form-label">${otherLabel}</label>
-                        <input type="number" step="0.01" class="form-input" name="otherCostUSD" value="${order.otherCostUSD}" oninput="Orders.calcProfit()">
+                        <input type="number" step="0.01" class="form-input" name="otherCostUSD" value="${App.escapeHtml(order.otherCostUSD ?? '')}" oninput="Orders.calcProfit()">
                     </div>
                     <div class="form-group">
                         <label class="form-label">${profitLabel}</label>
-                        <input type="text" class="form-input" id="calcProfit" readonly value="${order.profitRMB}" style="font-weight:600;color:var(--success)">
+                        <input type="text" class="form-input" id="calcProfit" readonly value="${App.escapeHtml(order.profitRMB ?? '')}" style="font-weight:600;color:var(--success)">
                     </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">公司操作单号 <span class="required">*</span></label>
-                        <input type="text" class="form-input" name="companyOperationNo" required value="${(order.companyOperationNo || '').replace(/"/g, '&quot;')}">
+                        <input type="text" class="form-input" name="companyOperationNo" required value="${App.escapeHtml(order.companyOperationNo ?? '')}">
                     </div>
                 </div>
                 <hr style="border:none;border-top:1px solid var(--gray-200);margin:16px 0">
@@ -716,24 +723,24 @@ const Orders = {
                     ${factoryCardsHtml}
                 </div>
                 <button type="button" class="btn btn-sm btn-secondary" onclick="Orders.addFactoryRow()" style="margin-top:8px">＋ 添加工厂</button>
-                <input type="hidden" name="expectedShipDate" value="${order.expectedShipDate || ''}">
-                <input type="hidden" name="actualShipDate" value="${order.actualShipDate || ''}">`
+                <input type="hidden" name="expectedShipDate" value="${App.escapeHtml(order.expectedShipDate ?? '')}">
+                <input type="hidden" name="actualShipDate" value="${App.escapeHtml(order.actualShipDate ?? '')}">`
                         : `
                 <h3 class="font-semi mb-3">💰 金额信息</h3>
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">订单金额 (USD)</label>
-                        <input type="number" step="0.01" class="form-input" name="orderAmountUSD" value="${order.orderAmountUSD}">
+                        <input type="number" step="0.01" class="form-input" name="orderAmountUSD" value="${App.escapeHtml(order.orderAmountUSD ?? '')}">
                     </div>
-                    <input type="hidden" name="factoryCostRMB" value="${order.factoryCostRMB}">
-                    <input type="hidden" name="freightCostUSD" value="${order.freightCostUSD}">
-                    <input type="hidden" name="insuranceCostUSD" value="${order.insuranceCostUSD}">
-                    <input type="hidden" name="otherCostUSD" value="${order.otherCostUSD}">
+                    <input type="hidden" name="factoryCostRMB" value="${App.escapeHtml(order.factoryCostRMB ?? '')}">
+                    <input type="hidden" name="freightCostUSD" value="${App.escapeHtml(order.freightCostUSD ?? '')}">
+                    <input type="hidden" name="insuranceCostUSD" value="${App.escapeHtml(order.insuranceCostUSD ?? '')}">
+                    <input type="hidden" name="otherCostUSD" value="${App.escapeHtml(order.otherCostUSD ?? '')}">
                 </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">公司操作单号 <span class="required">*</span></label>
-                        <input type="text" class="form-input" name="companyOperationNo" required value="${(order.companyOperationNo || '').replace(/"/g, '&quot;')}">
+                        <input type="text" class="form-input" name="companyOperationNo" required value="${App.escapeHtml(order.companyOperationNo ?? '')}">
                     </div>
                 </div>`
                 }
@@ -747,7 +754,7 @@ const Orders = {
                     </div>
                     <div class="form-group">
                         <label class="form-label">已收款 (USD)</label>
-                        <input type="number" step="0.01" class="form-input" name="paidAmountUSD" value="${order.paidAmountUSD}">
+                        <input type="number" step="0.01" class="form-input" name="paidAmountUSD" value="${App.escapeHtml(order.paidAmountUSD ?? '')}">
                     </div>
                 </div>
                 <div class="form-row">
@@ -776,18 +783,18 @@ const Orders = {
                     </div>
                     <div class="form-group">
                         <label class="form-label">已付工厂 (${isHK ? 'USD' : 'RMB'})</label>
-                        <input type="number" step="0.01" class="form-input" name="factoryPaidRMB" value="${order.factoryPaidRMB || 0}">
+                        <input type="number" step="0.01" class="form-input" name="factoryPaidRMB" value="${App.escapeHtml(order.factoryPaidRMB ?? 0)}">
                     </div>
                 </div>`
                         : ''
                 }
                 <div class="form-group">
                     <label class="form-label">备注</label>
-                    <textarea class="form-textarea" name="remarks">${order.remarks || ''}</textarea>
+                    <textarea class="form-textarea" name="remarks">${App.escapeHtml(order.remarks || '')}</textarea>
                 </div>
             </form>
         `;
-        App.showModal('编辑订单 - ' + orderId, bodyHtml, {
+        App.showModal('编辑订单 - ' + App.escapeHtml(order.companyOperationNo || orderId), bodyHtml, {
             footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('orderForm').requestSubmit()">💾 保存修改</button>`
         });
         this.updateFactoryCost();
@@ -823,12 +830,12 @@ const Orders = {
             const fallback = customer.contact || '';
             if (!fallback) return '<option value="">无联系人</option>';
             const sel = fallback === selectedName ? ' selected' : '';
-            return `<option value="${fallback.replace(/"/g, '&quot;')}"${sel}>${fallback}</option>`;
+            return `<option value="${App.escapeHtml(fallback)}"${sel}>${App.escapeHtml(fallback)}</option>`;
         }
         return contacts
             .map(ct => {
                 const selected = ct.name === selectedName ? ' selected' : '';
-                return `<option value="${ct.name.replace(/"/g, '&quot;')}"${selected}>${ct.name}${ct.position ? ' (' + ct.position + ')' : ''}</option>`;
+                return `<option value="${App.escapeHtml(ct.name)}"${selected}>${App.escapeHtml(ct.name)}${ct.position ? ' (' + App.escapeHtml(ct.position) + ')' : ''}</option>`;
             })
             .join('');
     },
@@ -847,36 +854,36 @@ const Orders = {
                         <label class="form-label">工厂名称 <span class="required">*</span></label>
                         <select class="form-select" name="factory_${index}_id" required>
                             <option value="">请选择工厂</option>
-                            ${factories.map(f => `<option value="${f.id}" ${data.factoryId === f.id ? 'selected' : ''}>${f.name}</option>`).join('')}
+                            ${factories.map(f => `<option value="${App.escapeHtml(f.id)}" ${String(data.factoryId) === String(f.id) ? 'selected' : ''}>${App.escapeHtml(f.name)}</option>`).join('')}
                         </select>
                     </div>
                     <div class="form-group">
                         <label class="form-label">产品类型 <span class="required">*</span></label>
-                        <input type="text" class="form-input" name="factory_${index}_productType" value="${data.productType || ''}" placeholder="例：电子产品" required>
+                        <input type="text" class="form-input" name="factory_${index}_productType" value="${App.escapeHtml(data.productType || '')}" placeholder="例：电子产品" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label">总数量 <span class="required">*</span></label>
-                        <input type="number" class="form-input" name="factory_${index}_quantity" value="${data.totalQuantity || ''}" placeholder="0" required>
+                        <input type="number" class="form-input" name="factory_${index}_quantity" value="${App.escapeHtml(data.totalQuantity ?? '')}" placeholder="0" required>
                     </div>
                 </div>
                 <div class="form-row-3">
                     <div class="form-group">
                         <label class="form-label">总金额 (${currency}) <span class="required">*</span></label>
-                        <input type="number" step="0.01" class="form-input factory-amount" name="factory_${index}_amount" value="${data.totalAmount || ''}" placeholder="0.00" oninput="Orders.updateFactoryCost()" required>
+                        <input type="number" step="0.01" class="form-input factory-amount" name="factory_${index}_amount" value="${App.escapeHtml(data.totalAmount ?? '')}" placeholder="0.00" oninput="Orders.updateFactoryCost()" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label">预付款 (${currency}) <span class="required">*</span></label>
-                        <input type="number" step="0.01" class="form-input" name="factory_${index}_prepayment" value="${data.prepayment || ''}" placeholder="0.00" required>
+                        <input type="number" step="0.01" class="form-input" name="factory_${index}_prepayment" value="${App.escapeHtml(data.prepayment ?? '')}" placeholder="0.00" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label">预计验货日期 <span class="required">*</span></label>
-                        <input type="date" class="form-input" name="factory_${index}_inspectionDate" value="${data.inspectionDate || ''}" required>
+                        <input type="date" class="form-input" name="factory_${index}_inspectionDate" value="${App.escapeHtml(data.inspectionDate ?? '')}" required>
                     </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">预计出货日期 <span class="required">*</span></label>
-                        <input type="date" class="form-input" name="factory_${index}_shipDate" value="${data.estimatedShipDate || ''}" required>
+                        <input type="date" class="form-input" name="factory_${index}_shipDate" value="${App.escapeHtml(data.estimatedShipDate ?? '')}" required>
                     </div>
                 </div>
             </div>`;
@@ -925,6 +932,9 @@ const Orders = {
     },
 
     updateFactoryCost() {
+        // A role that cannot edit factory amounts has no factory editor. Do not
+        // turn its hidden stored cost into zero merely by opening the form.
+        if (!document.getElementById('factoryCards')) return;
         const amounts = document.querySelectorAll('#factoryCards .factory-amount');
         let total = 0;
         amounts.forEach(input => {
@@ -941,18 +951,33 @@ const Orders = {
 
     calcProfit() {
         const form = document.getElementById('orderForm');
-        if (!form) return;
-        const usd = parseFloat(form.orderAmountUSD.value) || 0;
-        const factoryRMB = parseFloat(form.factoryCostRMB.value) || 0;
+        const el = document.getElementById('calcProfit');
+        if (!form || !el) return;
+        const value = name => parseFloat(form.elements.namedItem(name)?.value) || 0;
+        const usd = value('orderAmountUSD');
+        const factoryRMB = value('factoryCostRMB');
         // HK 公司不渲染货代费和退税率字段，用可选链防止 TypeError
-        const freight = parseFloat(form.freightCostUSD?.value) || 0;
-        const insurance = parseFloat(form.insuranceCostUSD?.value) || 0;
-        const other = parseFloat(form.otherCostUSD.value) || 0;
+        const freight = value('freightCostUSD');
+        const insurance = value('insuranceCostUSD');
+        const other = value('otherCostUSD');
 
         // 实时预览利润：直接用当前登录公司判断公式（与表单标签一致）
-        const companyId = DB.currentCompanyId;
-        const profit = DB.calcOrderProfit(usd, factoryRMB, freight, insurance, other, companyId);
-        const el = document.getElementById('calcProfit');
+        const companyId = form.dataset.companyId || DB.currentCompanyId;
+        const financials =
+            typeof Exchange.getOrderFinancials === 'function'
+                ? Exchange.getOrderFinancials({
+                      companyId,
+                      formulaVersion: form.dataset.formulaVersion || undefined,
+                      orderAmountUSD: usd,
+                      factoryCostRMB: factoryRMB,
+                      freightCostUSD: freight,
+                      insuranceCostUSD: insurance,
+                      otherCostUSD: other
+                  })
+                : null;
+        const profit = financials
+            ? financials.computedProfit
+            : DB.calcOrderProfit(usd, factoryRMB, freight, insurance, other, companyId);
         if (el) {
             el.value = profit.toFixed(2);
             el.style.color = profit >= 0 ? 'var(--success)' : 'var(--danger)';
@@ -969,6 +994,7 @@ const Orders = {
 
         const form = event.target;
         const fd = new FormData(form);
+        const pendingId = orderId || form.dataset.pendingRecordId || null;
         const customer = DB.getCustomer(fd.get('customerId'));
 
         // 收集工厂信息（从动态工厂卡片）
@@ -1044,19 +1070,55 @@ const Orders = {
             companyOperationNo: fd.get('companyOperationNo') || '',
             salespersonId: fd.get('salespersonId') || (Auth.currentUser ? Auth.currentUser.id : null)
         };
+        if (pendingId) {
+            // Submit only fields present in this editor. Hidden/absent sections
+            // must not erase factories, production dates or finance values.
+            if (!form.querySelector('#factoryCards')) {
+                for (const key of [
+                    'factoryId',
+                    'factoryIds',
+                    'factoryName',
+                    'factories',
+                    'productCategory',
+                    'productName',
+                    'quantity',
+                    'unit'
+                ]) {
+                    delete data[key];
+                }
+            }
+            for (const key of ['expectedShipDate', 'actualShipDate', 'paymentTerms', 'overseasPort']) {
+                if (!fd.has(key) && !form.querySelector('#factoryCards')) delete data[key];
+            }
+            if (!Auth.canSeeFinancials()) {
+                for (const key of [
+                    'factoryCostRMB',
+                    'freightCostUSD',
+                    'insuranceCostUSD',
+                    'otherCostUSD',
+                    'factoryPaidStatus',
+                    'factoryPaidRMB'
+                ]) {
+                    delete data[key];
+                }
+            }
+        }
 
-        if (orderId) {
-            const updated = DB.updateOrder(orderId, data);
+        if (pendingId) {
+            const pendingOrder = DB.getOrder(pendingId);
+            if (!orderId && !data.companyOperationNo) data.companyOperationNo = pendingOrder?.companyOperationNo || '';
+            const updated = DB.updateOrder(pendingId, data);
             if (!updated) {
-                App.toast('⚠️ 订单不存在，无法更新', 'error');
+                App.toast('⚠️ 订单未更新，请检查操作单号或权限提示', 'error');
                 return;
             }
         } else {
             const newOrder = DB.addOrder(data);
             if (!newOrder) {
-                App.toast('⚠️ 订单创建失败，请检查必填字段', 'error');
+                App.toast('⚠️ 订单未创建，请检查必填项、重复单号与权限', 'error');
                 return;
             }
+            form.dataset.pendingRecordId = newOrder.id;
         }
 
         const ok = await DB.flush();
@@ -1119,9 +1181,17 @@ const Orders = {
         }
 
         const fd = new FormData(event.target);
-        const amount = parseFloat(fd.get('amount')) || 0;
+        const amount = Number(fd.get('amount'));
+        if (!Number.isFinite(amount) || amount <= 0) {
+            App.toast('本次收款必须是大于 0 的有效金额', 'error');
+            return;
+        }
         const status = fd.get('paymentStatus');
         const order = DB.getOrder(orderId);
+        if (!order) {
+            App.toast('⚠️ 订单不存在，无法更新', 'error');
+            return;
+        }
         const newPaid = order.paidAmountUSD + amount;
         const updated = DB.updateOrder(orderId, { paidAmountUSD: newPaid, paymentStatus: status });
         if (!updated) {
@@ -1159,13 +1229,27 @@ const Orders = {
     },
 
     exportExcel() {
-        const orders = DB.getOrders(this.currentFilter);
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
-        const cc = isHK ? 'USD' : 'RMB';
+        const orders = DB.getOrders(this.currentFilter).map(order => {
+            const financials = Exchange.getOrderFinancials(order);
+            const domestic = financials.currency === 'CNY';
+            const legacy = financials.policy === 'grandware-v40';
+            return {
+                ...order,
+                settlementCurrency: financials.currency,
+                formulaPolicy: financials.policy,
+                feeCurrency: domestic && legacy ? 'CNY' : 'USD',
+                insuranceUnit: domestic && legacy ? '%' : 'USD'
+            };
+        });
         const headers = [
             'id',
             'customerOrderNo',
             'companyOperationNo',
+            'companyId',
+            'settlementCurrency',
+            'formulaPolicy',
+            'feeCurrency',
+            'insuranceUnit',
             'customerName',
             'contactPerson',
             'productName',
@@ -1193,6 +1277,11 @@ const Orders = {
             id: '订单号',
             customerOrderNo: '客户订单号',
             companyOperationNo: '公司操作单号',
+            companyId: '法人主体ID',
+            settlementCurrency: '结算币种',
+            formulaPolicy: '核算公式版本',
+            feeCurrency: '货代/其他费用币种',
+            insuranceUnit: '退税率/保险费单位',
             customerName: '客户',
             contactPerson: '联系人',
             productName: '产品',
@@ -1200,12 +1289,12 @@ const Orders = {
             expectedShipDate: '预计出运',
             actualShipDate: '实际出运',
             orderAmountUSD: '订单金额(USD)',
-            orderAmountRMB: `订单金额(${cc})`,
-            factoryCostRMB: `工厂成本(${cc})`,
-            freightCostUSD: `运费(${cc})`,
-            insuranceCostUSD: `保险费(${cc})`,
-            otherCostUSD: `其他费用(${cc})`,
-            profitRMB: `利润(${cc})`,
+            orderAmountRMB: '结算收入(结算币种)',
+            factoryCostRMB: '工厂成本(结算币种)',
+            freightCostUSD: '货代/运费(费用币种)',
+            insuranceCostUSD: '退税率/保险费(原始值)',
+            otherCostUSD: '其他费用(费用币种)',
+            profitRMB: '利润(结算币种)',
             profitRate: '利润率(%)',
             paymentStatus: '收款状态',
             paidAmountUSD: '已收款(USD)',
@@ -1216,13 +1305,26 @@ const Orders = {
             destinationPort: '目的港',
             overseasPort: '海外港口'
         };
-        App.exportExcel(orders, '订单列表_' + new Date().toISOString().split('T')[0] + '.xlsx', headers, labels);
+        const financialHeaders = new Set([
+            'factoryCostRMB',
+            'freightCostUSD',
+            'insuranceCostUSD',
+            'otherCostUSD',
+            'profitRMB',
+            'profitRate',
+            'factoryPaidStatus'
+        ]);
+        const visibleHeaders = Auth.canSeeFinancials()
+            ? headers
+            : headers.filter(header => !financialHeaders.has(header));
+        App.exportExcel(orders, '订单列表_' + new Date().toISOString().split('T')[0] + '.xlsx', visibleHeaders, labels);
     },
 
     // ==================== Excel导入 ====================
 
     downloadTemplate() {
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
+        const isHK = !Exchange.isDomestic(DB.currentCompanyId);
+        const legacyRmbFees = !isHK && DB.getCurrentCompany()?.profitPolicy === 'grandware-v40';
         const costLabel = isHK ? '工厂成本(USD)' : '工厂成本(RMB)';
         const headers = [
             '客户',
@@ -1230,9 +1332,9 @@ const Orders = {
             '下单日期',
             '订单金额(USD)',
             costLabel,
-            '运费(USD)',
-            '保险费(USD)',
-            '其他费用(USD)',
+            legacyRmbFees ? '货代费(RMB)' : '运费(USD)',
+            legacyRmbFees ? '退税率(%)' : '保险费(USD)',
+            legacyRmbFees ? '其他费用(RMB)' : '其他费用(USD)',
             '起运港',
             '海外港口',
             '收款状态',
@@ -1250,7 +1352,7 @@ const Orders = {
             '50000.00',
             '35000.00',
             '1500.00',
-            '300.00',
+            legacyRmbFees ? '13' : '300.00',
             '200.00',
             '上海港',
             'Los Angeles',
@@ -1404,7 +1506,7 @@ const Orders = {
                         <option value="已签收">已签收</option>
                     </select>
                 </div>
-                <input type="hidden" name="batchIds" value="${ids.join(',')}">
+                <input type="hidden" name="batchIds" value="${App.escapeHtml(ids.join(','))}">
             </form>
         `;
         App.showModal('批量修改状态', bodyHtml, {

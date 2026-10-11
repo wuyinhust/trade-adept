@@ -180,7 +180,7 @@ const DB = {
     },
 
     async init() {
-        this.currentCompanyId = sessionStorage.getItem(this.COMPANY_KEY) || this.companies[0].id;
+        this.currentCompanyId = sessionStorage.getItem(this.COMPANY_KEY) || this.companies[0]?.id;
         // ★ 校正：如果当前公司对登录用户不可见（如单证员可见公司不含默认的 CO-GR），
         // 自动切换到第一个可见公司，否则新建的数据会因公司过滤而“消失”
         const visibleIds = Auth.getVisibleCompanyIds();
@@ -208,6 +208,7 @@ const DB = {
     },
 
     async _doInit() {
+        if (this._businessAPI) return this._initFromBusinessAPI();
         // Step 1: 连接 CloudBase
         console.log('[DB] 正在连接 CloudBase...');
         const cloudInit = await Cloud.init();
@@ -224,7 +225,10 @@ const DB = {
             } else {
                 console.warn('[DB] 数据库权限测试失败:', permTest.reason);
                 this._initError = permTest.reason || '数据库权限测试失败';
-                App.updateSaveStatus('error', '云端权限测试失败: ' + (permTest.reason || '请检查 CloudBase 数据库权限'));
+                App.updateSaveStatus(
+                    'error',
+                    '云端权限测试失败: ' + (permTest.reason || '请检查 CloudBase 数据库权限')
+                );
             }
         } else {
             console.error('[DB] CloudBase 连接失败:', (cloudInit || {}).message);
@@ -259,59 +263,61 @@ const DB = {
                     (cloudData.meta || {}).updatedBy
                 );
 
-                // ★ 修复 HK 公司利润数据（v45 之前旧代码错误地乘了汇率）
-                let hkFixed = 0;
-                (this.data.orders || []).forEach(o => {
-                    const isHK = o.companyId === 'CO-GW' || o.companyId === 'CO-LK';
-                    if (!isHK || o.orderAmountUSD <= 0) return;
-                    // HK 公司：利润 = 订单金额 - 工厂成本 - 其他费用（全部美金，不乘汇率）
-                    const correctProfit = o.orderAmountUSD - o.factoryCostRMB - (o.otherCostUSD || 0);
-                    const correctOrderAmountRMB = o.orderAmountUSD;
-                    const correctProfitRate = o.orderAmountUSD > 0
-                        ? Math.round((correctProfit / o.orderAmountUSD) * 10000) / 100
-                        : 0;
-                    // 检测是否被旧代码污染（profitRMB 异常地大，接近 orderAmountUSD * 6+）
-                    const isCorrupted = o.profitRMB > o.orderAmountUSD * 2 || Math.abs(o.profitRMB - correctProfit) > 1;
-                    if (isCorrupted || Math.abs(o.orderAmountRMB - correctOrderAmountRMB) > 1) {
-                        o.profitRMB = Math.round(correctProfit * 100) / 100;
-                        o.orderAmountRMB = Math.round(correctOrderAmountRMB * 100) / 100;
-                        o.profitRate = correctProfitRate;
-                        hkFixed++;
+                if (!this._preserveImportedValues) {
+                    // ★ 修复 HK 公司利润数据（v45 之前旧代码错误地乘了汇率）
+                    let hkFixed = 0;
+                    (this.data.orders || []).forEach(o => {
+                        const isHK = o.companyId === 'CO-GW' || o.companyId === 'CO-LK';
+                        if (!isHK || o.orderAmountUSD <= 0) return;
+                        // HK 公司：利润 = 订单金额 - 工厂成本 - 其他费用（全部美金，不乘汇率）
+                        const correctProfit = o.orderAmountUSD - o.factoryCostRMB - (o.otherCostUSD || 0);
+                        const correctOrderAmountRMB = o.orderAmountUSD;
+                        const correctProfitRate =
+                            o.orderAmountUSD > 0 ? Math.round((correctProfit / o.orderAmountUSD) * 10000) / 100 : 0;
+                        // 检测是否被旧代码污染（profitRMB 异常地大，接近 orderAmountUSD * 6+）
+                        const isCorrupted =
+                            o.profitRMB > o.orderAmountUSD * 2 || Math.abs(o.profitRMB - correctProfit) > 1;
+                        if (isCorrupted || Math.abs(o.orderAmountRMB - correctOrderAmountRMB) > 1) {
+                            o.profitRMB = Math.round(correctProfit * 100) / 100;
+                            o.orderAmountRMB = Math.round(correctOrderAmountRMB * 100) / 100;
+                            o.profitRate = correctProfitRate;
+                            hkFixed++;
+                        }
+                    });
+                    if (hkFixed > 0) {
+                        console.log('[DB] 已修正 ' + hkFixed + ' 笔 HK 公司订单利润数据（旧代码汇率污染）');
+                        this._migrated = true; // 标记需要保存
                     }
-                });
-                if (hkFixed > 0) {
-                    console.log('[DB] 已修正 ' + hkFixed + ' 笔 HK 公司订单利润数据（旧代码汇率污染）');
-                    this._migrated = true; // 标记需要保存
-                }
 
-                // ★ 迁移客户数据：确保旧数据有 contacts 数组
-                this.migrateCustomerData();
+                    // ★ 迁移客户数据：确保旧数据有 contacts 数组
+                    this.migrateCustomerData();
 
-                // ★ v55 迁移：为老数据补齐归属字段（salespersonId）
-                // 权限过滤按 salespersonId 判断可见性，老数据缺失该字段会导致
-                // "只有 admin 能看到、其他账号看不到"的问题
-                let migOrders = 0;
-                (this.data.orders || []).forEach(o => {
-                    if (!o.salespersonId && o.createdBy) {
-                        o.salespersonId = o.createdBy;
-                        migOrders++;
+                    // ★ v55 迁移：为老数据补齐归属字段（salespersonId）
+                    // 权限过滤按 salespersonId 判断可见性，老数据缺失该字段会导致
+                    // "只有 admin 能看到、其他账号看不到"的问题
+                    let migOrders = 0;
+                    (this.data.orders || []).forEach(o => {
+                        if (!o.salespersonId && o.createdBy) {
+                            o.salespersonId = o.createdBy;
+                            migOrders++;
+                        }
+                    });
+                    // 客户：仅当创建者是业务员角色时才回填（避免把 document/manager 创建的客户
+                    // 从"经理可见的无归属客户"变成"团队外归属"）
+                    const salespersonIds = new Set(
+                        (Auth.users || []).filter(u => u.role === 'salesperson').map(u => u.id)
+                    );
+                    let migCustomers = 0;
+                    (this.data.customers || []).forEach(c => {
+                        if (!c.salespersonId && c.createdBy && salespersonIds.has(c.createdBy)) {
+                            c.salespersonId = c.createdBy;
+                            migCustomers++;
+                        }
+                    });
+                    if (migOrders + migCustomers > 0) {
+                        this._migrated = true; // Step 4 会保存到云端
+                        console.log('[DB] 数据迁移：订单归属回填', migOrders, '条，客户归属回填', migCustomers, '条');
                     }
-                });
-                // 客户：仅当创建者是业务员角色时才回填（避免把 document/manager 创建的客户
-                // 从"经理可见的无归属客户"变成"团队外归属"）
-                const salespersonIds = new Set(
-                    (Auth.users || []).filter(u => u.role === 'salesperson').map(u => u.id)
-                );
-                let migCustomers = 0;
-                (this.data.customers || []).forEach(c => {
-                    if (!c.salespersonId && c.createdBy && salespersonIds.has(c.createdBy)) {
-                        c.salespersonId = c.createdBy;
-                        migCustomers++;
-                    }
-                });
-                if (migOrders + migCustomers > 0) {
-                    this._migrated = true; // Step 4 会保存到云端
-                    console.log('[DB] 数据迁移：订单归属回填', migOrders, '条，客户归属回填', migCustomers, '条');
                 }
             } else {
                 console.warn('[DB] 云端无数据或加载失败，使用空白数据开始');
@@ -330,17 +336,12 @@ const DB = {
             if (this._cloudReady) {
                 // 云端可用，立即将合并后的数据存回云端
                 this._backupToLocal();
-                this._doCloudSave().then(() => {
-                    this._clearLocalBackup();
-                });
+                this._doCloudSave();
             } else {
                 // 云端不可用，保留 localStorage 备份，下次启动时再同步
                 console.log('[DB] 云端不可用，保留 localStorage 备份');
             }
-        } else if (this._cloudReady) {
-            // 云端数据是最新的，清除过期备份
-            this._clearLocalBackup();
-        }
+        } // Unrecognized drafts remain available; failed recovery is not proof of obsolescence.
 
         // Step 4: 启动后台轮询
         if (this._cloudReady) {
@@ -404,6 +405,13 @@ const DB = {
     },
 
     async _checkRemoteUpdates() {
+        if (
+            this._saveConflict ||
+            (this._businessAPI && document.querySelector('#modalContainer .modal-overlay')) ||
+            (this._businessAPI && this._businessAPI.hasChanges(this.data, this.exchangeRates, this.rateMetas))
+        ) {
+            return;
+        }
         if (!this._cloudReady) return;
 
         // ★ 最近 3 秒内刚保存过，跳过轮询（避免 CloudBase 读写延迟导致读到旧数据）
@@ -435,6 +443,18 @@ const DB = {
 
                 const result = await Cloud.loadData();
                 if (result && result.data) {
+                    if (this._businessAPI) {
+                        // An authorized empty collection is a legitimate deletion or scope change.
+                        this.data = result.data;
+                        this.exchangeRates = result.exchangeRates || {};
+                        this.rateMetas = result.rateMetas || {};
+                        this._cloudVersion = result.meta.version;
+                        this._cloudUpdatedAt = result.meta.updatedAt;
+                        this._businessAPI.bindWorkingData(this.data, this.exchangeRates, this.rateMetas);
+                        App.updateExchangeRateDisplay();
+                        await App.router();
+                        return;
+                    }
                     const oldOrders = this.data.orders.length;
                     const oldFactories = this.data.factories.length;
                     const oldCustomers = this.data.customers.length;
@@ -475,27 +495,40 @@ const DB = {
                         const newActiveFactories = (result.data.factories || []).filter(f => !f.deleted).length;
 
                         if (oldActiveOrders > newActiveOrders) {
-                            console.warn('[DB] 轮询安全保护：本地有', oldActiveOrders,
-                                '个活跃订单，云端只有', newActiveOrders,
-                                '个，且最近有保存操作，跳过本次同步（可能是读写延迟）');
+                            console.warn(
+                                '[DB] 轮询安全保护：本地有',
+                                oldActiveOrders,
+                                '个活跃订单，云端只有',
+                                newActiveOrders,
+                                '个，且最近有保存操作，跳过本次同步（可能是读写延迟）'
+                            );
                             return;
                         }
                         if (oldActiveCustomers > newActiveCustomers) {
-                            console.warn('[DB] 轮询安全保护：本地有', oldActiveCustomers,
-                                '个活跃客户，云端只有', newActiveCustomers,
-                                '个，且最近有保存操作，跳过本次同步（可能是读写延迟）');
+                            console.warn(
+                                '[DB] 轮询安全保护：本地有',
+                                oldActiveCustomers,
+                                '个活跃客户，云端只有',
+                                newActiveCustomers,
+                                '个，且最近有保存操作，跳过本次同步（可能是读写延迟）'
+                            );
                             return;
                         }
                         if (oldActiveFactories > newActiveFactories) {
-                            console.warn('[DB] 轮询安全保护：本地有', oldActiveFactories,
-                                '个活跃工厂，云端只有', newActiveFactories,
-                                '个，且最近有保存操作，跳过本次同步（可能是读写延迟）');
+                            console.warn(
+                                '[DB] 轮询安全保护：本地有',
+                                oldActiveFactories,
+                                '个活跃工厂，云端只有',
+                                newActiveFactories,
+                                '个，且最近有保存操作，跳过本次同步（可能是读写延迟）'
+                            );
                             return;
                         }
                     }
 
                     this.data = result.data;
                     this._applyExchangeData(result);
+                    this._businessAPI?.bindWorkingData(this.data, this.exchangeRates, this.rateMetas);
                     if (result.meta) {
                         this._cloudVersion = result.meta.version || 0;
                         this._cloudUpdatedAt = result.meta.updatedAt || null;
@@ -527,17 +560,82 @@ const DB = {
         }
     },
 
+    async _initFromBusinessAPI() {
+        const result = await Cloud.loadData();
+        if (!result?.data) throw new Error('数据库未返回有效业务数据');
+        this.data = result.data;
+        this.exchangeRates = result.exchangeRates || {};
+        this.rateMetas = result.rateMetas || {};
+        this._cloudVersion = result.meta.version;
+        this._cloudUpdatedAt = result.meta.updatedAt;
+        this._cloudConnected = this._cloudReady = true;
+        this._saveConflict = false;
+        this._draftBaseVersion = undefined;
+        const raw = localStorage.getItem(this._BACKUP_KEY);
+        if (raw) {
+            try {
+                const draft = JSON.parse(raw);
+                if (
+                    draft.tenantId === Auth.currentUser?.tenantId &&
+                    draft.actorId === Auth.currentUser?.id &&
+                    draft.data
+                ) {
+                    this.data = draft.data;
+                    this.exchangeRates = draft.exchangeRates;
+                    this.rateMetas = draft.rateMetas;
+                    if (draft.conflict || draft.baseVersion !== this._cloudVersion) {
+                        this._draftBaseVersion = draft.baseVersion;
+                        this._handleSaveFailure({ code: 'CONFLICT' });
+                    } else toast('已恢复当前账号的未保存草稿，请检查后保存', 'info');
+                }
+            } catch (_) {
+                toast('草稿格式无效，已保留原备份', 'warning');
+            }
+        }
+        this._businessAPI.bindWorkingData(this.data, this.exchangeRates, this.rateMetas);
+        this._startPolling();
+        return true;
+    },
+
+    _handleSaveFailure(error) {
+        if (error?.code === 'CONFLICT') {
+            this._draftBaseVersion ??= this._cloudVersion;
+            this._saveConflict = true;
+            this._backupToLocal();
+            App.updateSaveStatus('error', '版本冲突，修改尚未保存');
+            this.onSaveConflict?.();
+            toast('其他人已保存新版本；本次修改已保留为草稿', 'warning', 8000);
+        } else App.updateSaveStatus('error', error?.message || '保存失败，草稿已保留');
+    },
+
     // ==================== localStorage 安全网 ====================
     _BACKUP_KEY: 'gw_local_backup',
+    _draftSequence: 0,
+    _saveConflict: false,
 
     /** 将当前数据立即写入 localStorage（同步，刷新不丢） */
     _backupToLocal() {
+        if (
+            this._businessAPI &&
+            !this._saveConflict &&
+            !this._businessAPI.hasChanges(this.data, this.exchangeRates, this.rateMetas)
+        ) {
+            return;
+        }
         try {
             const backup = {
                 data: this.data,
                 exchangeRates: this.exchangeRates,
                 rateMetas: this.rateMetas,
-                savedAt: new Date().toISOString()
+                savedAt: new Date().toISOString(),
+                backupId: `${Date.now()}-${++this._draftSequence}`,
+                baseVersion:
+                    this._saveConflict && this._draftBaseVersion !== undefined
+                        ? this._draftBaseVersion
+                        : this._cloudVersion,
+                conflict: this._saveConflict,
+                actorId: Auth.currentUser?.id,
+                tenantId: Auth.currentUser?.tenantId
             };
             localStorage.setItem(this._BACKUP_KEY, JSON.stringify(backup));
         } catch (e) {
@@ -546,8 +644,9 @@ const DB = {
     },
 
     /** 清除 localStorage 备份（云端保存成功后调用） */
-    _clearLocalBackup() {
+    _clearLocalBackup(expectedBackup) {
         try {
+            if (expectedBackup !== undefined && localStorage.getItem(this._BACKUP_KEY) !== expectedBackup) return;
             localStorage.removeItem(this._BACKUP_KEY);
         } catch (_) {}
     },
@@ -644,6 +743,8 @@ const DB = {
     },
 
     async _doCloudSave() {
+        if (this._saveConflict) return false;
+        const acknowledgedBackup = localStorage.getItem(this._BACKUP_KEY);
         if (!this._cloudReady) {
             console.warn('[DB] CloudBase 不可用，数据未保存到云端');
             App.updateSaveStatus('error', '云端未连接，数据未保存');
@@ -657,12 +758,12 @@ const DB = {
                 this._cloudVersion = meta.version || 0;
                 this._cloudUpdatedAt = meta.updatedAt || null;
                 this._lastSaveTime = Date.now(); // 用于轮询保护
-                this._clearLocalBackup(); // ★ 云端已保存，清除本地备份
+                this._clearLocalBackup(acknowledgedBackup); // Only this acknowledged draft may be removed
             }
             return ok;
         } catch (e) {
             console.error('[DB] 云端保存异常:', e);
-            App.updateSaveStatus('error', '云端保存失败');
+            this._handleSaveFailure(e);
             return false;
         }
     },
@@ -673,6 +774,7 @@ const DB = {
      * @returns {Promise<boolean>} 是否保存成功
      */
     async flush() {
+        if (this._saveConflict) return false;
         this._backupToLocal(); // ★ 先同步写 localStorage
         if (!this._cloudReady) {
             console.warn('[DB] flush: CloudBase 未连接');
@@ -685,6 +787,7 @@ const DB = {
             await Cloud._drainQueue();
         } catch (_) {}
 
+        const acknowledgedBackup = localStorage.getItem(this._BACKUP_KEY);
         try {
             const ok = await Cloud.saveData(this.data, this.exchangeRates, this.rateMetas, { keepalive: true });
             if (ok) {
@@ -694,20 +797,27 @@ const DB = {
                 this._cloudVersion = meta.version || 0;
                 this._cloudUpdatedAt = meta.updatedAt || null;
                 this._lastSaveTime = Date.now();
-                this._clearLocalBackup(); // ★ 云端已保存，清除本地备份
+                this._clearLocalBackup(acknowledgedBackup); // Only this acknowledged draft may be removed
             } else {
                 App.updateSaveStatus('error', '保存失败');
             }
             return ok;
         } catch (e) {
             console.error('[DB] flush 异常:', e);
-            App.updateSaveStatus('error', '保存失败');
+            this._handleSaveFailure(e);
             return false;
         }
     },
 
     /** 手动从云端刷新 */
     async refreshFromCloud() {
+        if (
+            this._saveConflict ||
+            (this._businessAPI && document.querySelector('#modalContainer .modal-overlay')) ||
+            (this._businessAPI && this._businessAPI.hasChanges(this.data, this.exchangeRates, this.rateMetas))
+        ) {
+            return { ok: false, message: '请先保存修改，或在冲突提示中下载草稿并明确放弃后重载' };
+        }
         if (!this._cloudReady) return { ok: false, message: 'CloudBase 未连接' };
 
         const result = await Cloud.loadData();
@@ -734,6 +844,7 @@ const DB = {
                 this._cloudVersion = result.meta.version || 0;
                 this._cloudUpdatedAt = result.meta.updatedAt || null;
             }
+            this._businessAPI?.bindWorkingData(this.data, this.exchangeRates, this.rateMetas);
             console.log('[DB] 手动刷新完成 v' + this._cloudVersion);
             return { ok: true, meta: result.meta };
         }
@@ -907,14 +1018,15 @@ const DB = {
         return Exchange.isDomestic(companyId);
     },
 
-    calcOrderProfit(orderAmountUSD, factoryCostRMB, freightCostUSD, insuranceCostUSD, otherCostUSD, companyId) {
+    calcOrderProfit(orderAmountUSD, factoryCostRMB, freightCostUSD, insuranceCostUSD, otherCostUSD, companyId, policy) {
         return Exchange.calcOrderProfit(
             orderAmountUSD,
             factoryCostRMB,
             freightCostUSD,
             insuranceCostUSD,
             otherCostUSD,
-            companyId
+            companyId,
+            policy
         );
     },
 
@@ -928,7 +1040,8 @@ const DB = {
             order.freightCostUSD,
             order.insuranceCostUSD,
             order.otherCostUSD,
-            order.companyId
+            order.companyId,
+            order.formulaVersion
         );
         // HK 公司全部美金交易，orderAmountRMB = orderAmountUSD（不乘汇率）
         const totalRevenueRMB = isHK ? order.orderAmountUSD : order.orderAmountUSD * rate;
@@ -1054,13 +1167,14 @@ const DB = {
 
     generateCompanyOperationNo(companyId, salespersonId) {
         const prefixMap = { 'CO-GR': 'GR', 'CO-WY': 'WY' };
-        const prefix = prefixMap[companyId] || 'OP';
+        const company = this.companies.find(c => String(c.id) === String(companyId));
+        const prefix = company?.orderPrefix || prefixMap[companyId] || 'OP';
         const yearSuffix = String(new Date().getFullYear()).slice(2);
-        const salesperson = (Auth.users || []).find(u => u.id === salespersonId) || Auth.currentUser;
+        const salesperson = (Auth.users || []).find(u => String(u.id) === String(salespersonId)) || Auth.currentUser;
         const initial = salesperson ? (salesperson.name || '?').charAt(0).toUpperCase() : '?';
         const pattern = prefix + yearSuffix + initial;
         const existing = this.data.orders
-            .filter(o => o.companyId === companyId && (o.companyOperationNo || '').startsWith(pattern))
+            .filter(o => String(o.companyId) === String(companyId) && (o.companyOperationNo || '').startsWith(pattern))
             .map(o => parseInt((o.companyOperationNo || '').slice(pattern.length)) || 0);
         const nextSeq = existing.length > 0 ? Math.max(...existing) + 1 : 1;
         return pattern + String(nextSeq).padStart(3, '0');
@@ -1073,22 +1187,37 @@ const DB = {
      * @throws {Error} 必填字段缺失或订单金额无效时抛出
      */
     addOrder(order) {
+        order.companyId = order.companyId || this._getEffectiveCompanyId();
+        order.createdBy = Auth.currentUser ? Auth.currentUser.id : null;
+        order.salespersonId = order.salespersonId || order.createdBy;
+        order.companyOperationNo =
+            String(order.companyOperationNo || '').trim() ||
+            this.generateCompanyOperationNo(order.companyId, order.salespersonId);
         // 输入验证
         const missing = validate.required(order, ['customerId', 'companyOperationNo']);
         if (missing) {
             toast(`请填写必填字段：${missing}`, 'warning');
             return null;
         }
-        if (!order.orderAmountUSD || order.orderAmountUSD <= 0) {
+        if (!Number.isFinite(Number(order.orderAmountUSD)) || Number(order.orderAmountUSD) <= 0) {
             toast('订单金额(USD) 必须大于 0', 'warning');
             return null;
         }
-        order.id = order.companyOperationNo;
-        order.companyId = order.companyId || this._getEffectiveCompanyId();
-        order.createdBy = order.createdBy || (Auth.currentUser ? Auth.currentUser.id : null);
-        order.salespersonId = order.salespersonId || (Auth.currentUser ? Auth.currentUser.id : 'U005');
-        order.companyOperationNo =
-            order.companyOperationNo || this.generateCompanyOperationNo(order.companyId, order.salespersonId);
+        const duplicate = this.data.orders.some(
+            o =>
+                String(o.companyId) === String(order.companyId) &&
+                String(o.companyOperationNo || '')
+                    .trim()
+                    .toUpperCase() === order.companyOperationNo.toUpperCase()
+        );
+        if (duplicate) {
+            toast('公司操作单号已存在（含已删除订单），请更换单号', 'warning');
+            return null;
+        }
+        // Separate immutable identity from editable business numbering. Existing
+        // records keep their historical IDs; the server enforces uniqueness too.
+        order.id = 'ORD-' + crypto.randomUUID();
+        order.orderAmountUSD = Number(order.orderAmountUSD);
         order.createdAt = new Date().toISOString();
         this._applyProfitFields(order);
         this.data.orders.unshift(order);
@@ -1101,8 +1230,68 @@ const DB = {
     updateOrder(id, updates) {
         const idx = this.data.orders.findIndex(o => String(o.id) === String(id));
         if (idx >= 0) {
-            const merged = { ...this.data.orders[idx], ...updates };
-            this._applyProfitFields(merged);
+            const current = this.data.orders[idx];
+            if (current.deleted) return null;
+            const patch = { ...updates };
+            // Identity and legal entity cannot be changed by an edit form.
+            for (const key of ['id', 'companyId', 'createdBy', 'createdAt']) delete patch[key];
+            const canSeeFinancials = typeof Auth.canSeeFinancials !== 'function' || Auth.canSeeFinancials();
+            if (!canSeeFinancials) {
+                for (const key of [
+                    'factoryCostRMB',
+                    'freightCostUSD',
+                    'insuranceCostUSD',
+                    'otherCostUSD',
+                    'factoryPaidRMB',
+                    'factoryPaidStatus',
+                    'orderAmountRMB',
+                    'profitRMB',
+                    'profitRate'
+                ]) {
+                    delete patch[key];
+                }
+            }
+            if ('orderAmountUSD' in patch) {
+                if (!Number.isFinite(Number(patch.orderAmountUSD)) || Number(patch.orderAmountUSD) <= 0) {
+                    toast('订单金额(USD) 必须大于 0', 'warning');
+                    return null;
+                }
+                patch.orderAmountUSD = Number(patch.orderAmountUSD);
+            }
+            if ('companyOperationNo' in patch) {
+                patch.companyOperationNo = String(patch.companyOperationNo || '').trim();
+                if (
+                    !patch.companyOperationNo ||
+                    this.data.orders.some(
+                        (o, i) =>
+                            i !== idx &&
+                            String(o.companyId) === String(current.companyId) &&
+                            String(o.companyOperationNo || '')
+                                .trim()
+                                .toUpperCase() === patch.companyOperationNo.toUpperCase()
+                    )
+                ) {
+                    toast('公司操作单号不能为空或与已有订单重复', 'warning');
+                    return null;
+                }
+            }
+            const merged = { ...current, ...patch, updatedAt: new Date().toISOString() };
+            const numericFinanceInputs = [
+                'orderAmountUSD',
+                'exchangeRate',
+                'factoryCostRMB',
+                'freightCostUSD',
+                'insuranceCostUSD',
+                'otherCostUSD'
+            ];
+            const financeChanged =
+                numericFinanceInputs.some(
+                    key => Object.hasOwn(patch, key) && Number(patch[key] ?? 0) !== Number(current[key] ?? 0)
+                ) ||
+                (Object.hasOwn(patch, 'formulaVersion') && patch.formulaVersion !== current.formulaVersion);
+            if (canSeeFinancials && (!this._preserveImportedValues || financeChanged)) {
+                this._applyProfitFields(merged);
+            }
             this.data.orders[idx] = merged;
             this._backupToLocal();
             // ★ 不在此处 flush，由调用方显式 flush
@@ -1448,7 +1637,7 @@ const DB = {
         factory.mobilePhone = data.mobilePhone || '';
         factory.products = data.products || '';
         factory.address = data.address || '';
-        factory.bankInfo = data.bankInfo || '';
+        if (Object.hasOwn(data, 'bankInfo')) factory.bankInfo = data.bankInfo || '';
         this._backupToLocal();
         // ★ 不在此处 flush，由调用方显式 flush
         return factory;

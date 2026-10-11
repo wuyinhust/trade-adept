@@ -1,0 +1,17 @@
+{
+    "exportSha256": "931c75b7c003ced61449d39e6cd136dfbef3333cc181ecd660598849a6b7ba0f",
+    "source": "archived merged application export; not raw database history",
+    "tenant": "grandware",
+    "revision": 1,
+    "records": {
+        "customers": 13,
+        "factories": 33,
+        "orders": 21,
+        "shipments": 0,
+        "invoices": 0
+    },
+    "originalBusinessFieldsUnchanged": true,
+    "exchangeRatesUnchanged": true,
+    "addedField": "tenantId",
+    "productionDatabaseAccess": false
+}

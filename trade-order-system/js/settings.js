@@ -59,13 +59,15 @@ const Settings = {
                         </div>
                         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
                             <button class="btn btn-sm btn-secondary" onclick="Settings.refreshCloudNow()">🔄 手动刷新云端数据</button>
-                            <button class="btn btn-sm btn-secondary" onclick="Settings.reconnectCloudNow()">🔌 重新连接 CloudBase</button>
-                            <button class="btn btn-sm btn-secondary" onclick="Settings.runFullDiagnose()">🧪 完整诊断</button>
+                            <button class="btn btn-sm btn-secondary" onclick="Settings.reconnectCloudNow(event)">🔌 重新连接 CloudBase</button>
+                            <button class="btn btn-sm btn-secondary" onclick="Settings.runFullDiagnose(event)">🧪 完整诊断</button>
                         </div>
                     </div>
                 </div>
 
-                ${Auth.canSeeAll() ? `
+                ${
+                    Auth.canSeeAll()
+                        ? `
                 <div class="card mb-6">
                     <div class="card-header">
                         <span class="card-title">🔍 数据可见性体检</span>
@@ -76,11 +78,13 @@ const Settings = {
                             统计数据在「公司归属 / 业务员归属」维度下的分布。若某账号登录后看不到数据，
                             通常是数据归属不在其可见范围（B组：为语+Grandware HK；订单还需匹配团队业务员）。
                         </p>
-                        <button class="btn btn-sm btn-primary" onclick="Settings.runVisibilityDiag()">📊 生成体检报告</button>
+                        <button class="btn btn-sm btn-primary" onclick="Settings.runVisibilityDiag(event)">📊 生成体检报告</button>
                         <div id="visibilityDiagResult" class="mt-3" style="font-size:13px"></div>
                     </div>
                 </div>
-                ` : ''}
+                `
+                        : ''
+                }
 
                 <div class="card mb-6">
                     <div class="card-header">
@@ -128,7 +132,7 @@ const Settings = {
                         <div style="display:flex;gap:8px;flex-wrap:wrap">
                             <button class="btn btn-primary" onclick="Settings.saveManualConfig()">💾 保存并重新连接</button>
                             <button class="btn btn-secondary" onclick="Settings.clearManualConfig()">🗑️ 恢复默认配置</button>
-                            <button class="btn btn-secondary" onclick="Settings.testManualConfig()">🧪 测试当前配置</button>
+                            <button class="btn btn-secondary" onclick="Settings.testManualConfig(event)">🧪 测试当前配置</button>
                         </div>
                     </div>
                 </div>
@@ -407,7 +411,12 @@ const Settings = {
                 3. 如果本地测试，添加 <code>localhost</code> 或 <code>127.0.0.1</code><br>
                 4. 刷新页面后再试
             </div>`;
-        } else if (err.includes('permission') || err.includes('权限') || err.includes('PERMISSION') || err.includes('Unauthorized')) {
+        } else if (
+            err.includes('permission') ||
+            err.includes('权限') ||
+            err.includes('PERMISSION') ||
+            err.includes('Unauthorized')
+        ) {
             html += `<div style="margin-top:8px;padding:10px;background:#fff3cd;border-radius:6px;font-size:12px;color:#856404">
                 <strong>💡 排查建议（数据库权限不足）：</strong><br>
                 1. 登录 <a href="https://console.cloud.tencent.com/tcb" target="_blank">CloudBase 控制台</a><br>
@@ -441,7 +450,7 @@ const Settings = {
         setTimeout(() => App.router(), 300);
     },
 
-    async reconnectCloudNow() {
+    async reconnectCloudNow(event) {
         const btn = event?.target;
         if (btn) {
             btn.disabled = true;
@@ -534,7 +543,7 @@ const Settings = {
     /**
      * 测试当前配置（不修改）
      */
-    async testManualConfig() {
+    async testManualConfig(event) {
         const btn = event?.target;
         if (btn) {
             btn.disabled = true;
@@ -581,7 +590,7 @@ const Settings = {
     /**
      * 运行完整诊断（在主面板显示）
      */
-    async runFullDiagnose() {
+    async runFullDiagnose(event) {
         const statusDiv = document.getElementById('cloudConfigStatus');
         if (!statusDiv) return;
         const btn = event?.target;
@@ -628,7 +637,7 @@ const Settings = {
      * 数据可见性体检（仅 admin/finance）
      * 调用 DB.diagnoseVisibility() 并在设置页渲染归属分布统计
      */
-    runVisibilityDiag() {
+    runVisibilityDiag(event) {
         const el = document.getElementById('visibilityDiagResult');
         if (!el) return;
         const btn = event?.target;
@@ -668,10 +677,14 @@ const Settings = {
                     ${card('👥 客户 · 按公司', fmt(result.customers.byCompany))}
                     ${card('🏭 工厂（共 ' + result.factories.total + '）· 按公司', fmt(result.factories.byCompany))}
                 </div>
-                ${warnParts.length ? `
+                ${
+                    warnParts.length
+                        ? `
                 <div class="mt-3" style="padding:10px 12px;background:#fff3cd;border-radius:6px;line-height:1.8">
                     ⚠️ <strong>归属异常提醒</strong>：${warnParts.join('；')}。无归属数据可通过编辑详情补上归属字段。
-                </div>` : ''}
+                </div>`
+                        : ''
+                }
                 <div class="mt-2 text-sm" style="color:var(--gray-600)">
                     💡 B组（为语+Grandware HK）仅能看到 CO-WY / CO-GW 归属的工厂与订单；订单还需业务员归属在团队内。
                 </div>

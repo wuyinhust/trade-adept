@@ -1,12 +1,14 @@
+/* global self, caches, fetch */
 /**
  * Grandware@once — Service Worker (PWA)
  * 缓存核心静态资源，支持离线访问
  */
-const CACHE_NAME = 'grandware-v24';
+const CACHE_NAME = 'grandware-design-v1';
 const STATIC_ASSETS = [
     '/',
     '/index.html',
     '/css/style.css',
+    '/css/design-v1.css',
     '/js/cloudbase-sdk.js',
     '/js/constants.js',
     '/js/utils.js',
@@ -15,6 +17,7 @@ const STATIC_ASSETS = [
     '/js/exchange.js',
     '/js/data.js',
     '/js/app.js',
+    '/js/ui.js',
     '/js/dashboard.js',
     '/js/orders.js',
     '/js/order-import.js',

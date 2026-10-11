@@ -1,269 +1,321 @@
-/**
- * 仪表盘模块
- */
-
+/** Workspace overview — presentation-only aggregation, using authorized data. */
 import { App } from './app.js';
 import { DB } from './data.js';
 import { Auth } from './auth.js';
-import { escapeHtml, toast } from './utils.js';
+import { Exchange } from './exchange.js';
+import { escapeHtml } from './utils.js';
+import { icon } from './ui.js';
+
+const metric = (label, value, note) =>
+    '<div class="dashboard-metric"><div class="stat-label">' +
+    escapeHtml(label) +
+    '</div><div class="stat-value">' +
+    escapeHtml(value) +
+    '</div><div class="stat-sub">' +
+    escapeHtml(note) +
+    '</div></div>';
+
+const queue = (label, value, name, href) =>
+    '<a class="queue-item" href="' +
+    href +
+    '"><span class="queue-icon">' +
+    icon(name) +
+    '</span><span class="queue-copy"><strong>' +
+    escapeHtml(value) +
+    '</strong><span>' +
+    escapeHtml(label) +
+    '</span></span>' +
+    icon('arrow') +
+    '</a>';
+
+function progress(label, paid, total, currency, color) {
+    const percentage = total > 0 ? Math.max(0, Math.min(100, (paid / total) * 100)) : 0;
+    return (
+        '<div><div class="progress-label"><span>' +
+        escapeHtml(label) +
+        '</span><strong>' +
+        percentage.toFixed(0) +
+        '%</strong></div><div class="progress-bar" role="progressbar" aria-label="' +
+        escapeHtml(label) +
+        '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' +
+        percentage.toFixed(1) +
+        '"><div class="progress-fill" style="width:' +
+        percentage +
+        '%;background:' +
+        color +
+        '"></div></div><p class="progress-caption">' +
+        App.formatMoney(paid, currency) +
+        ' / ' +
+        App.formatMoney(total, currency) +
+        '</p></div>'
+    );
+}
 
 const Dashboard = {
-    render(container) {
-        const stats = DB.getDashboardStats();
-        const showFinance = Auth.canSeeFinancials();
-        const isDocument = Auth.isDocument();
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
-        const profitCurrency = isHK ? 'USD' : 'CNY';
-        container.innerHTML = `
-            <!-- 统计卡片 -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-card-header">
-                        <div class="stat-icon blue">📋</div>
-                        <span class="stat-trend up">↑ ${stats.activeOrders} 进行中</span>
-                    </div>
-                    <div class="stat-label">订单总数</div>
-                    <div class="stat-value">${stats.totalOrders}</div>
-                    <div class="stat-sub">已出运 ${stats.completedOrders} 单</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-card-header">
-                        <div class="stat-icon green">💵</div>
-                        <span class="stat-trend up">↑ 活跃</span>
-                    </div>
-                    <div class="stat-label">总营收</div>
-                    <div class="stat-value">${App.formatMoney(stats.totalRevenueUSD, 'USD')}</div>
-                    ${isHK ? '<div class="stat-sub">美金交易</div>' : `<div class="stat-sub">≈ ${App.formatMoney(stats.totalRevenueRMB, 'CNY')}</div>`}
-                </div>
-                ${
-                    showFinance
-                        ? `
-                <div class="stat-card">
-                    <div class="stat-card-header">
-                        <div class="stat-icon orange">💰</div>
-                        <span class="stat-trend up">↑ ${stats.avgProfitRate.toFixed(1)}%</span>
-                    </div>
-                    <div class="stat-label">总利润</div>
-                    <div class="stat-value">${App.formatMoney(stats.totalProfitRMB, profitCurrency)}</div>
-                    <div class="stat-sub">平均利润率 ${stats.avgProfitRate.toFixed(2)}%</div>
-                </div>`
-                        : isDocument
-                          ? `
-                <div class="stat-card">
-                    <div class="stat-card-header">
-                        <div class="stat-icon orange">📦</div>
-                        <span class="stat-trend up">↑ 待出运</span>
-                    </div>
-                    <div class="stat-label">待出运订单</div>
-                    <div class="stat-value">${stats.pendingShipmentCount}</div>
-                    <div class="stat-sub">共 ${stats.totalOrders} 个订单</div>
-                </div>`
-                          : `
-                <div class="stat-card">
-                    <div class="stat-card-header">
-                        <div class="stat-icon orange">👥</div>
-                        <span class="stat-trend up">↑ 活跃</span>
-                    </div>
-                    <div class="stat-label">客户数量</div>
-                    <div class="stat-value">${stats.customerCount}</div>
-                    <div class="stat-sub">涉及 ${stats.customerCount} 家客户</div>
-                </div>`
-                }
-                <div class="stat-card">
-                    <div class="stat-card-header">
-                        <div class="stat-icon red">⏳</div>
-                        <span class="stat-trend ${stats.unpaidAmount > 0 ? 'down' : 'up'}">${stats.unpaidAmount > 0 ? '待收' : '已结清'}</span>
-                    </div>
-                    <div class="stat-label">待收款项</div>
-                    <div class="stat-value">${App.formatMoney(stats.unpaidAmount, 'USD')}</div>
-                    <div class="stat-sub">已收款 ${App.formatMoney(stats.totalPaidUSD, 'USD')}</div>
-                </div>
-                ${
-                    showFinance && !isDocument
-                        ? `
-                <div class="stat-card">
-                    <div class="stat-card-header">
-                        <div class="stat-icon purple">🏭</div>
-                        <span class="stat-trend ${stats.totalFactoryUnpaidRMB > 0 ? 'down' : 'up'}">${stats.totalFactoryUnpaidRMB > 0 ? '待付' : '已结清'}</span>
-                    </div>
-                    <div class="stat-label">总待付货款</div>
-                    <div class="stat-value">${App.formatMoney(stats.totalFactoryUnpaidRMB, profitCurrency)}</div>
-                    <div class="stat-sub">已付 ${App.formatMoney(stats.totalFactoryPaidRMB, profitCurrency)}</div>
-                </div>`
-                        : ''
-                }
-            </div>
-
-            <!-- 图表区 -->
-            <div class="chart-grid">
-                ${
-                    !isDocument
-                        ? `
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title">月度营收与利润趋势</span>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container">
-                            <canvas id="monthlyChart"></canvas>
-                        </div>
-                    </div>
-                </div>`
-                        : ''
-                }
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title">订单状态分布</span>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container">
-                            <canvas id="statusChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 近期出运 -->
-            <div class="card mt-4">
-                <div class="card-header">
-                    <span class="card-title">近期出运安排</span>
-                    <a href="#/shipping" class="btn btn-sm btn-secondary">查看全部</a>
-                </div>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>操作单号</th>
-                                <th>客户</th>
-                                <th>提单号</th>
-                                <th>船名/航次</th>
-                                <th>起运港</th>
-                                <th>目的港</th>
-                                <th>海外港口</th>
-                                <th>预计出运</th>
-                                <th>预计到港</th>
-                                <th>状态</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${
-                                stats.upcomingShipments.length > 0
-                                    ? stats.upcomingShipments
-                                          .map(
-                                              s => `
-                                <tr>
-                                    <td><span class="table-link" onclick="window.location.hash='#/orders/${s.orderId}'">${s.orderId}</span></td>
-                                    <td>${s.customerName}</td>
-                                    <td>${s.blNumber}</td>
-                                    <td>${s.vessel}<br><span class="text-xs text-gray">${s.voyage}</span></td>
-                                    <td>${s.loadingPort}</td>
-                                    <td>${s.destinationPort}</td>
-                                    <td>${s.overseasPort || '-'}</td>
-                                    <td>${App.formatDate(s.etd)}</td>
-                                    <td>${App.formatDate(s.eta)}</td>
-                                    <td>${App.getShippingBadge(s.status)}</td>
-                                </tr>
-                            `
-                                          )
-                                          .join('')
-                                    : '<tr><td colspan="9" class="text-center text-gray" style="padding:40px">暂无近期出运</td></tr>'
-                            }
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- 收款进度 -->
-            <div class="card mt-4">
-                <div class="card-header">
-                    <span class="card-title">收款进度概览</span>
-                </div>
-                <div class="card-body">
-                    <div class="flex justify-between mb-2">
-                        <span class="text-sm text-gray">已收款 / 总金额</span>
-                        <span class="text-sm font-semi">${App.formatMoney(stats.totalPaidUSD, 'USD')} / ${App.formatMoney(stats.totalRevenueUSD, 'USD')}</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: ${stats.totalRevenueUSD > 0 ? ((stats.totalPaidUSD / stats.totalRevenueUSD) * 100).toFixed(1) : 0}%; background: var(--success);"></div>
-                    </div>
-                    ${
-                        showFinance
-                            ? `
-                    <div class="flex justify-between mt-4 mb-2">
-                        <span class="text-sm text-gray">工厂成本 / 已付工厂</span>
-                        <span class="text-sm font-semi">${App.formatMoney(stats.totalFactoryCostRMB, isHK ? 'USD' : 'CNY')}</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: 65%; background: var(--warning);"></div>
-                    </div>`
-                            : ''
-                    }
-                </div>
-            </div>
-        `;
-        // 渲染图表
-        setTimeout(() => {
-            this.renderMonthlyChart(stats.monthlyStats);
-            this.renderStatusChart(stats.statusStats);
-        }, 100);
+    getMonthlyData(orders, showFinance = Auth.canSeeFinancials()) {
+        const byCurrency = {};
+        const monthSet = new Set();
+        for (const order of orders) {
+            const month = String(order.orderDate || '').slice(0, 7);
+            if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) continue;
+            const metrics = Exchange.getOrderFinancials(order);
+            const currency = metrics.currency;
+            byCurrency[currency] ||= {};
+            byCurrency[currency][month] ||= { revenue: 0, ...(showFinance ? { profit: 0 } : {}) };
+            byCurrency[currency][month].revenue += Number(metrics.revenue) || 0;
+            if (showFinance) byCurrency[currency][month].profit += Number(metrics.profit) || 0;
+            monthSet.add(month);
+        }
+        return {
+            byCurrency,
+            months: [...monthSet].sort().slice(-6),
+            currencies: Object.keys(byCurrency).sort(),
+            showFinance
+        };
     },
 
-    renderMonthlyChart(monthlyStats) {
-        const ctx = document.getElementById('monthlyChart');
-        if (!ctx) return;
-        const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
-        const currencySymbol = isHK ? '$' : '¥';
-        const months = Object.keys(monthlyStats).sort();
-        const revenues = months.map(m => Math.round(monthlyStats[m].revenue));
-        const profits = months.map(m => Math.round(monthlyStats[m].profit));
+    render(container) {
+        const stats = DB.getDashboardStats();
+        const orders = DB.getOrders();
+        const visibleOrderIds = new Set(orders.map(order => String(order.id)));
+        const showFinance = Auth.canSeeFinancials();
+        const isDocument = Auth.isDocument();
+        const company = DB.companies.find(item => item.id === DB.currentCompanyId)?.name || '';
+        const scope = Auth.canSeeAll() ? '全部公司数据 · 当前账套：' + company : '当前账套：' + company;
+        const totals = { CNY: { profit: 0, cost: 0, paid: 0 }, USD: { profit: 0, cost: 0, paid: 0 } };
+        const financialCurrencies = new Set();
+        if (showFinance) {
+            for (const order of orders) {
+                const metrics = Exchange.getOrderFinancials(order);
+                const currency = metrics.currency;
+                totals[currency] ||= { profit: 0, cost: 0, paid: 0 };
+                financialCurrencies.add(currency);
+                totals[currency].profit += Number(metrics.profit) || 0;
+                totals[currency].cost += Number(metrics.factoryCost) || 0;
+                totals[currency].paid += Number(order.factoryPaidRMB) || 0;
+            }
+        }
+        const primaryCurrency = financialCurrencies.has('CNY')
+            ? 'CNY'
+            : [...financialCurrencies].sort()[0] ||
+              Exchange.getOrderFinancials({ companyId: DB.currentCompanyId }).currency;
+        totals[primaryCurrency] ||= { profit: 0, cost: 0, paid: 0 };
+        const secondaryNote =
+            [...financialCurrencies]
+                .filter(currency => currency !== primaryCurrency)
+                .map(currency => currency + ' 利润 ' + App.formatMoney(totals[currency].profit, currency))
+                .join(' · ') || '结算币种 · ' + primaryCurrency;
+        const thirdMetric = showFinance
+            ? metric(
+                  '订单利润 · ' + primaryCurrency,
+                  App.formatMoney(totals[primaryCurrency].profit, primaryCurrency),
+                  secondaryNote
+              )
+            : metric(
+                  isDocument ? '待出运订单' : '客户数量',
+                  String(isDocument ? stats.pendingShipmentCount : stats.customerCount),
+                  isDocument ? '持续跟进每一笔交付' : '维护中的业务关系'
+              );
+        const factoryUnpaid =
+            Object.keys(totals)
+                .sort()
+                .filter(currency => totals[currency].cost > 0)
+                .map(currency => App.formatMoney(totals[currency].cost - totals[currency].paid, currency))
+                .join(' / ') || App.formatMoney(0, primaryCurrency);
+        const rows = stats.upcomingShipments
+            .filter(shipment => visibleOrderIds.has(String(shipment.orderId)))
+            .map(
+                shipment =>
+                    '<tr><td><a class="table-link" href="#/orders/' +
+                    encodeURIComponent(shipment.orderId) +
+                    '">' +
+                    escapeHtml(shipment.orderId) +
+                    '</a></td><td>' +
+                    escapeHtml(shipment.customerName) +
+                    '</td><td>' +
+                    escapeHtml(shipment.loadingPort || '-') +
+                    '<span class="text-gray"> → </span>' +
+                    escapeHtml(shipment.overseasPort || shipment.destinationPort || '-') +
+                    '</td><td>' +
+                    App.formatDate(shipment.etd) +
+                    '</td><td>' +
+                    App.getShippingBadge(shipment.status) +
+                    '</td></tr>'
+            )
+            .join('');
+        const factoryProgress = showFinance
+            ? Object.keys(totals)
+                  .sort()
+                  .filter(currency => totals[currency].cost > 0)
+                  .map(currency =>
+                      progress(
+                          '工厂付款 · ' + currency,
+                          totals[currency].paid,
+                          totals[currency].cost,
+                          currency,
+                          'var(--success)'
+                      )
+                  )
+                  .join('')
+            : '';
+        const monthlyData = this.getMonthlyData(orders, showFinance);
+        const monthlyCards = isDocument
+            ? ''
+            : (monthlyData.currencies.length ? monthlyData.currencies : ['empty'])
+                  .map(
+                      currency =>
+                          '<div class="card"><div class="card-header"><span class="card-title">月度经营趋势' +
+                          (currency === 'empty' ? '' : ' · ' + escapeHtml(currency)) +
+                          '</span><span class="section-caption">同一图表仅汇总一种结算币种</span></div><div class="card-body"><div class="chart-container"><canvas id="monthlyChart-' +
+                          escapeHtml(currency) +
+                          '" role="img" aria-label="' +
+                          escapeHtml(
+                              currency === 'empty'
+                                  ? '月度经营趋势'
+                                  : currency + (showFinance ? ' 月度营收与利润趋势' : ' 月度营收趋势')
+                          ) +
+                          '"></canvas></div></div></div>'
+                  )
+                  .join('');
+        const quotedRevenueUSD = orders.reduce((sum, order) => sum + (Number(order.orderAmountUSD) || 0), 0);
+        const customerPaidUSD = showFinance
+            ? orders.reduce((sum, order) => sum + (Number(order.paidAmountUSD) || 0), 0)
+            : 0;
+        container.innerHTML =
+            '<section class="page-intro"><div><div class="page-eyebrow">TRADE WORKSPACE</div>' +
+            '<h2>业务总览</h2><p class="page-description">订单进展与出运安排，集中掌握。</p><span class="scope-label">' +
+            escapeHtml(scope) +
+            '</span></div><div class="page-intro-actions"><a class="btn btn-secondary" href="#/orders">查看订单</a>' +
+            '<button class="btn btn-primary" onclick="App.openNewOrder()">' +
+            icon('plus') +
+            '新建订单</button></div></section>' +
+            '<section class="dashboard-metrics" aria-label="业务指标">' +
+            metric(
+                '订单总数',
+                String(stats.totalOrders),
+                stats.activeOrders + ' 笔未取消 · ' + stats.completedOrders + ' 笔已订船'
+            ) +
+            metric('订单营收 · USD', App.formatMoney(quotedRevenueUSD, 'USD'), '按当前可见订单报价汇总') +
+            thirdMetric +
+            '</section>' +
+            '<section class="work-queue" aria-label="工作进度">' +
+            queue('待出运订单', stats.pendingShipmentCount + ' 笔', 'shipping', '#/shipping') +
+            (showFinance
+                ? queue(
+                      '待收款 · USD',
+                      App.formatMoney(quotedRevenueUSD - customerPaidUSD, 'USD'),
+                      'wallet',
+                      '#/orders'
+                  )
+                : '') +
+            (showFinance ? queue('待付工厂货款', factoryUnpaid, 'factory', '#/orders') : '') +
+            '</section>' +
+            '<section class="card dashboard-shipping"><div class="card-header"><span class="card-title">近期出运安排</span>' +
+            '<a class="btn btn-sm btn-secondary" href="#/shipping">全部出运 ' +
+            icon('arrow') +
+            '</a></div>' +
+            '<div class="table-container"><table><thead><tr><th>操作单号</th><th>客户</th><th>航线</th><th>预计出运</th><th>出运状态</th></tr></thead>' +
+            '<tbody>' +
+            (rows ||
+                '<tr><td colspan="5" class="text-center text-gray" style="padding:36px">暂无近期出运记录</td></tr>') +
+            '</tbody></table></div></section>' +
+            '<section class="chart-grid">' +
+            monthlyCards +
+            '<div class="card"><div class="card-header"><span class="card-title">订单状态分布</span><span class="section-caption">' +
+            stats.totalOrders +
+            ' 笔订单</span></div><div class="card-body"><div class="chart-container"><canvas id="statusChart" role="img" aria-label="订单状态分布"></canvas></div></div></div></section>' +
+            (showFinance
+                ? '<section class="card mt-6"><div class="card-header"><span class="card-title">收付款进度</span><span class="section-caption">依据实际收付金额</span></div>' +
+                  '<div class="card-body dashboard-progress">' +
+                  progress('客户收款 · USD', customerPaidUSD, quotedRevenueUSD, 'USD', 'var(--accent)') +
+                  factoryProgress +
+                  '</div></section>'
+                : '');
+        this.renderMonthlyChart(monthlyData);
+        this.renderStatusChart(stats.statusStats);
+    },
 
-        App.charts.monthly = new Chart(ctx, {
-            type: 'bar',
+    renderMonthlyChart(monthlyData = this.getMonthlyData(DB.getOrders())) {
+        const { months, currencies, byCurrency, showFinance } = monthlyData;
+        if (!months.length) {
+            const canvas = document.getElementById('monthlyChart-empty');
+            if (canvas) {
+                canvas.parentElement.innerHTML = '<div class="empty-state text-gray">有订单后显示经营趋势</div>';
+            }
+            return;
+        }
+        for (const unit of currencies) {
+            const canvas = document.getElementById('monthlyChart-' + unit);
+            if (!canvas) continue;
+            const datasets = [
+                {
+                    label: '营收 · ' + unit,
+                    data: months.map(month => byCurrency[unit][month]?.revenue || 0),
+                    backgroundColor: '#0071e3',
+                    borderRadius: 5,
+                    maxBarThickness: 48,
+                    yAxisID: 'y'
+                }
+            ];
+            if (showFinance && Auth.canSeeFinancials()) {
+                datasets.push({
+                    label: '利润 · ' + unit,
+                    data: months.map(month => byCurrency[unit][month]?.profit || 0),
+                    backgroundColor: '#80b8a4',
+                    borderRadius: 5,
+                    maxBarThickness: 48,
+                    yAxisID: 'y'
+                });
+            }
+            App.charts['monthly-' + unit] = new Chart(canvas, {
+                type: 'bar',
+                data: { labels: months, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom', labels: { padding: 16, font: { size: 10 } } } },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: unit },
+                            ticks: { callback: value => App.formatMoney(value, unit) }
+                        }
+                    }
+                }
+            });
+        }
+    },
+
+    renderStatusChart(statusStats) {
+        const canvas = document.getElementById('statusChart');
+        if (!canvas) return;
+        const labels = Object.keys(statusStats);
+        if (!labels.length) {
+            canvas.parentElement.innerHTML = '<div class="empty-state text-gray">有订单后显示状态分布</div>';
+            return;
+        }
+        const palette = { 进行中: '#0071e3', 已订船: '#80b8a4', 推迟出货: '#d8b277', 已取消: '#a2a7af' };
+        App.charts.status = new Chart(canvas, {
+            type: 'doughnut',
             data: {
-                labels: months,
+                labels,
                 datasets: [
                     {
-                        label: `营收 (${currencySymbol})`,
-                        data: revenues,
-                        backgroundColor: 'rgba(37, 99, 235, 0.7)',
-                        borderRadius: 4
-                    },
-                    {
-                        label: `利润 (${currencySymbol})`,
-                        data: profits,
-                        backgroundColor: 'rgba(22, 163, 74, 0.7)',
-                        borderRadius: 4
+                        data: Object.values(statusStats),
+                        backgroundColor: labels.map(label => palette[label] || '#a2a7af'),
+                        borderWidth: 0
                     }
                 ]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { position: 'bottom', labels: { font: { size: 12 } } } },
-                scales: {
-                    y: { beginAtZero: true, ticks: { callback: v => currencySymbol + (v / 10000).toFixed(0) + '万' } }
-                }
-            }
-        });
-    },
-
-    renderStatusChart(statusStats) {
-        const ctx = document.getElementById('statusChart');
-        if (!ctx) return;
-        const labels = Object.keys(statusStats);
-        const data = Object.values(statusStats);
-        const colors = ['#16a34a', '#0891b2', '#2563eb', '#9ca3af'];
-
-        App.charts.status = new Chart(ctx, {
-            type: 'doughnut',
-            data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 2, borderColor: '#fff' }] },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { position: 'bottom', labels: { font: { size: 12 }, padding: 12 } } }
+                cutout: '76%',
+                plugins: { legend: { position: 'bottom', labels: { padding: 16, font: { size: 10 } } } }
             }
         });
     }
 };
 
 window.Dashboard = Dashboard;
+export { Dashboard };

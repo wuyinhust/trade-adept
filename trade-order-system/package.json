@@ -2,7 +2,7 @@
     "name": "trade-order-system",
     "version": "3.0.0",
     "type": "module",
-    "description": "Grandware 外贸订单跟踪系统",
+    "description": "通用外贸订单工作区，支持多租户与多法人主体",
     "main": "index.html",
     "scripts": {
         "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --no-coverage",
@@ -18,7 +18,7 @@
         "order",
         "management"
     ],
-    "author": "Grandware Group",
+    "author": "Trade Workspace",
     "license": "ISC",
     "devDependencies": {
         "@eslint/js": "^10.0.1",

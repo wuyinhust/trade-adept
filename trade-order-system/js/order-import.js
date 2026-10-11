@@ -5,6 +5,7 @@
 import { App } from './app.js';
 import { DB } from './data.js';
 import { Auth } from './auth.js';
+import { Exchange } from './exchange.js';
 
 /**
  * 处理 Excel 文件导入
@@ -43,14 +44,15 @@ export function handleFileImport(input) {
  * @param {HTMLElement} resultDiv - 结果显示区域
  */
 export function processImportRows(rows, resultDiv) {
-    const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
+    const isHK = !Exchange.isDomestic(DB.currentCompanyId);
+    const legacyRmbFees = DB.getCurrentCompany()?.profitPolicy === 'grandware-v40';
     const customers = DB.getCustomers();
     const today = new Date().toISOString().split('T')[0];
 
     // Parse header row to build column index map
     const headerRow = rows[0];
     const colMap = {}; // fieldKey -> columnIndex
-    const headerIndexMap = {}; // columnIndex -> fieldKey
+    const headerErrors = [];
 
     const fieldPatterns = [
         { key: 'customerName', patterns: ['客户', '客户名称', '客户名', '客户公司'] },
@@ -62,9 +64,21 @@ export function processImportRows(rows, resultDiv) {
         { key: 'actualShipDate', patterns: ['实际出运', '实际出运日期', '实际出货'] },
         { key: 'orderAmountUSD', patterns: ['订单金额(USD)', '订单金额', '订单金额USD', '金额(USD)', '金额USD'] },
         { key: 'factoryCostRMB', patterns: ['工厂成本(RMB)', '工厂成本(USD)', '工厂成本', '工厂金额'] },
-        { key: 'freightCostUSD', patterns: ['运费(USD)', '运费', '运费USD', '货代费(USD)', '货代费'] },
-        { key: 'insuranceCostUSD', patterns: ['保险费(USD)', '保险费', '保险(USD)'] },
-        { key: 'otherCostUSD', patterns: ['其他费用(USD)', '其他费用', '其他(USD)'] },
+        {
+            key: 'freightCostUSD',
+            patterns: [
+                '运费(USD)',
+                '运费',
+                '运费USD',
+                '货代费(USD)',
+                '货代费',
+                '货代费(RMB)',
+                '货代费(CNY)',
+                '运费(RMB)'
+            ]
+        },
+        { key: 'insuranceCostUSD', patterns: ['保险费(USD)', '保险费', '保险(USD)', '退税率(%)', '退税率'] },
+        { key: 'otherCostUSD', patterns: ['其他费用(USD)', '其他费用', '其他(USD)', '其他费用(RMB)', '其他费用(CNY)'] },
         { key: 'paymentStatus', patterns: ['收款状态'] },
         { key: 'paidAmountUSD', patterns: ['已收款(USD)', '已收款', '已收款USD'] },
         { key: 'factoryPaidStatus', patterns: ['工厂付款状态', '工厂付款'] },
@@ -77,16 +91,39 @@ export function processImportRows(rows, resultDiv) {
         { key: 'remarks', patterns: ['备注', '说明', '特殊要求'] }
     ];
 
+    const normalizeHeader = value => String(value).trim().replace(/\s+/g, '').replace(/（/g, '(').replace(/）/g, ')');
     headerRow.forEach((header, idx) => {
-        const h = String(header).trim();
-        for (const fp of fieldPatterns) {
-            if (fp.patterns.some(p => h === p || h.includes(p))) {
-                colMap[fp.key] = idx;
-                headerIndexMap[idx] = fp.key;
-                break;
+        const h = normalizeHeader(header);
+        // Match complete aliases first: 客户订单号 must never overwrite 客户.
+        const exact = fieldPatterns.filter(fp => fp.patterns.some(p => h === normalizeHeader(p)));
+        if (exact.length === 1) {
+            const key = exact[0].key;
+            const feeKeys = ['freightCostUSD', 'insuranceCostUSD', 'otherCostUSD'];
+            if (feeKeys.includes(key) && !isHK) {
+                const wrongCurrency = legacyRmbFees ? h.includes('USD') : /RMB|CNY|退税率/.test(h);
+                if (wrongCurrency) {
+                    headerErrors.push(`第${idx + 1}列“${header}”与当前公司核算口径不符，请下载当前公司的模板`);
+                    return;
+                }
             }
+            if (key in colMap) {
+                headerErrors.push(`第${idx + 1}列“${header}”与第${colMap[key] + 1}列映射到同一字段，请只保留一列`);
+            } else {
+                colMap[key] = idx;
+            }
+            return;
+        }
+        const partial = fieldPatterns.filter(fp => fp.patterns.some(p => h.includes(normalizeHeader(p))));
+        if (exact.length > 1 || partial.length > 1) {
+            headerErrors.push(`第${idx + 1}列“${header}”含义不明确，请使用模板中的完整表头`);
         }
     });
+    if (headerErrors.length > 0) {
+        resultDiv.innerHTML =
+            '<p style="color:var(--danger)">❌ 表头存在歧义，尚未导入任何订单：</p>' +
+            headerErrors.map(error => `<div>${App.escapeHtml(error)}</div>`).join('');
+        return;
+    }
 
     // Validate required columns exist
     if (!('customerName' in colMap)) {
@@ -137,9 +174,16 @@ export function processImportRows(rows, resultDiv) {
         }
 
         // Match customer
-        const customer = customers.find(c => c.company === customerName);
+        const customerMatches = customers.filter(c => c.company === customerName);
+        const currentCompanyMatches = customerMatches.filter(c => c.companyId === DB.currentCompanyId);
+        const candidates = currentCompanyMatches.length > 0 ? currentCompanyMatches : customerMatches;
+        const customer = candidates.length === 1 ? candidates[0] : null;
         if (!customer) {
-            errors.push(`第${rowNum}行：客户"${customerName}"未找到，请先在客户管理中创建`);
+            errors.push(
+                candidates.length > 1
+                    ? `第${rowNum}行：客户“${customerName}”有多个匹配，请明确公司主体后再导入`
+                    : `第${rowNum}行：客户"${customerName}"未找到，请先在客户管理中创建`
+            );
             return;
         }
 
@@ -202,8 +246,9 @@ export function processImportRows(rows, resultDiv) {
         };
 
         try {
-            DB.addOrder(orderData);
-            successCount++;
+            const created = DB.addOrder(orderData);
+            if (created) successCount++;
+            else errors.push(`第${rowNum}行：订单未创建，请检查必填字段和重复操作单号`);
         } catch (err) {
             errors.push(`第${rowNum}行：创建失败 - ${err.message}`);
         }
@@ -212,7 +257,7 @@ export function processImportRows(rows, resultDiv) {
     // Build result HTML
     let resultHtml = '<div style="padding:12px;border-radius:8px;margin-top:8px">';
     resultHtml += '<p style="font-size:15px;font-weight:600;margin-bottom:8px">📊 导入结果</p>';
-    resultHtml += `<p>✅ 成功导入：<strong style="color:var(--success)">${successCount}</strong> 笔订单</p>`;
+    resultHtml += `<p data-import-summary>${successCount ? '⏳ 待保存' : '✅ 成功导入'}：<strong>${successCount}</strong> 笔订单</p>`;
     if (skipCount > 0) {
         resultHtml += `<p>⏭️ 跳过空行：<strong>${skipCount}</strong> 行</p>`;
     }
@@ -229,19 +274,47 @@ export function processImportRows(rows, resultDiv) {
 
     if (successCount > 0) {
         resultHtml +=
-            '<button class="btn btn-sm btn-primary" style="margin-top:8px" onclick="App.closeModal();Orders.renderTable()">✅ 完成，刷新列表</button>';
+            '<p data-import-save-status>正在保存到数据库...</p><button data-import-save class="btn btn-sm btn-primary" style="margin-top:8px" disabled>保存中...</button>';
     }
 
     resultDiv.innerHTML = resultHtml;
     // Reset file input so same file can be re-imported
-    document.getElementById('importFileInput').value = '';
+    const fileInput = document.getElementById('importFileInput');
+    if (fileInput) fileInput.value = '';
 
     // ★ 显式 flush（addOrder 不再自动 flush）
     if (successCount > 0) {
-        DB.flush().then(ok => {
-            if (!ok) {
-                App.toast('⚠️ 导入的订单云端保存失败，请勿刷新页面并重试', 'error', 8000);
+        const summary = resultDiv.querySelector('[data-import-summary]');
+        const saveStatus = resultDiv.querySelector('[data-import-save-status]');
+        const saveButton = resultDiv.querySelector('[data-import-save]');
+        if (fileInput) fileInput.disabled = true;
+        const persistPending = async () => {
+            saveButton.disabled = true;
+            saveButton.textContent = '保存中...';
+            saveStatus.textContent = '正在保存到数据库...';
+            let ok = false;
+            try {
+                ok = await DB.flush();
+            } catch {
+                // Keep the same locally created records for an explicit retry.
             }
-        });
+            saveButton.disabled = false;
+            if (!ok) {
+                saveStatus.textContent = '数据库保存失败，本批记录仍待保存；请重试保存，勿重新导入。';
+                saveButton.textContent = '重试保存本批记录';
+                saveButton.onclick = persistPending;
+                App.toast('⚠️ 导入的订单云端保存失败，请勿刷新页面并重试', 'error', 8000);
+                return;
+            }
+            summary.textContent = `✅ 成功导入：${successCount} 笔订单`;
+            saveStatus.textContent = '数据库保存成功';
+            saveButton.textContent = '✅ 完成，刷新列表';
+            saveButton.onclick = () => {
+                App.closeModal();
+                window.Orders.renderTable();
+            };
+            if (fileInput) fileInput.disabled = false;
+        };
+        persistPending();
     }
 }

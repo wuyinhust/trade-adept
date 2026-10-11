@@ -80,7 +80,10 @@ jest.unstable_mockModule('../js/data.js', () => ({
             return { ok: true, meta: { updatedBy: 'David' } };
         },
         getAccessibleCompanies() {
-            return [{ id: 'GR', name: 'Grandware' }, { id: 'WY', name: 'WeiYu' }];
+            return [
+                { id: 'GR', name: 'Grandware' },
+                { id: 'WY', name: 'WeiYu' }
+            ];
         },
         setCurrentCompany(id) {
             this.currentCompanyId = id;
@@ -99,9 +102,11 @@ jest.unstable_mockModule('../js/data.js', () => ({
 }));
 
 jest.unstable_mockModule('../js/exchange.js', () => ({
-    Exchange: { currentRate() {
-        return 7.25;
-    } }
+    Exchange: {
+        currentRate() {
+            return 7.25;
+        }
+    }
 }));
 
 const { App } = await import('../js/app.js');
@@ -257,18 +262,18 @@ describe('App — Theme Management', () => {
     });
 
     test('initTheme applies saved dark theme', () => {
-        localStorage.setItem('grandware_theme', 'dark');
+        localStorage.setItem('trade_workspace_theme', 'dark');
         App.initTheme();
         expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
-        expect(document.getElementById('themeToggleIcon').textContent).toBe('☀️');
+        expect(document.querySelector('#themeToggleIcon svg[aria-hidden="true"]')).not.toBeNull();
         expect(document.getElementById('themeToggleLabel').textContent).toBe('浅色模式');
     });
 
     test('initTheme applies saved light theme', () => {
-        localStorage.setItem('grandware_theme', 'light');
+        localStorage.setItem('trade_workspace_theme', 'light');
         App.initTheme();
         expect(document.documentElement.getAttribute('data-theme')).toBe('light');
-        expect(document.getElementById('themeToggleIcon').textContent).toBe('🌙');
+        expect(document.querySelector('#themeToggleIcon svg[aria-hidden="true"]')).not.toBeNull();
         expect(document.getElementById('themeToggleLabel').textContent).toBe('暗色模式');
     });
 
@@ -276,14 +281,14 @@ describe('App — Theme Management', () => {
         document.documentElement.setAttribute('data-theme', 'dark');
         App.toggleTheme();
         expect(document.documentElement.getAttribute('data-theme')).toBe('light');
-        expect(localStorage.getItem('grandware_theme')).toBe('light');
+        expect(localStorage.getItem('trade_workspace_theme')).toBe('light');
     });
 
     test('toggleTheme switches light to dark', () => {
         document.documentElement.setAttribute('data-theme', 'light');
         App.toggleTheme();
         expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
-        expect(localStorage.getItem('grandware_theme')).toBe('dark');
+        expect(localStorage.getItem('trade_workspace_theme')).toBe('dark');
     });
 
     test('toggleTheme on unset theme defaults to dark', () => {
@@ -294,21 +299,21 @@ describe('App — Theme Management', () => {
 
     test('_applyTheme persists to localStorage', () => {
         App._applyTheme('dark');
-        expect(localStorage.getItem('grandware_theme')).toBe('dark');
+        expect(localStorage.getItem('trade_workspace_theme')).toBe('dark');
     });
 
     test('_applyTheme light is stored as light', () => {
         App._applyTheme('light');
-        expect(localStorage.getItem('grandware_theme')).toBe('light');
+        expect(localStorage.getItem('trade_workspace_theme')).toBe('light');
     });
 
     test('_updateThemeToggleUI updates icon and label', () => {
         App._updateThemeToggleUI('dark');
-        expect(document.getElementById('themeToggleIcon').textContent).toBe('☀️');
+        expect(document.querySelector('#themeToggleIcon svg[aria-hidden="true"]')).not.toBeNull();
         expect(document.getElementById('themeToggleLabel').textContent).toBe('浅色模式');
 
         App._updateThemeToggleUI('light');
-        expect(document.getElementById('themeToggleIcon').textContent).toBe('🌙');
+        expect(document.querySelector('#themeToggleIcon svg[aria-hidden="true"]')).not.toBeNull();
         expect(document.getElementById('themeToggleLabel').textContent).toBe('暗色模式');
     });
 
@@ -649,7 +654,15 @@ describe('App — Sidebar Visibility', () => {
         expect(document.getElementById('nav-settings').style.display).toBe('none');
         expect(document.getElementById('nav-dashboard').style.display).toBe('');
         // Restore
-        Auth.getVisiblePages = () => ['dashboard', 'orders', 'customers', 'factories', 'profit', 'shipping', 'settings'];
+        Auth.getVisiblePages = () => [
+            'dashboard',
+            'orders',
+            'customers',
+            'factories',
+            'profit',
+            'shipping',
+            'settings'
+        ];
     });
 });
 
@@ -852,6 +865,11 @@ describe('App — Router', () => {
         await App.router();
         expect(global.Customers.render).toHaveBeenCalledWith(expect.anything(), 'C001');
     });
+    test('router decodes safe historical Unicode identifiers', async () => {
+        window.location.hash = '#/customers/' + encodeURIComponent('客户-001');
+        await App.router();
+        expect(global.Customers.render).toHaveBeenCalledWith(expect.anything(), '客户-001');
+    });
 
     test('router renders factories page', async () => {
         window.location.hash = '#/factories';
@@ -882,7 +900,15 @@ describe('App — Router', () => {
         window.location.hash = '#/orders';
         App.router();
         expect(window.location.hash).toBe('#/dashboard');
-        Auth.getVisiblePages = () => ['dashboard', 'orders', 'customers', 'factories', 'profit', 'shipping', 'settings'];
+        Auth.getVisiblePages = () => [
+            'dashboard',
+            'orders',
+            'customers',
+            'factories',
+            'profit',
+            'shipping',
+            'settings'
+        ];
     });
 
     test('router updates nav active class', async () => {

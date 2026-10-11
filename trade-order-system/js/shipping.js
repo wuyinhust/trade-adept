@@ -33,14 +33,16 @@ const Shipping = {
                     const orders = DB.getOrders();
                     const unshipped = orders.filter(o => o.shippingStatus === '待出运');
                     const shipped = orders.filter(o => o.shippingStatus !== '待出运');
-                    const isHK = DB.currentCompanyId === 'CO-GW' || DB.currentCompanyId === 'CO-LK';
+                    const isHK = !Exchange.isDomestic(DB.currentCompanyId);
                     let freightCards = '';
-                    if (!isHK) {
-                        const totalFreightUSD = orders.reduce((s, o) => s + (o.freightCostUSD || 0), 0);
-                        const totalFreightRMB = Math.round(DB.usdToRmb(totalFreightUSD) * 100) / 100;
-                        const totalAmount = orders.reduce((s, o) => s + (o.orderAmountUSD || 0), 0);
+                    if (!isHK && Auth.canSeeFinancials()) {
+                        const financials = orders
+                            .filter(order => Exchange.isDomestic(order.companyId))
+                            .map(order => Exchange.getOrderFinancials(order));
+                        const totalFreightRMB = financials.reduce((sum, row) => sum + row.freightCost, 0);
+                        const totalAmount = financials.reduce((sum, row) => sum + row.revenue, 0);
                         const freightRatio =
-                            totalAmount > 0 ? ((totalFreightUSD / totalAmount) * 100).toFixed(2) : '0.00';
+                            totalAmount > 0 ? ((totalFreightRMB / totalAmount) * 100).toFixed(2) : '0.00';
                         freightCards = `
                 <div class="stat-card">
                     <div class="stat-card-header"><div class="stat-icon cyan">💰</div></div>
@@ -260,30 +262,42 @@ const Shipping = {
         });
     },
 
-    saveStatus(event, shipmentId) {
+    async saveStatus(event, shipmentId) {
+        event.preventDefault();
+        if (!DB._cloudReady) {
+            App.toast('⚠️ 数据库未连接，请检查连接后重试', 'error');
+            return;
+        }
         const fd = new FormData(event.target);
-        DB.updateShipment(shipmentId, {
+        const updated = DB.updateShipment(shipmentId, {
             status: fd.get('status'),
             customsStatus: fd.get('customsStatus'),
             etd: fd.get('etd')
         });
+        if (!updated) {
+            App.toast('⚠️ 出运记录不存在，无法更新', 'error');
+            return;
+        }
         // 同步更新订单状态
         const shipment = DB.getShipment(shipmentId);
         if (shipment) {
             const orderUpdates = { shippingStatus: fd.get('status') };
-            if (fd.get('status') === '已出运' && !DB.getOrder(shipment.orderId).actualShipDate) {
+            const order = DB.getOrder(shipment.orderId);
+            if (order && fd.get('status') === '已出运' && !order.actualShipDate) {
                 orderUpdates.actualShipDate = fd.get('etd');
                 orderUpdates.status = '已订船';
             }
             if (fd.get('status') === '已签收') {
                 orderUpdates.status = '已订船';
             }
-            DB.updateOrder(shipment.orderId, orderUpdates);
+            if (order) DB.updateOrder(shipment.orderId, orderUpdates);
         }
         // ★ 显式 flush（updateOrder / updateShipment 不再自动 flush）
-        DB.flush().then(ok => {
-            if (!ok) App.toast('⚠️ 保存失败，请重试', 'error');
-        });
+        const ok = await DB.flush();
+        if (!ok) {
+            App.toast('⚠️ 保存失败，请重试', 'error');
+            return;
+        }
         App.toast('出运状态已更新');
         App.closeModal();
         this.renderDetail(document.getElementById('pageContent'), shipmentId);

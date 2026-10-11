@@ -7,14 +7,30 @@ import { jest } from '@jest/globals';
 // Mock cloud.js
 const mockCloud = {
     resetSession: jest.fn(),
-    init() { return Promise.resolve({ ok: true, uid: 'mock' }); },
-    isReady() { return true; },
-    loadData() { return Promise.resolve(null); },
-    getLastMeta() { return { version: 0 }; },
-    saveData() { return Promise.resolve(true); },
-    getStatus() { return { ready: true }; },
-    testPermission() { return Promise.resolve({ ok: true }); },
-    checkRemoteVersion() { return Promise.resolve(null); },
+    init() {
+        return Promise.resolve({ ok: true, uid: 'mock' });
+    },
+    isReady() {
+        return true;
+    },
+    loadData() {
+        return Promise.resolve(null);
+    },
+    getLastMeta() {
+        return { version: 0 };
+    },
+    saveData() {
+        return Promise.resolve(true);
+    },
+    getStatus() {
+        return { ready: true };
+    },
+    testPermission() {
+        return Promise.resolve({ ok: true });
+    },
+    checkRemoteVersion() {
+        return Promise.resolve(null);
+    },
     _saveQueue: [],
     _saveRunning: false,
     COLLECTION: 'app_data',
@@ -22,7 +38,9 @@ const mockCloud = {
     envId: 'mock',
     region: 'ap-shanghai',
     _lastMeta: { version: 0, updatedAt: null, updatedBy: null },
-    _drainQueue() { return Promise.resolve(); }
+    _drainQueue() {
+        return Promise.resolve();
+    }
 };
 
 jest.unstable_mockModule('../js/cloud.js', () => ({
@@ -39,7 +57,7 @@ const mockCrypto = {
             return hash.buffer.slice(hash.byteOffset, hash.byteOffset + hash.byteLength);
         }
     },
-    getRandomValues: (arr) => arr,
+    getRandomValues: arr => arr,
     randomUUID: () => '00000000-0000-0000-0000-000000000000'
 };
 Object.defineProperty(globalThis, 'crypto', {
@@ -49,6 +67,9 @@ Object.defineProperty(globalThis, 'crypto', {
 });
 
 const { Auth } = await import('../js/auth.js');
+const { DemoProfile } = await import('../js/demo-profile.js');
+Auth.users = DemoProfile.users;
+Auth.teams = DemoProfile.teams;
 
 // Pre-compute hashes for known test passwords
 const TEST_PASSWORD = 'test123';
@@ -60,6 +81,8 @@ beforeAll(async () => {
 describe('Auth module', () => {
     beforeEach(() => {
         Auth.currentUser = null;
+        Auth._serverDataAuthorized = false;
+        Auth.configureProvider(null);
         sessionStorage.clear();
         jest.clearAllMocks();
     });
@@ -79,9 +102,9 @@ describe('Auth module', () => {
             expect(admin.teamId).toBeNull();
         });
 
-        test('password hashes are 64-char hex strings', () => {
+        test('public directory contains no credentials', () => {
             Auth.users.forEach(u => {
-                expect(u.passwordHash).toMatch(/^[a-f0-9]{64}$/);
+                expect(u.passwordHash).toBeUndefined();
             });
         });
 
@@ -89,7 +112,7 @@ describe('Auth module', () => {
             Auth.users.forEach(u => {
                 expect(u.id).toBeTruthy();
                 expect(u.username).toBeTruthy();
-                expect(u.passwordHash).toBeTruthy();
+                expect(u.passwordHash).toBeUndefined();
                 expect(u.name).toBeTruthy();
                 expect(u.role).toBeTruthy();
             });
@@ -174,9 +197,9 @@ describe('Auth module', () => {
             Auth.currentUser = Auth.users.find(u => u.username === 'Vivian');
             expect(Auth.isManager()).toBe(true);
             expect(Auth.canSeeAll()).toBeFalsy();
-            expect(Auth.canSeeProfit()).toBe(true);
-            expect(Auth.canSeeFinancials()).toBe(true);
-            expect(Auth.canSeeSettings()).toBe(true);
+            expect(Auth.canSeeProfit()).toBe(false);
+            expect(Auth.canSeeFinancials()).toBe(false);
+            expect(Auth.canSeeSettings()).toBe(false);
             expect(Auth.canDelete()).toBe(true);
         });
 
@@ -184,8 +207,8 @@ describe('Auth module', () => {
             Auth.currentUser = Auth.users.find(u => u.username === 'Michale');
             expect(Auth.isSalesperson()).toBe(true);
             expect(Auth.canSeeAll()).toBeFalsy();
-            expect(Auth.canSeeProfit()).toBe(true);
-            expect(Auth.canSeeFinancials()).toBe(true);
+            expect(Auth.canSeeProfit()).toBe(false);
+            expect(Auth.canSeeFinancials()).toBe(false);
             expect(Auth.canSeeSettings()).toBeFalsy();
             expect(Auth.canDelete()).toBe(true);
         });
@@ -250,31 +273,31 @@ describe('Auth module', () => {
             expect(Auth.getVisiblePages()).toContain('customers');
         });
 
-        test('salesperson sees orders, customers, factories, shipping, profit', () => {
+        test('salesperson sees operational pages without profit', () => {
             Auth.currentUser = Auth.users.find(u => u.username === 'Michale');
             const pages = Auth.getVisiblePages();
             expect(pages).toContain('orders');
             expect(pages).toContain('factories');
-            expect(pages).toContain('profit');
+            expect(pages).not.toContain('profit');
             expect(pages).not.toContain('settings');
         });
 
-        test('document cannot see profit or customers or settings', () => {
+        test('document sees customers but no financial settings', () => {
             Auth.currentUser = Auth.users.find(u => u.username === 'Anna');
             const pages = Auth.getVisiblePages();
             expect(pages).not.toContain('profit');
-            expect(pages).not.toContain('customers');
+            expect(pages).toContain('customers');
             expect(pages).not.toContain('settings');
             expect(pages).toContain('orders');
             expect(pages).toContain('factories');
             expect(pages).toContain('shipping');
         });
 
-        test('manager sees team-related pages + profit + settings', () => {
+        test('manager sees team-related operational pages', () => {
             Auth.currentUser = Auth.users.find(u => u.username === 'Vivian');
             const pages = Auth.getVisiblePages();
-            expect(pages).toContain('profit');
-            expect(pages).toContain('settings');
+            expect(pages).not.toContain('profit');
+            expect(pages).not.toContain('settings');
         });
     });
 
@@ -527,218 +550,73 @@ describe('Auth module', () => {
         });
     });
 
-    // ==================== session management ====================
-
-    describe('session management', () => {
-        test('init returns false when no session', () => {
-            const result = Auth.init();
-            expect(result).toBe(false);
-            expect(Auth.currentUser).toBeNull();
-        });
-
-        test('init restores session from sessionStorage', () => {
+    describe('server session boundary', () => {
+        test('a forged administrator in sessionStorage never authenticates', async () => {
             sessionStorage.setItem(Auth.SESSION_KEY, JSON.stringify({ userId: 'U001' }));
-            const result = Auth.init();
-            expect(result).toBe(true);
-            expect(Auth.currentUser).toBeTruthy();
-            expect(Auth.currentUser.id).toBe('U001');
-            expect(Auth.currentUser.username).toBe('David');
-        });
-
-        test('init returns false for invalid userId in session', () => {
-            sessionStorage.setItem(Auth.SESSION_KEY, JSON.stringify({ userId: 'INVALID' }));
-            const result = Auth.init();
-            expect(result).toBe(false);
+            expect(await Auth.init()).toBe(false);
             expect(Auth.currentUser).toBeNull();
         });
-
-        test('init handles corrupt session data gracefully', () => {
-            sessionStorage.setItem(Auth.SESSION_KEY, '{corrupt:json');
-            const result = Auth.init();
-            expect(result).toBe(false);
-            expect(Auth.currentUser).toBeNull();
-        });
-
-        test('logout clears currentUser and session', () => {
-            Auth.currentUser = Auth.users.find(u => u.username === 'David');
+        test('server-confirmed identity is used instead of local userId', async () => {
+            const user = { id: 'remote', role: 'salesperson' };
             sessionStorage.setItem(Auth.SESSION_KEY, JSON.stringify({ userId: 'U001' }));
-            Auth.logout();
+            Auth.configureProvider({ restoreSession: async () => user });
+            expect(await Auth.init()).toBe(true);
+            expect(Auth.currentUser).toEqual(user);
+        });
+        test('unavailable server never falls back to a local account', async () => {
+            Auth.configureProvider({
+                restoreSession: async () => {
+                    throw new Error('offline');
+                }
+            });
+            expect(await Auth.init()).toBe(false);
             expect(Auth.currentUser).toBeNull();
+        });
+        test('login requires a provider and does not compare public hashes', async () => {
+            expect((await Auth.login('David', 'anything')).success).toBe(false);
+            const user = { id: 'server', role: 'finance' };
+            const login = jest.fn(async () => user);
+            Auth.configureProvider({ login });
+            expect((await Auth.login('server', 'secret')).user).toEqual(user);
+            expect(login).toHaveBeenCalledWith('server', 'secret');
             expect(sessionStorage.getItem(Auth.SESSION_KEY)).toBeNull();
-            expect(mockCloud.resetSession).toHaveBeenCalled();
         });
-    });
-
-    // ==================== password hashing ====================
-
-    describe('password hashing', () => {
-        test('_hashPassword returns 64-char hex', async () => {
-            const hash = await Auth._hashPassword('test123');
-            expect(hash).toMatch(/^[a-f0-9]{64}$/);
+        test('logout revokes the provider session', async () => {
+            const logout = jest.fn(async () => {});
+            Auth.configureProvider({ logout });
+            Auth.currentUser = { id: 'server' };
+            await Auth.logout();
+            expect(logout).toHaveBeenCalledTimes(1);
+            expect(Auth.currentUser).toBeNull();
         });
-
-        test('_hashPassword is deterministic', async () => {
-            const h1 = await Auth._hashPassword('hello');
-            const h2 = await Auth._hashPassword('hello');
-            expect(h1).toBe(h2);
+        test('configured capabilities override template visibility', () => {
+            Auth.currentUser = { role: 'analyst', permissions: ['finance.read'] };
+            expect(Auth.canSeeFinancials()).toBe(true);
+            expect(Auth.canSeeProfit()).toBe(true);
+            Auth.currentUser = { role: 'admin', permissions: [] };
+            expect(Auth.canSeeProfit()).toBe(false);
         });
-
-        test('_hashPassword different inputs yield different hashes', async () => {
-            const h1 = await Auth._hashPassword('abc');
-            const h2 = await Auth._hashPassword('def');
-            expect(h1).not.toBe(h2);
-        });
-
-        test('_hashPassword handles empty string', async () => {
-            const hash = await Auth._hashPassword('');
-            expect(hash).toMatch(/^[a-f0-9]{64}$/);
-        });
-
-        test('_hashPassword handles special characters', async () => {
-            const hash = await Auth._hashPassword('!@#$%^&*()');
-            expect(hash).toMatch(/^[a-f0-9]{64}$/);
-        });
-    });
-
-    // ==================== login flow ====================
-
-    describe('login flow', () => {
-        test('login fails with empty credentials', async () => {
-            const result = await Auth.login('', '');
-            expect(result.success).toBe(false);
-            expect(result.error).toBeTruthy();
-        });
-
-        test('login fails with wrong password', async () => {
-            const result = await Auth.login('David', 'wrongpassword');
-            expect(result.success).toBe(false);
-        });
-
-        test('login fails with nonexistent user', async () => {
-            const result = await Auth.login('Nobody', 'password');
-            expect(result.success).toBe(false);
-        });
-
-        test('login succeeds with correct password (mocked hash)', async () => {
-            // Create a temp user with known password hash
-            const originalUsers = Auth.users;
-            Auth.users = [
-                { id: 'TEST', username: 'testuser', passwordHash: TEST_HASH, name: 'Test', role: 'admin', teamId: null },
-                ...originalUsers
-            ];
-            const result = await Auth.login('testuser', TEST_PASSWORD);
-            expect(result.success).toBe(true);
-            expect(result.user.username).toBe('testuser');
-            expect(Auth.currentUser.username).toBe('testuser');
-            expect(sessionStorage.getItem(Auth.SESSION_KEY)).toBeTruthy();
-            // Restore
-            Auth.users = originalUsers;
-            Auth.currentUser = null;
-        });
-
-        test('login sets sessionStorage on success', async () => {
-            const originalUsers = Auth.users;
-            Auth.users = [
-                { id: 'TEST2', username: 'testuser2', passwordHash: TEST_HASH, name: 'Test2', role: 'salesperson', teamId: 'TEAM-A' },
-                ...originalUsers
-            ];
-            await Auth.login('testuser2', TEST_PASSWORD);
-            const session = JSON.parse(sessionStorage.getItem(Auth.SESSION_KEY));
-            expect(session.userId).toBe('TEST2');
-            Auth.users = originalUsers;
-            Auth.currentUser = null;
-        });
-    });
-
-    // ==================== login lockout ====================
-
-    describe('login lockout', () => {
-        beforeEach(() => {
-            sessionStorage.removeItem(Auth.LOCKOUT_KEY);
-            Auth.currentUser = null;
-        });
-
-        test('_getLockoutState returns null when no lockout', () => {
-            expect(Auth._getLockoutState()).toBeNull();
-        });
-
-        test('_setLockoutState and _getLockoutState roundtrip', () => {
-            Auth._setLockoutState({ attempts: 2, lockedUntil: null });
-            const state = Auth._getLockoutState();
-            expect(state.attempts).toBe(2);
-        });
-
-        test('_clearLockout removes lockout state', () => {
-            Auth._setLockoutState({ attempts: 3, lockedUntil: Date.now() + 60000 });
-            Auth._clearLockout();
-            expect(Auth._getLockoutState()).toBeNull();
-        });
-
-        test('failed login increments attempt counter', async () => {
-            await Auth.login('David', 'wrong');
-            const state = Auth._getLockoutState();
-            expect(state.attempts).toBe(1);
-            expect(state.lockedUntil).toBeFalsy();
-        });
-
-        test('non-existent user also increments counter (timing-safe)', async () => {
-            await Auth.login('Nobody', 'pass');
-            const state = Auth._getLockoutState();
-            expect(state.attempts).toBe(1);
-        });
-
-        test('locks out after MAX_LOGIN_ATTEMPTS failed attempts', async () => {
-            for (let i = 0; i < 5; i++) {
-                await Auth.login('David', 'wrong');
-            }
-            const state = Auth._getLockoutState();
-            expect(state.attempts).toBe(5);
-            expect(state.lockedUntil).toBeGreaterThan(Date.now());
-        });
-
-        test('locked out login returns remaining time error', async () => {
-            // Force lockout state
-            Auth._setLockoutState({
-                attempts: 5,
-                lockedUntil: Date.now() + 5 * 60 * 1000 // 5 minutes
-            });
-            const result = await Auth.login('David', 'wrong');
-            expect(result.success).toBe(false);
-            expect(result.error).toMatch(/分钟后重试/);
-        });
-
-        test('expired lockout allows login again', async () => {
-            Auth._setLockoutState({
-                attempts: 5,
-                lockedUntil: Date.now() - 1000 // expired 1 second ago
-            });
-            const result = await Auth.login('David', 'wrong');
-            expect(result.success).toBe(false);
-            // Should have attempted (not locked), so lockout state is cleared
-            // and a new attempt was recorded
-            const state = Auth._getLockoutState();
-            expect(state.attempts).toBe(1);
-        });
-
-        test('successful login clears lockout counter', async () => {
-            // Pre-set some failed attempts
-            Auth._setLockoutState({ attempts: 3, lockedUntil: null });
-
-            const originalUsers = Auth.users;
-            Auth.users = [
-                { id: 'T3', username: 't3', passwordHash: TEST_HASH, name: 'T3', role: 'admin', teamId: null },
-                ...originalUsers
-            ];
-            await Auth.login('t3', TEST_PASSWORD);
-            expect(Auth._getLockoutState()).toBeNull();
-
-            Auth.users = originalUsers;
-            Auth.currentUser = null;
-        });
-
-        test('empty credentials do not count as attempt', async () => {
-            await Auth.login('', '');
-            expect(Auth._getLockoutState()).toBeNull();
+        test('configured roles and server-authorized reads are not filtered again by legacy role names', () => {
+            Auth._serverDataAuthorized = true;
+            Auth.currentUser = {
+                id: 'custom',
+                role: 'operations',
+                baseRole: 'document',
+                scope: 'self',
+                visibleCompanyIds: ['CUSTOM-ENTITY'],
+                permissions: ['read', 'edit'],
+                pages: ['dashboard', 'orders']
+            };
+            const authorized = [{ id: 'assigned', createdBy: 'another-user' }];
+            expect(Auth.isDocument()).toBe(true);
+            expect(Auth.getVisibleCompanyIds()).toEqual(['CUSTOM-ENTITY']);
+            expect(Auth.filterOrders(authorized)).toBe(authorized);
+            expect(Auth.filterCustomers(authorized, [])).toBe(authorized);
+            expect(Auth.canViewOrder('assigned', authorized)).toBe(true);
+            expect(Auth.canViewOrder('unloaded-id', authorized)).toBe(false);
+            expect(Auth.getVisiblePages()).toEqual(['dashboard', 'orders']);
+            expect(Auth.canEdit()).toBe(true);
+            expect(Auth.canDeleteOrder(authorized[0])).toBe(false);
         });
     });
 });
