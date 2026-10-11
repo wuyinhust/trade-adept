@@ -1,0 +1,46 @@
+{
+    "name": "trade-order-system",
+    "version": "3.0.0",
+    "type": "module",
+    "description": "Grandware 外贸订单跟踪系统",
+    "main": "index.html",
+    "scripts": {
+        "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --no-coverage",
+        "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+        "lint": "eslint js/ --no-warn-ignored",
+        "lint:fix": "eslint js/ --fix --no-warn-ignored",
+        "format": "prettier --write \"js/**/*.js\"",
+        "format:check": "prettier --check \"js/**/*.js\"",
+        "prepare": "husky"
+    },
+    "keywords": [
+        "trade",
+        "order",
+        "management"
+    ],
+    "author": "Grandware Group",
+    "license": "ISC",
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "@playwright/test": "^1.62.1",
+        "eslint": "^10.8.0",
+        "http-server": "^14.1.1",
+        "husky": "^9.1.7",
+        "jest": "^30.4.2",
+        "jest-environment-jsdom": "^30.4.1",
+        "lint-staged": "^17.3.0",
+        "prettier": "^3.9.6"
+    },
+    "lint-staged": {
+        "js/!(cloudbase-sdk|tcb).js": [
+            "eslint --fix --no-warn-ignored",
+            "prettier --write"
+        ],
+        "css/*.css": [
+            "prettier --write"
+        ],
+        "*.{json,md,html}": [
+            "prettier --write"
+        ]
+    }
+}

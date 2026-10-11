@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Grandware 系统诊断</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family:
+                    'Inter',
+                    -apple-system,
+                    BlinkMacSystemFont,
+                    sans-serif;
+                background: #f5f5f7;
+                color: #1d1d1f;
+                padding: 20px;
+            }
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+            }
+            h1 {
+                font-size: 24px;
+                margin-bottom: 8px;
+            }
+            .subtitle {
+                color: #6e6e73;
+                margin-bottom: 24px;
+                font-size: 14px;
+            }
+            .card {
+                background: white;
+                border-radius: 12px;
+                padding: 20px;
+                margin-bottom: 16px;
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+            }
+            .card h2 {
+                font-size: 16px;
+                margin-bottom: 12px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .status {
+                display: inline-block;
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+            }
+            .status-pending {
+                background: #d1d1d6;
+            }
+            .status-ok {
+                background: #30d158;
+            }
+            .status-fail {
+                background: #ff3b30;
+            }
+            .status-warn {
+                background: #ff9f0a;
+            }
+            .log {
+                background: #1d1d1f;
+                color: #30d158;
+                font-family: 'SF Mono', monospace;
+                font-size: 11px;
+                padding: 12px;
+                border-radius: 8px;
+                max-height: 300px;
+                overflow-y: auto;
+                line-height: 1.6;
+                white-space: pre-wrap;
+                word-break: break-all;
+            }
+            .log .warn {
+                color: #ff9f0a;
+            }
+            .log .error {
+                color: #ff3b30;
+            }
+            .log .info {
+                color: #64d2ff;
+            }
+            button {
+                background: #0071e3;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                margin-right: 8px;
+                margin-top: 8px;
+            }
+            button:hover {
+                background: #0077ed;
+            }
+            button:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+            button.secondary {
+                background: #e8e8ed;
+                color: #1d1d1f;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 8px;
+                font-size: 12px;
+            }
+            th,
+            td {
+                text-align: left;
+                padding: 8px;
+                border-bottom: 1px solid #e5e5ea;
+            }
+            th {
+                color: #6e6e73;
+                font-weight: 600;
+            }
+            .badge {
+                display: inline-block;
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+            .badge-ok {
+                background: #30d15833;
+                color: #1b8a3d;
+            }
+            .badge-fail {
+                background: #ff3b3033;
+                color: #c41e1e;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔍 Grandware 系统诊断</h1>
+            <p class="subtitle">更新时间: <span id="diagTime">-</span> | 版本: <span id="diagVersion">v32</span></p>
+
+            <!-- 1. SDK 加载 -->
+            <div class="card">
+                <h2><span class="status status-pending" id="s1"></span> 1. CloudBase SDK 加载</h2>
+                <div class="log" id="log1">等待检测...</div>
+            </div>
+
+            <!-- 2. 匿名登录 -->
+            <div class="card">
+                <h2><span class="status status-pending" id="s2"></span> 2. CloudBase 初始化 & 匿名登录</h2>
+                <div class="log" id="log2">等待检测...</div>
+            </div>
+
+            <!-- 3. 数据库权限 -->
+            <div class="card">
+                <h2><span class="status status-pending" id="s3"></span> 3. 数据库读写权限测试</h2>
+                <div class="log" id="log3">等待检测...</div>
+            </div>
+
+            <!-- 4. 数据加载 -->
+            <div class="card">
+                <h2><span class="status status-pending" id="s4"></span> 4. 当前云端数据加载</h2>
+                <div id="dataTable4"></div>
+                <div class="log" id="log4">等待检测...</div>
+            </div>
+
+            <!-- 5. 数据保存 -->
+            <div class="card">
+                <h2><span class="status status-pending" id="s5"></span> 5. 数据保存测试（写入验证）</h2>
+                <div class="log" id="log5">等待检测...</div>
+            </div>
+
+            <!-- 6. Service Worker -->
+            <div class="card">
+                <h2><span class="status status-pending" id="s6"></span> 6. Service Worker & 缓存状态</h2>
+                <div class="log" id="log6">等待检测...</div>
+            </div>
+
+            <div style="margin-top: 16px">
+                <button onclick="runAll()">🔄 运行全部诊断</button>
+                <button class="secondary" onclick="clearAndRetest()">🗑️ 清除缓存并重新测试</button>
+            </div>
+        </div>
+
+        <script src="js/cloudbase-sdk.js"></script>
+        <script>
+            const ENV_ID = 'grandware-d9gb4owez89cb9df9';
+            const COLL = 'app_data';
+            const DATA_TYPE = 'gw_data';
+
+            function log(id, msg, cls) {
+                const el = document.getElementById(id);
+                const clsStr = cls ? ` class="${cls}"` : '';
+                el.innerHTML += `<span${clsStr}>[${new Date().toLocaleTimeString()}] ${msg}</span>\n`;
+                el.scrollTop = el.scrollHeight;
+            }
+
+            function setStatus(id, ok) {
+                const el = document.getElementById(id);
+                el.className = 'status status-' + (ok === true ? 'ok' : ok === false ? 'fail' : 'warn');
+            }
+
+            async function test1_SDK() {
+                const id = 'log1';
+                setStatus('s1', 'pending');
+                log(id, '=== 检测 CloudBase SDK ===', 'info');
+                log(id, `typeof cloudbase: ${typeof cloudbase}`, typeof cloudbase);
+                log(id, `typeof tcb: ${typeof tcb}`, typeof tcb);
+
+                const sdk = typeof cloudbase !== 'undefined' ? cloudbase : typeof tcb !== 'undefined' ? tcb : null;
+                if (!sdk) {
+                    log(id, '❌ SDK 未加载！检查 js/cloudbase-sdk.js 是否存在', 'error');
+                    setStatus('s1', false);
+                    return false;
+                }
+                log(id, '✅ SDK 加载成功', 'ok');
+                log(id, `SDK 版本: ${sdk.version || '未知'}`, 'info');
+                setStatus('s1', true);
+                window.__sdk = sdk;
+                return sdk;
+            }
+
+            async function test2_Auth() {
+                const id = 'log2';
+                setStatus('s2', 'pending');
+                log(id, '=== 初始化 CloudBase & 匿名登录 ===', 'info');
+
+                if (!window.__sdk) {
+                    log(id, '❌ SDK 未加载，跳过', 'error');
+                    setStatus('s2', false);
+                    return false;
+                }
+
+                try {
+                    const app = window.__sdk.init({ env: ENV_ID, region: 'ap-shanghai' });
+                    log(id, '✅ app.init() 成功', 'ok');
+                    const auth = app.auth();
+                    log(id, '调用 auth.signInAnonymously()...', 'info');
+
+                    const result = await auth.signInAnonymously();
+                    log(id, 'signInAnonymously 调用完成', 'ok');
+
+                    let loginState = null;
+                    try {
+                        loginState = await auth.getLoginState();
+                        log(id, `getLoginState 成功`, 'ok');
+                    } catch (e) {
+                        log(id, `getLoginState 失败: ${e.message}`, 'warn');
+                    }
+
+                    if (loginState) {
+                        const uid = loginState.user && loginState.user.uid ? loginState.user.uid : '?';
+                        log(id, `✅ 匿名登录成功！UID: ${uid.substring(0, 16)}...`, 'ok');
+                        setStatus('s2', true);
+                        window.__app = app;
+                        window.__db = app.database();
+                        return true;
+                    }
+
+                    log(id, '❌ 登录状态异常', 'error');
+                    setStatus('s2', false);
+                    return false;
+                } catch (e) {
+                    log(id, `❌ 初始化/登录失败: ${e.message}`, 'error');
+                    setStatus('s2', false);
+                    return false;
+                }
+            }
+
+            async function test3_Permission() {
+                const id = 'log3';
+                setStatus('s3', 'pending');
+                log(id, '=== 测试数据库读写权限 ===', 'info');
+
+                if (!window.__db) {
+                    log(id, '❌ 数据库未初始化', 'error');
+                    setStatus('s3', false);
+                    return false;
+                }
+
+                const coll = window.__db.collection(COLL);
+                const testId = `_diag_${Date.now()}`;
+
+                // 写测试
+                try {
+                    log(id, '测试写入...', 'info');
+                    const addResult = await coll.add({
+                        dataType: '_diag_test',
+                        testId: testId,
+                        timestamp: new Date().toISOString()
+                    });
+                    log(id, `add() 返回: ${JSON.stringify(addResult)}`, 'info');
+
+                    if (addResult && addResult.id) {
+                        log(id, '✅ 写入成功！docId: ' + addResult.id, 'ok');
+
+                        // 读测试
+                        try {
+                            log(id, '测试读取...', 'info');
+                            const getResult = await coll.doc(addResult.id).get();
+                            if (getResult.data && getResult.data.length > 0) {
+                                log(id, '✅ 读取成功！', 'ok');
+                            } else {
+                                log(id, '⚠️ 读取返回空数据', 'warn');
+                            }
+                        } catch (e) {
+                            log(id, `⚠️ 读取失败: ${e.message}`, 'warn');
+                        }
+
+                        // 清理
+                        try {
+                            await coll.doc(addResult.id).remove();
+                            log(id, '✅ 诊断数据已清理', 'ok');
+                        } catch (e) {
+                            log(id, `⚠️ 清理失败: ${e.message}`, 'warn');
+                        }
+
+                        setStatus('s3', true);
+                        return true;
+                    } else {
+                        log(id, '❌ 写入返回异常', 'error');
+                        setStatus('s3', false);
+                        return false;
+                    }
+                } catch (e) {
+                    log(id, `❌ 读写测试失败: ${e.message}`, 'error');
+                    if (e.message.includes('permission') || e.message.includes('403')) {
+                        log(
+                            id,
+                            '⚠️ 权限不足！请到 CloudBase 控制台 → 数据库 → app_data → 权限设置 → {"read":true,"write":true}',
+                            'error'
+                        );
+                    }
+                    setStatus('s3', false);
+                    return false;
+                }
+            }
+
+            async function test4_LoadData() {
+                const id = 'log4';
+                setStatus('s4', 'pending');
+                log(id, '=== 加载当前云端数据 ===', 'info');
+
+                if (!window.__db) {
+                    log(id, '❌ 数据库未初始化', 'error');
+                    setStatus('s4', false);
+                    return false;
+                }
+
+                try {
+                    const coll = window.__db.collection(COLL);
+                    log(id, '查询 active=true 的 gw_data...', 'info');
+
+                    const result = await coll
+                        .where({ dataType: DATA_TYPE, active: true })
+                        .orderBy('updatedAt', 'desc')
+                        .limit(10)
+                        .get();
+
+                    const docs = result.data || [];
+                    log(id, `找到 ${docs.length} 条活跃文档`, 'info');
+
+                    if (docs.length === 0) {
+                        log(id, '⚠️ 数据库中没有活跃的 gw_data 文档！', 'warn');
+                        log(id, '尝试不带 active 过滤...', 'info');
+
+                        const result2 = await coll
+                            .where({ dataType: DATA_TYPE })
+                            .orderBy('updatedAt', 'desc')
+                            .limit(5)
+                            .get();
+
+                        const docs2 = result2.data || [];
+                        if (docs2.length === 0) {
+                            log(id, '❌ 数据库中完全没有 gw_data 文档！所有数据都已丢失！', 'error');
+                            setStatus('s4', false);
+                            return false;
+                        }
+                        log(id, `找到 ${docs2.length} 条文档（含inactive）`, 'info');
+                        renderDocTable(docs2, 'dataTable4');
+                    } else {
+                        renderDocTable(docs, 'dataTable4');
+                    }
+
+                    // 检查最新文档内容
+                    if (docs.length > 0) {
+                        const latest = docs[0];
+                        const p = latest.payload || {};
+                        log(id, `最新文档 v${latest.version || '?'}`, 'info');
+                        log(id, `更新者: ${latest.updatedBy || 'unknown'}`, 'info');
+                        log(id, `更新时间: ${latest.updatedAt || '?'}`, 'info');
+                        log(
+                            id,
+                            `客户: ${(p.customers || []).length} | 订单: ${(p.orders || []).length} | 工厂: ${(p.factories || []).length}`,
+                            'info'
+                        );
+                        if (p.factories && p.factories.length > 0) {
+                            log(id, `工厂列表: ${p.factories.map(f => f.name).join(', ')}`, 'info');
+                        }
+                    }
+
+                    setStatus('s4', docs.length > 0);
+                    return docs;
+                } catch (e) {
+                    log(id, `❌ 查询失败: ${e.message}`, 'error');
+                    setStatus('s4', false);
+                    return false;
+                }
+            }
+
+            function renderDocTable(docs, tableId) {
+                if (docs.length === 0) return;
+                let html =
+                    '<table><tr><th>版本</th><th>更新者</th><th>时间</th><th>活跃</th><th>工厂数</th><th>客户数</th><th>订单数</th></tr>';
+                docs.forEach(d => {
+                    const p = d.payload || {};
+                    html += `<tr>
+            <td>v${d.version || '?'}</td>
+            <td>${d.updatedBy || '?'}</td>
+            <td>${(d.updatedAt || '').substring(11, 19)}</td>
+            <td><span class="badge ${d.active !== false ? 'badge-ok' : 'badge-fail'}">${d.active !== false ? 'active' : 'inactive'}</span></td>
+            <td>${(p.factories || []).length}</td>
+            <td>${(p.customers || []).length}</td>
+            <td>${(p.orders || []).length}</td>
+        </tr>`;
+                });
+                html += '</table>';
+                document.getElementById(tableId).innerHTML = html;
+            }
+
+            async function test5_SaveData() {
+                const id = 'log5';
+                setStatus('s5', 'pending');
+                log(id, '=== 测试数据保存 ===', 'info');
+
+                if (!window.__db) {
+                    log(id, '❌ 数据库未初始化', 'error');
+                    setStatus('s5', false);
+                    return false;
+                }
+
+                try {
+                    const currentUser = 'DiagTest';
+                    const now = new Date().toISOString();
+
+                    const testData = {
+                        dataType: DATA_TYPE,
+                        payload: {
+                            customers: [],
+                            orders: [],
+                            shipments: [],
+                            invoices: [],
+                            factories: [{ id: 'F-DIAG-TEST', name: '_诊断测试工厂', companyId: 'CO-GR' }]
+                        },
+                        version: 999,
+                        updatedAt: now,
+                        updatedBy: currentUser,
+                        active: true
+                    };
+
+                    log(id, '正在写入诊断测试数据...', 'info');
+                    const coll = window.__db.collection(COLL);
+                    const result = await coll.add(testData);
+
+                    if (result && result.id) {
+                        log(id, `✅ 保存成功！docId: ${result.id}`, 'ok');
+                        log(id, '请刷新页面，查看云端数据是否包含 "诊断测试工厂"', 'info');
+
+                        // 立即读回验证
+                        try {
+                            const getResult = await coll.doc(result.id).get();
+                            if (getResult.data && getResult.data.length > 0) {
+                                const saved = getResult.data[0];
+                                const factories = (saved.payload || {}).factories || [];
+                                const found = factories.find(f => f.id === 'F-DIAG-TEST');
+                                if (found) {
+                                    log(id, '✅ 读回验证：数据完整，工厂 "' + found.name + '" 已存储', 'ok');
+                                    log(id, '💡 结论：写入功能正常。如果刷新后丢失，说明是加载逻辑有问题。', 'info');
+                                } else {
+                                    log(id, '⚠️ 读回验证：数据存在但工厂未找到', 'warn');
+                                }
+                            }
+                        } catch (e) {
+                            log(id, `⚠️ 读回验证失败: ${e.message}`, 'warn');
+                        }
+
+                        // 清理
+                        try {
+                            await coll.doc(result.id).remove();
+                            log(id, '诊断数据已清理', 'info');
+                        } catch (e) {
+                            log(id, `清理失败: ${e.message}`, 'warn');
+                        }
+
+                        setStatus('s5', true);
+                        return true;
+                    } else {
+                        log(id, '❌ 保存返回异常: ' + JSON.stringify(result), 'error');
+                        setStatus('s5', false);
+                        return false;
+                    }
+                } catch (e) {
+                    log(id, `❌ 保存测试失败: ${e.message}`, 'error');
+                    setStatus('s5', false);
+                    return false;
+                }
+            }
+
+            function test6_SW() {
+                const id = 'log6';
+                setStatus('s6', 'pending');
+                log(id, '=== Service Worker & 缓存状态 ===', 'info');
+
+                if (!('serviceWorker' in navigator)) {
+                    log(id, '⚠️ 浏览器不支持 Service Worker', 'warn');
+                    setStatus('s6', false);
+                    return;
+                }
+
+                navigator.serviceWorker
+                    .getRegistrations()
+                    .then(regs => {
+                        if (regs.length === 0) {
+                            log(id, '⚠️ 没有注册的 Service Worker', 'warn');
+                        } else {
+                            regs.forEach(r => {
+                                log(id, `SW scope: ${r.scope}`, 'info');
+                                if (r.active) {
+                                    log(id, `SW state: ${r.active.state}`, 'info');
+                                }
+                                if (r.waiting) {
+                                    log(id, `⚠️ 有等待中的 SW (waiting)，建议 Ctrl+Shift+F5 清除`, 'warn');
+                                }
+                            });
+                        }
+
+                        // 检查缓存
+                        if ('caches' in window) {
+                            caches.keys().then(keys => {
+                                log(id, `缓存名称: ${keys.join(', ') || '(无)'}`, 'info');
+                                if (
+                                    keys.some(
+                                        k =>
+                                            k.includes('grandware-v3') ||
+                                            k.includes('grandware-v2') ||
+                                            k.includes('grandware-v1')
+                                    )
+                                ) {
+                                    log(id, '⚠️ 检测到旧版缓存 (v1/v2/v3)！这会导致加载旧代码。', 'warn');
+                                    log(id, '💡 建议：按 Ctrl+Shift+F5 强制刷新，或清除浏览器缓存。', 'info');
+                                }
+                                if (keys.some(k => k.includes('grandware-v4'))) {
+                                    log(id, '✅ 新版缓存 (v4) 已就绪', 'ok');
+                                }
+                                setStatus('s6', keys.length > 0);
+                            });
+                        }
+                    })
+                    .catch(e => {
+                        log(id, `❌ SW 检测失败: ${e.message}`, 'error');
+                        setStatus('s6', false);
+                    });
+            }
+
+            async function runAll() {
+                document.getElementById('diagTime').textContent = new Date().toLocaleString();
+                // 清空所有日志
+                for (let i = 1; i <= 6; i++) {
+                    document.getElementById('log' + i).innerHTML = '';
+                    document.getElementById('dataTable4').innerHTML = '';
+                }
+                await test1_SDK();
+                await test2_Auth();
+                await test3_Permission();
+                await test4_LoadData();
+                await test5_SaveData();
+                test6_SW();
+            }
+
+            function clearAndRetest() {
+                if ('caches' in window) {
+                    caches.keys().then(keys => {
+                        Promise.all(keys.map(k => caches.delete(k)));
+                    });
+                }
+                if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.getRegistrations().then(regs => {
+                        regs.forEach(r => r.unregister());
+                    });
+                }
+                alert('缓存和 SW 已清除！页面将重新加载。');
+                location.reload(true);
+            }
+
+            // 自动运行
+            window.addEventListener('load', () => {
+                setTimeout(runAll, 500);
+            });
+        </script>
+    </body>
+</html>

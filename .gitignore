@@ -1,0 +1,15 @@
+**/node_modules/
+**/__pycache__/
+**/.DS_Store
+**/._*
+**/.env
+**/.env.*
+!**/.env.example
+**/runtime/
+**/*.sqlite3*
+**/*.log
+**/coverage/
+**/test-results/
+**/playwright-report/
+**/.cloudbase/
+local-preview/data/

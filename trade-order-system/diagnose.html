@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>CloudBase 诊断</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family:
+                    'Inter',
+                    -apple-system,
+                    sans-serif;
+                background: #f5f7fa;
+                color: #333;
+                padding: 20px;
+            }
+            .container {
+                max-width: 700px;
+                margin: 0 auto;
+            }
+            h1 {
+                font-size: 24px;
+                margin-bottom: 8px;
+            }
+            .sub {
+                color: #888;
+                font-size: 13px;
+                margin-bottom: 24px;
+            }
+            .card {
+                background: #fff;
+                border-radius: 10px;
+                padding: 20px;
+                margin-bottom: 16px;
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+            }
+            .card h3 {
+                margin-bottom: 12px;
+                font-size: 16px;
+            }
+            .status {
+                display: inline-block;
+                padding: 3px 10px;
+                border-radius: 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            .status-ok {
+                background: #d1fae5;
+                color: #065f46;
+            }
+            .status-fail {
+                background: #fee2e2;
+                color: #991b1b;
+            }
+            .status-pending {
+                background: #e5e7eb;
+                color: #6b7280;
+            }
+            .result {
+                margin-top: 10px;
+                padding: 10px;
+                background: #f9fafb;
+                border-radius: 6px;
+                font-size: 13px;
+                font-family: monospace;
+                white-space: pre-wrap;
+                word-break: break-all;
+                max-height: 200px;
+                overflow-y: auto;
+            }
+            .btn {
+                padding: 10px 24px;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                cursor: pointer;
+                font-weight: 600;
+                margin-right: 8px;
+                margin-bottom: 8px;
+            }
+            .btn-primary {
+                background: #3b82f6;
+                color: #fff;
+            }
+            .btn-secondary {
+                background: #e5e7eb;
+                color: #333;
+            }
+            .btn-danger {
+                background: #ef4444;
+                color: #fff;
+            }
+            .btn:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+            .config-table {
+                width: 100%;
+                font-size: 13px;
+            }
+            .config-table td {
+                padding: 6px 8px;
+                border-bottom: 1px solid #eee;
+            }
+            .config-table td:first-child {
+                font-weight: 600;
+                color: #666;
+                width: 140px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔧 CloudBase 连接诊断</h1>
+            <p class="sub">环境: grandware-d9gb4owez89cb9df9 | 逐项检测连接状态</p>
+
+            <div class="card">
+                <h3>📦 1. SDK 加载</h3>
+                <div id="s1-status" class="status status-pending">待检测</div>
+                <div id="s1-result" class="result" style="display: none"></div>
+            </div>
+
+            <div class="card">
+                <h3>🔐 2. 匿名登录</h3>
+                <div id="s2-status" class="status status-pending">待检测</div>
+                <div id="s2-result" class="result" style="display: none"></div>
+            </div>
+
+            <div class="card">
+                <h3>📝 3. 数据库写入测试</h3>
+                <div id="s3-status" class="status status-pending">待检测</div>
+                <div id="s3-result" class="result" style="display: none"></div>
+            </div>
+
+            <div class="card">
+                <h3>📖 4. 数据库读取测试</h3>
+                <div id="s4-status" class="status status-pending">待检测</div>
+                <div id="s4-result" class="result" style="display: none"></div>
+            </div>
+
+            <div class="card">
+                <h3>💾 5. 完整保存+读取验证</h3>
+                <div id="s5-status" class="status status-pending">待检测</div>
+                <div id="s5-result" class="result" style="display: none"></div>
+            </div>
+
+            <div class="card">
+                <h3>📊 综合结果</h3>
+                <div id="summary"></div>
+            </div>
+
+            <div>
+                <button class="btn btn-primary" onclick="runAll()">🔍 开始全量诊断</button>
+                <button class="btn btn-secondary" onclick="location.reload()">🔄 刷新页面</button>
+                <a href="index.html" class="btn btn-secondary" style="display: inline-block; text-decoration: none"
+                    >🏠 返回系统</a
+                >
+            </div>
+
+            <div class="card" style="margin-top: 24px; background: #fffbeb">
+                <h3>⚙️ CloudBase 控制台配置清单</h3>
+                <table class="config-table">
+                    <tr>
+                        <td>环境 ID</td>
+                        <td>grandware-d9gb4owez89cb9df9</td>
+                    </tr>
+                    <tr>
+                        <td>匿名登录</td>
+                        <td>用户管理 → 登录设置 → <strong>开启匿名登录</strong></td>
+                    </tr>
+                    <tr>
+                        <td>安全域名</td>
+                        <td>安全配置 → 添加当前域名（含 tcloudbaseapp.com）</td>
+                    </tr>
+                    <tr>
+                        <td>数据库权限</td>
+                        <td>数据库 → app_data → 权限设置 → <strong>{"read": true, "write": true}</strong></td>
+                    </tr>
+                </table>
+                <p style="margin-top: 8px; font-size: 12px; color: #92400e">
+                    ⚠️ 以上四项必须全部配置正确，系统才能正常使用云端协作功能。
+                </p>
+            </div>
+        </div>
+
+        <script src="js/cloudbase-sdk.js"></script>
+        <script>
+            let results = {};
+
+            function setStatus(id, ok, text) {
+                const el = document.getElementById(id + '-status');
+                el.textContent = text || (ok ? '✅ 通过' : '❌ 失败');
+                el.className = 'status ' + (ok ? 'status-ok' : 'status-fail');
+            }
+
+            function showResult(id, text) {
+                const el = document.getElementById(id + '-result');
+                el.textContent = text;
+                el.style.display = 'block';
+            }
+
+            async function runAll() {
+                results = {};
+                document.getElementById('summary').innerHTML = '';
+
+                // Test 1: SDK loading
+                setStatus('s1', false, '检测中...');
+                const sdkOk = typeof cloudbase !== 'undefined' || typeof tcb !== 'undefined';
+                results.sdk = sdkOk;
+                setStatus('s1', sdkOk);
+                showResult(
+                    's1',
+                    sdkOk
+                        ? 'SDK 加载成功 (cloudbase/tcb 全局变量可用)'
+                        : 'SDK 加载失败！请检查 js/cloudbase-sdk.js 文件'
+                );
+                if (!sdkOk) {
+                    showSummary();
+                    return;
+                }
+
+                // Test 2: Anonymous login
+                setStatus('s2', false, '检测中...');
+                try {
+                    const app = cloudbase.init({ env: 'grandware-d9gb4owez89cb9df9', region: 'ap-shanghai' });
+                    const auth = app.auth();
+                    await auth.signInAnonymously();
+                    const state = await auth.getLoginState();
+                    if (state && state.user) {
+                        results.auth = true;
+                        setStatus('s2', true);
+                        showResult(
+                            's2',
+                            '匿名登录成功\nUID: ' +
+                                (state.user.uid || '?').substring(0, 20) +
+                                '\nLoginType: ' +
+                                (state.loginType || '?')
+                        );
+                    } else {
+                        throw new Error('getLoginState 返回空');
+                    }
+                } catch (e) {
+                    results.auth = false;
+                    setStatus('s2', false);
+                    const msg = e.message || String(e);
+                    showResult(
+                        's2',
+                        '登录失败: ' + msg + '\n\n请检查：CloudBase 控制台 → 用户管理 → 登录设置 → 开启匿名登录'
+                    );
+                }
+
+                if (!results.auth) {
+                    showSummary();
+                    return;
+                }
+
+                // Test 3: Write test
+                setStatus('s3', false, '检测中...');
+                try {
+                    const app = cloudbase.init({ env: 'grandware-d9gb4owez89cb9df9', region: 'ap-shanghai' });
+                    const db = app.database();
+                    const coll = db.collection('app_data');
+                    const testDoc = { dataType: '_diag_test', timestamp: new Date().toISOString(), test: true };
+                    const result = await coll.add(testDoc);
+                    if (result && result.id) {
+                        results.write = true;
+                        setStatus('s3', true);
+                        showResult('s3', '写入成功\n文档ID: ' + result.id + '\n\n准备清理测试文档...');
+                        // Clean up
+                        try {
+                            await coll.doc(result.id).remove();
+                        } catch (e) {}
+                    } else {
+                        throw new Error('add 返回异常: ' + JSON.stringify(result));
+                    }
+                } catch (e) {
+                    results.write = false;
+                    setStatus('s3', false);
+                    const msg = e.message || String(e);
+                    showResult(
+                        's3',
+                        '写入失败: ' +
+                            msg +
+                            '\n\n请检查：数据库 → app_data 集合 → 权限设置 → {"read": true, "write": true}'
+                    );
+                }
+
+                // Test 4: Read test
+                setStatus('s4', false, '检测中...');
+                try {
+                    const app = cloudbase.init({ env: 'grandware-d9gb4owez89cb9df9', region: 'ap-shanghai' });
+                    const db = app.database();
+                    const coll = db.collection('app_data');
+                    const result = await coll.limit(5).get();
+                    const count = (result.data || []).length;
+                    results.read = true;
+                    setStatus('s4', true);
+                    showResult('s4', '读取成功\n返回 ' + count + ' 条文档\n（空列表也正常，说明有读权限）');
+                } catch (e) {
+                    results.read = false;
+                    setStatus('s4', false);
+                    const msg = e.message || String(e);
+                    showResult('s4', '读取失败: ' + msg);
+                }
+
+                // Test 5: Full save + read cycle
+                setStatus('s5', false, '检测中...');
+                try {
+                    const app = cloudbase.init({ env: 'grandware-d9gb4owez89cb9df9', region: 'ap-shanghai' });
+                    const db = app.database();
+                    const coll = db.collection('app_data');
+
+                    // Save
+                    const testPayload = {
+                        dataType: 'gw_data',
+                        payload: {
+                            customers: [{ id: 'TEST', company: '诊断测试客户' }],
+                            orders: [],
+                            factories: [],
+                            shipments: [],
+                            invoices: []
+                        },
+                        version: 1,
+                        updatedAt: new Date().toISOString(),
+                        updatedBy: '诊断工具'
+                    };
+                    const saveResult = await coll.add(testPayload);
+                    if (!saveResult || !saveResult.id) throw new Error('保存失败');
+
+                    // Read back
+                    const readResult = await coll.orderBy('updatedAt', 'desc').limit(1).get();
+                    const docs = (readResult.data || []).filter(d => d.dataType === 'gw_data');
+
+                    if (docs.length > 0 && docs[0].payload && docs[0].payload.customers) {
+                        results.fullCycle = true;
+                        setStatus('s5', true);
+                        showResult(
+                            's5',
+                            '完整验证通过 ✅\n保存文档ID: ' +
+                                saveResult.id.substring(0, 20) +
+                                '\n读回客户数: ' +
+                                docs[0].payload.customers.length +
+                                '\n\n系统可以正常使用！'
+                        );
+                    } else {
+                        throw new Error('读回数据异常: ' + JSON.stringify(docs).substring(0, 200));
+                    }
+                } catch (e) {
+                    results.fullCycle = false;
+                    setStatus('s5', false);
+                    showResult('s5', '验证失败: ' + (e.message || String(e)));
+                }
+
+                showSummary();
+            }
+
+            function showSummary() {
+                const allOk = results.sdk && results.auth && results.write && results.read && results.fullCycle;
+                const div = document.getElementById('summary');
+                if (allOk) {
+                    div.innerHTML =
+                        '<div style="background:#D1FAE5;padding:16px;border-radius:8px;color:#065F46;font-weight:600;font-size:16px">✅ 全部检测通过！系统可以正常使用云端协作功能。</div>';
+                } else if (!results.sdk) {
+                    div.innerHTML =
+                        '<div style="background:#FEE2E2;padding:16px;border-radius:8px;color:#991B1B;font-weight:600;font-size:16px">❌ SDK 加载失败，无法继续。请刷新页面或重新部署。</div>';
+                } else if (!results.auth) {
+                    div.innerHTML =
+                        '<div style="background:#FEE2E2;padding:16px;border-radius:8px;color:#991B1B;font-weight:600;font-size:16px">❌ 匿名登录失败。请在 CloudBase 控制台开启匿名登录。</div>';
+                } else if (!results.write) {
+                    div.innerHTML =
+                        '<div style="background:#FEE2E2;padding:16px;border-radius:8px;color:#991B1B;font-weight:600;font-size:16px">❌ 数据库写入失败。请检查安全规则和安全域名配置。</div>';
+                } else {
+                    div.innerHTML =
+                        '<div style="background:#FEF3C7;padding:16px;border-radius:8px;color:#92400E;font-weight:600;font-size:16px">⚠️ 部分检测失败，请查看上方详情。最常见问题是安全规则或安全域名未配置。</div>';
+                }
+            }
+
+            // Auto-run on load
+            window.addEventListener('DOMContentLoaded', () => {
+                setTimeout(runAll, 500);
+            });
+        </script>
+    </body>
+</html>

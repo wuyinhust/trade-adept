@@ -1,0 +1,42 @@
+# CloudBase 静态托管部署排除规则
+# 只上传运行时必要的文件，排除开发工具和测试文件
+
+# 依赖和构建
+node_modules/
+package.json
+package-lock.json
+
+# 测试
+tests/
+coverage/
+
+# 开发工具配置
+.eslintrc*
+eslint.config.*
+.prettierrc
+.editorconfig
+
+# 项目管理
+.workbuddy/
+.git/
+.gitignore
+
+# 文档和诊断
+CHANGELOG.md
+*.md
+diagnose.html
+diag.html
+README*
+
+# 工具脚本
+export_users.py
+*.py
+
+# 内部文件
+用户权限总表.xlsx
+
+# 临时文件
+.DS_Store
+Thumbs.db
+*.tmp
+*.log

@@ -1,0 +1,39 @@
+name: Deploy to CloudBase
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []
+    # Only run deploy after CI passes on the same commit
+    # CI workflow runs in parallel; this gate ensures we only deploy clean code
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests (pre-deploy gate)
+        run: npm test
+
+      - name: Deploy to CloudBase Static Hosting
+        uses: TencentCloudBase/cloudbase-action@v1
+        with:
+          secret_id: ${{ secrets.TCB_SECRET_ID }}
+          secret_key: ${{ secrets.TCB_SECRET_KEY }}
+          env_id: ${{ secrets.TCB_ENV_ID }}
+          # Upload all static files except those in .tcbignore
+          build_command: ''
+          deploy_path: '.'

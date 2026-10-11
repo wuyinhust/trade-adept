@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+        />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <meta name="apple-mobile-web-app-title" content="Grandware" />
+        <meta name="theme-color" content="#f5f5f7" />
+        <meta name="description" content="Grandware@once - 外贸订单跟踪系统" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://*.tcloudbase.com https://*.tcloudbasegateway.com https://*.tencentcloudapi.com https://api.exchangerate-api.com https://open.er-api.com wss://*.tcloudbasegateway.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        />
+        <link rel="manifest" href="manifest.json" />
+        <link
+            rel="apple-touch-icon"
+            href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230071e3'/><text x='50' y='68' font-size='55' font-weight='700' fill='white' text-anchor='middle' font-family='sans-serif'>G</text></svg>"
+        />
+        <title>Grandware@once</title>
+        <link rel="stylesheet" href="css/style.css?v56" />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+            rel="stylesheet"
+        />
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+        <!-- CloudBase JS SDK（本地，避免 CDN 加载失败） -->
+        <script src="js/cloudbase-sdk.js?v56"></script>
+    </head>
+    <body>
+        <!-- 数据加载中遮罩 -->
+        <div id="loadingOverlay">
+            <div class="spinner"></div>
+            <p style="font-size: 14px; color: #6e6e73; font-weight: 500">正在加载数据...</p>
+        </div>
+        <!-- ==================== 登录页 ==================== -->
+        <div id="loginPage" class="login-page">
+            <div class="login-card">
+                <div class="login-header">
+                    <div class="login-brand-icon">G</div>
+                    <h1 class="login-title">Grandware@once</h1>
+                    <p class="login-subtitle">Sign in to your workspace</p>
+                </div>
+                <form
+                    id="loginForm"
+                    onsubmit="
+                        App.handleLogin(event);
+                        return false;
+                    "
+                >
+                    <div class="form-group">
+                        <label class="form-label">Username</label>
+                        <input
+                            type="text"
+                            class="form-input"
+                            id="loginUsername"
+                            placeholder="Enter your username"
+                            required
+                            autocomplete="off"
+                        />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Password</label>
+                        <input
+                            type="password"
+                            class="form-input"
+                            id="loginPassword"
+                            placeholder="Enter your password"
+                            required
+                        />
+                    </div>
+                    <div id="loginError" class="login-error" style="display: none"></div>
+                    <button type="submit" class="btn btn-primary login-btn">Sign In</button>
+                </form>
+                <div class="login-footer">
+                    <img src="assets/team.jpg" alt="Grandware Team" class="login-footer-image" />
+                    <p class="login-footer-text">Welcome Back, Grandware Family</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== 主应用 ==================== -->
+        <div id="app" style="display: none">
+            <!-- 侧边栏遮罩（移动端） -->
+            <div class="sidebar-overlay" id="sidebarOverlay" onclick="App.toggleMobileSidebar()"></div>
+            <!-- 侧边栏 -->
+            <aside class="sidebar" id="sidebar">
+                <div class="sidebar-header">
+                    <div class="logo">
+                        <span class="logo-text">Grandware</span>
+                    </div>
+                    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                            <path
+                                d="M2 4.5h14M2 9h14M2 13.5h14"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                    </button>
+                </div>
+                <nav class="sidebar-nav" id="sidebarNav">
+                    <a href="#/dashboard" class="nav-item" data-page="dashboard" id="nav-dashboard">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-label">总览</span>
+                    </a>
+                    <a href="#/orders" class="nav-item" data-page="orders" id="nav-orders">
+                        <span class="nav-icon">📋</span>
+                        <span class="nav-label">订单管理</span>
+                    </a>
+                    <a href="#/customers" class="nav-item" data-page="customers" id="nav-customers">
+                        <span class="nav-icon">👥</span>
+                        <span class="nav-label">客户管理</span>
+                    </a>
+                    <a href="#/factories" class="nav-item" data-page="factories" id="nav-factories">
+                        <span class="nav-icon">🏭</span>
+                        <span class="nav-label">工厂管理</span>
+                    </a>
+                    <a href="#/profit" class="nav-item" data-page="profit" id="nav-profit">
+                        <span class="nav-icon">💰</span>
+                        <span class="nav-label">利润分析</span>
+                    </a>
+                    <a href="#/shipping" class="nav-item" data-page="shipping" id="nav-shipping">
+                        <span class="nav-icon">🚢</span>
+                        <span class="nav-label">物流单证</span>
+                    </a>
+                    <a href="#/settings" class="nav-item" data-page="settings" id="nav-settings">
+                        <span class="nav-icon">⚙️</span>
+                        <span class="nav-label">系统设置</span>
+                    </a>
+                </nav>
+                <div class="sidebar-footer">
+                    <div class="sidebar-theme-toggle">
+                        <button
+                            id="themeToggleBtn"
+                            onclick="App.toggleTheme()"
+                            title="切换主题"
+                            aria-label="切换浅色/暗色主题"
+                        >
+                            <span id="themeToggleIcon">🌙</span>
+                            <span id="themeToggleLabel">暗色模式</span>
+                        </button>
+                    </div>
+                    <div
+                        class="cloud-status"
+                        id="cloudStatusBar"
+                        onclick="App.refreshCloud()"
+                        title="Tap to refresh cloud data"
+                    >
+                        <span id="cloudStatusIcon"></span>
+                        <span id="cloudStatusText">Cloud</span>
+                        <span id="saveStatusText" style="margin-left: 6px"></span>
+                    </div>
+                    <div
+                        class="exchange-rate-info"
+                        id="sidebarRateInfo"
+                        title="Exchange Rate"
+                        onclick="window.location.hash = '#/settings'"
+                        style="cursor: pointer"
+                    >
+                        <div class="rate-label">USD / CNY</div>
+                        <div class="rate-value" id="exchangeRateDisplay">7.25</div>
+                        <div class="rate-source" id="rateSourceText"></div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- 主内容区 -->
+            <main class="main-content">
+                <header class="topbar">
+                    <div class="topbar-left">
+                        <button
+                            class="mobile-menu-btn"
+                            id="mobileMenuBtn"
+                            aria-label="菜单"
+                            onclick="App.toggleMobileSidebar()"
+                        >
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                                <path
+                                    d="M2 5h16M2 10h16M2 15h16"
+                                    stroke="currentColor"
+                                    stroke-width="1.8"
+                                    stroke-linecap="round"
+                                />
+                            </svg>
+                        </button>
+                        <h1 class="page-title" id="pageTitle">总览</h1>
+                        <div class="company-selector">
+                            <select
+                                id="companySelect"
+                                class="company-select"
+                                onchange="App.selectCompany(this.value)"
+                            ></select>
+                        </div>
+                    </div>
+                    <div class="topbar-right">
+                        <div class="search-box">
+                            <input
+                                type="text"
+                                id="globalSearch"
+                                placeholder="搜索订单号、客户名..."
+                                class="search-input"
+                            />
+                            <span class="search-icon">🔍</span>
+                        </div>
+                        <div class="user-info" id="userInfoDropdown" onclick="App.toggleUserMenu()">
+                            <div class="user-avatar" id="userAvatar">A</div>
+                            <span class="user-name" id="userNameDisplay">管理员</span>
+                            <span class="user-role-badge" id="userRoleBadge">管理员</span>
+                            <span class="dropdown-arrow">▼</span>
+                            <div class="user-dropdown" id="userDropdown" style="display: none">
+                                <div class="dropdown-item user-detail">
+                                    <span id="dropdownName"></span>
+                                    <span class="text-xs text-gray" id="dropdownRole"></span>
+                                </div>
+                                <div class="dropdown-divider"></div>
+                                <div
+                                    class="dropdown-item logout-item"
+                                    onclick="
+                                        event.stopPropagation();
+                                        App.handleLogout();
+                                    "
+                                >
+                                    🚪 退出登录
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </header>
+                <div class="page-content" id="pageContent">
+                    <!-- 页面内容动态渲染 -->
+                </div>
+            </main>
+        </div>
+
+        <!-- 模态框容器 -->
+        <div id="modalContainer"></div>
+
+        <!-- Toast 通知容器 -->
+        <div id="toastContainer" class="toast-container"></div>
+
+        <!-- Import Map: 强制所有模块加载最新版本（防止浏览器缓存旧代码） -->
+        <script type="importmap">
+            {
+                "imports": {
+                    "./js/app.js": "./js/app.js?v56",
+                    "./js/data.js": "./js/data.js?v56",
+                    "./js/exchange.js": "./js/exchange.js?v56",
+                    "./js/profit.js": "./js/profit.js?v56",
+                    "./js/dashboard.js": "./js/dashboard.js?v56",
+                    "./js/orders.js": "./js/orders.js?v56",
+                    "./js/settings.js": "./js/settings.js?v56",
+                    "./js/auth.js": "./js/auth.js?v56",
+                    "./js/utils.js": "./js/utils.js?v56",
+                    "./js/constants.js": "./js/constants.js?v56",
+                    "./js/cloud.js": "./js/cloud.js?v56",
+                    "./js/factories.js": "./js/factories.js?v56",
+                    "./js/order-import.js": "./js/order-import.js?v56"
+                }
+            }
+        </script>
+
+        <!-- ES Modules 入口 (v41 动态 import 懒加载) -->
+        <script type="module">
+            // 主应用入口（页面模块由 router() 按需动态 import）
+            import { App } from './js/app.js?v56';
+
+            // Service Worker（PWA 离线支持）
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('/sw.js?v56').catch(function () {});
+            }
+
+            // 启动应用
+            document.addEventListener('DOMContentLoaded', () => {
+                App.init();
+            });
+        </script>
+    </body>
+</html>

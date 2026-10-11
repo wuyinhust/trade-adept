@@ -1,0 +1,9 @@
+node_modules/
+coverage/
+.DS_Store
+Thumbs.db
+*.log
+dist/
+.cloudbase/
+test-results/
+playwright-report/
