@@ -1,0 +1,29 @@
+[Unit]
+Description=Tradept isolated cloud test API
+After=network.target
+
+[Service]
+Type=simple
+User=tradept
+Group=tradept
+WorkingDirectory=/opt/tradept/trade-order-system
+EnvironmentFile=/etc/tradept/cloud-test.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m server.app --runtime /var/lib/tradept --port 3087 --public-origin ${TRADE_PUBLIC_ORIGIN}
+Restart=on-failure
+RestartSec=3
+CPUQuota=25%
+MemoryMax=256M
+TasksMax=64
+StateDirectory=tradept
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tradept
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

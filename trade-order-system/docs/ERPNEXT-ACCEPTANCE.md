@@ -1,19 +1,19 @@
 # ERPNext 接入验收记录
 
-2026-10-12：隔离本地 ERPNext 的真实业务链路验收通过。证据为 [实际回读报告](erpnext-real-acceptance.json)，不是模拟结果或生产部署。只使用虚构租户 `example-company`、法人 `EX-01`、订单 `EX-ORDER-DEMO`；Grandware 的真实数据没有发送给 ERPNext。
+2026-10-12：隔离本地 ERPNext 的真实业务链路验收通过，证据为 [实际回读报告](erpnext-real-acceptance.json)。当前本地 Tradept（3087）、隔离 ERPNext（3088）及旧 CloudBase 在线系统均为测试环境，没有生产环境。本记录的真实 ERP 单据仅在隔离本地测试环境执行：只使用虚构租户 `example-company`、法人 `EX-01`、订单 `EX-ORDER-DEMO`；Grandware 的真实数据没有发送给 ERPNext。
 
 ## 真实单据与下游证据
 
-| 标准单据 | ERPNext 编号 | 实际回读结果 |
-| --- | --- | --- |
-| Customer | Example Buyer Demo | 客户公司名与 Trade 的 `customer.company` 一致 |
-| Supplier | Example Supplier Demo / Example Supplier Two Demo | 两个独立供应商，采购归属与原始明细一致 |
-| Sales Order | SAL-ORD-2026-00001 | 已提交，USD 1000；客户 PO 为 DEMO-PO-001 |
-| Purchase Order | PUR-ORD-2026-00001 | 已提交，USD 420 |
-| Purchase Order | PUR-ORD-2026-00002 | 已提交，USD 280 |
-| Delivery Note | MAT-DN-2026-00001 | 已提交，数量 100；销售订单实际交付率 100% |
-| Payment Entry | ACC-PAY-2026-00001 | 已提交，实际收到 USD 1000；销售订单预收 USD 1000 |
-| GL Entry | ACC-PAY-2026-00001 对应两条分录 | 借 Trade Demo Bank USD 1000、贷 Debtors USD 1000，总账平衡 |
+| 标准单据       | ERPNext 编号                                      | 实际回读结果                                               |
+| -------------- | ------------------------------------------------- | ---------------------------------------------------------- |
+| Customer       | Example Buyer Demo                                | 客户公司名与 Trade 的 `customer.company` 一致              |
+| Supplier       | Example Supplier Demo / Example Supplier Two Demo | 两个独立供应商，采购归属与原始明细一致                     |
+| Sales Order    | SAL-ORD-2026-00001                                | 已提交，USD 1000；客户 PO 为 DEMO-PO-001                   |
+| Purchase Order | PUR-ORD-2026-00001                                | 已提交，USD 420                                            |
+| Purchase Order | PUR-ORD-2026-00002                                | 已提交，USD 280                                            |
+| Delivery Note  | MAT-DN-2026-00001                                 | 已提交，数量 100；销售订单实际交付率 100%                  |
+| Payment Entry  | ACC-PAY-2026-00001                                | 已提交，实际收到 USD 1000；销售订单预收 USD 1000           |
+| GL Entry       | ACC-PAY-2026-00001 对应两条分录                   | 借 Trade Demo Bank USD 1000、贷 Debtors USD 1000，总账平衡 |
 
 先使用产品 outbox/有限批次 worker 创建 Customer、两个 Supplier、SO 与两个 PO 草稿，并独立回读 USD 1000/420/280。随后专门的虚构验收脚本通过标准 API 提交上述单据、创建 DN/PE 并回读总账。再次执行验收复用了相同单据编号，没有新建第二组销售、采购、出运或收款单据。
 

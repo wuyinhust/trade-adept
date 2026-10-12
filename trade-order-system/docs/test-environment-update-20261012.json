@@ -1,0 +1,87 @@
+{
+    "version": "0.1.1",
+    "environmentScope": "test_only",
+    "observedDate": "2026-10-12",
+    "local": {
+        "origin": "http://127.0.0.1:3087",
+        "businessStateUnchanged": true,
+        "tenantRevisions": {
+            "example-company": 9,
+            "grandware": 1
+        },
+        "quickCheck": "ok",
+        "checks": {
+            "entry": {
+                "status": 200,
+                "assetVersion": "0.1.1",
+                "sha256": "a97c39ab4f2e047c36018601af7dd8fe2d9541adff14e555fe3e66653ad6356c"
+            },
+            "workspaceLabel": {
+                "status": 200,
+                "label": "数据库工作区 · 测试环境",
+                "sha256": "65cce682939c4dc0753f88fe6a06ecc16a238c4abf9aeb3caf4d57a367afecb1"
+            },
+            "unauthenticatedSession": 401,
+            "privateStaticPath": 404,
+            "crossOrigin": 403,
+            "configuredLogin": 200,
+            "persistedWorkspace": {
+                "status": 200,
+                "revision": 9
+            },
+            "logout": 200,
+            "isolatedERP": {
+                "status": 200,
+                "changedByThisPatch": false
+            }
+        }
+    },
+    "cloud": {
+        "origin": "http://localhost:3089",
+        "accessMode": "ssh_encrypted_loopback",
+        "publicHTTPS": false,
+        "dataset": "public fictional Grandware seed",
+        "initialCounts": {
+            "orders": 4,
+            "customers": 4,
+            "factories": 4,
+            "shipments": 4,
+            "invoices": 0
+        },
+        "initialRevision": 1,
+        "savedRevision": 2,
+        "checks": {
+            "entryVersion": {
+                "status": 200,
+                "assetVersion": "0.1.1"
+            },
+            "workspaceLabel": true,
+            "unauthenticated401": true,
+            "privateStatic404": true,
+            "crossOrigin403": true,
+            "roleCompanyAndFinanceIsolation": true,
+            "tenantIsolation": true,
+            "staleSave409NoOverwrite": true,
+            "financialAndOtherRecordsPreserved": true
+        },
+        "restartPersistencePassed": true,
+        "verifiedAt": "2026-10-12T05:28:21.304406+00:00",
+        "restartVerifiedAt": "2026-10-12T05:31:03.031767+00:00"
+    },
+    "regression": {
+        "frontend": {
+            "suites": 14,
+            "passed": 636,
+            "seconds": 89.692,
+            "logSha256": "205c5cadfc359a66d5c12365a8acc2b42c11e4a66c9e13573e0c5376533a5061"
+        },
+        "backend": {
+            "passed": 130,
+            "seconds": 32.18,
+            "logSha256": "902d75f95c157018e548de87359b9e55a5f752b73040f82c880ba84a950b8e5a"
+        },
+        "lintPassed": true,
+        "versionPassed": true
+    },
+    "credentialsOrBusinessPayloadIncluded": false
+}

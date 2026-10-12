@@ -1,0 +1,5 @@
+# A dedicated test hostname, configured in the service environment.
+# Caddy terminates TLS on the same VM as the loopback-only Python API.
+{$TRADE_PUBLIC_ORIGIN} {
+    reverse_proxy 127.0.0.1:3087
+}

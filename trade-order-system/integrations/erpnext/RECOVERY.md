@@ -1,6 +1,6 @@
 # 隔离 ERPNext 环境恢复
 
-2026-10-12 当前状态：持久 Lima VM `tradept-erp` 运行；真实 Example 业务链通过，详见 [验收记录](../../docs/ERPNEXT-ACCEPTANCE.md) 与 [回读证据](../../docs/erpnext-real-acceptance.json)。ERPNext 16.32.3 / Frappe 16.31.0、Docker Engine 29.1.3、Compose 2.40.3；服务仅暴露宿主 loopback 3088。恢复时复用当前实例、私有密码与 Docker volumes，不重新创建空站点。
+2026-10-12 当前状态：持久 Lima VM `tradept-erp` 运行；真实 Example 业务链通过，详见 [验收记录](../../docs/ERPNEXT-ACCEPTANCE.md) 与 [回读证据](../../docs/erpnext-real-acceptance.json)。ERPNext 16.32.3 / Frappe 16.31.0、Docker Engine 29.1.3、Compose 2.40.3；服务仅暴露宿主 loopback 3088。当前该 ERPNext、本地 Tradept（3087）及旧 CloudBase 在线系统均为测试环境，没有生产环境。本文恢复操作仅针对隔离本地 ERPNext，复用当前实例、私有密码与 Docker volumes，不重新创建空站点。
 
 ## 实际位置与资源阈值
 
@@ -53,10 +53,10 @@ sha256:1d6bffe64b848468ac97f821d369a4846d983de1800ccf6b5ec8853e85cefc55
 
 实际拉取的官方 ARM64 镜像：
 
-| 镜像 | 实際 digest |
-| --- | --- |
-| ERPNext 16.32.3 | sha256:a9dea1cc498aa08010eb3567f1808c7bed98e4b9d17dcbd4265791c9ad00971e |
-| MariaDB 11.8 | sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15 |
+| 镜像             | 实際 digest                                                             |
+| ---------------- | ----------------------------------------------------------------------- |
+| ERPNext 16.32.3  | sha256:a9dea1cc498aa08010eb3567f1808c7bed98e4b9d17dcbd4265791c9ad00971e |
+| MariaDB 11.8     | sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15 |
 | Redis 6.2-alpine | sha256:b362b5dff9d14d961dc3352db4776aba6a8c53ca2661d7c74ad2c121f82cdaea |
 
 ERP 镜像 17 层压缩合计约 840 MiB，已经实际拉取并运行；压缩大小不能当作解压落盘预算。私有 env 固定 ERPNext digest；保留原文件中的随机管理员/数据库密码。若确需创建全新独立实例，先按 README 用 `private_env.py` 生成新的私有随机配置，不覆盖现有文件。
@@ -79,4 +79,4 @@ Trade 的 loopback ERP API 调用显式禁用全局代理，且拒绝跟随 HTTP
 
 新的虚构订单需在财务界面配置明确 ERP 明细，并使用当前数据库 revision 显式排队。管理员运行 `python3 -m server.erpnext_cli --runtime <私有runtime> run --limit 10`；这是有限批次操作，没有常驻自动调度。已提交订单的实质修改会 blocked，后续需要明确 cancel/amend 流程，不可通过删除本地 links 或 outbox 强制重放。
 
-[acceptance.py](acceptance.py) 仅用于原虚构 Example / loopback 站点，可回读并复用同一组单据。生成报告前会检查交付、收款、平衡总账以及业务/其他租户数据不变。正式生产接入、审批与双向回写仍在本轮边界之外。
+[acceptance.py](acceptance.py) 仅用于原虚构 Example / loopback 站点，可回读并复用同一组单据。生成报告前会检查交付、收款、平衡总账以及业务/其他租户数据不变。正式单据审批、双向回写和未来商业生产接入仍在本轮边界之外。

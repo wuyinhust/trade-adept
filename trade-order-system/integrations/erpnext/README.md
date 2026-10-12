@@ -1,6 +1,6 @@
 # ERPNext 隔离本地环境
 
-2026-10-12：官方 ERPNext 16.32.3 / Frappe 16.31.0 已在本机隔离 VM 运行，虚构 Example 的 Customer、两 Supplier、SO、两 PO、DN、PE 与平衡总账实际验收通过。结果见 [验收记录](../../docs/ERPNEXT-ACCEPTANCE.md) 与 [实际回读 JSON](../../docs/erpnext-real-acceptance.json)。宿主入口仅为 `http://127.0.0.1:3088`，并非线上生产部署。
+2026-10-12：官方 ERPNext 16.32.3 / Frappe 16.31.0 已在本机隔离 VM 运行，虚构 Example 的 Customer、两 Supplier、SO、两 PO、DN、PE 与平衡总账实际验收通过。结果见 [验收记录](../../docs/ERPNEXT-ACCEPTANCE.md) 与 [实际回读 JSON](../../docs/erpnext-real-acceptance.json)。宿主入口仅为 `http://127.0.0.1:3088`。当前该 ERPNext、本地 Tradept（3087）及旧 CloudBase 在线系统均为测试环境，没有生产环境；本目录仅描述隔离本地 ERPNext 的部署和验收。
 
 本目录基于官方 [frappe_docker 的 pwd.yml](https://github.com/frappe/frappe_docker/blob/main/pwd.yml) 服务结构，ERPNext 固定 `v16.32.3`。MariaDB、Redis、站点和日志使用独立 Docker volumes，不挂载 Grandware 原数据。原 Compose MIT 许可保留在 `FRAPPE-DOCKER-LICENSE`；ERPNext 使用 [GPL-3.0](https://github.com/frappe/erpnext/blob/v16.32.3/license.txt)，本系统通过标准 API 交互。
 
@@ -59,4 +59,4 @@ python3 integrations/erpnext/acceptance.py --runtime /private-runtime/trade --or
 
 脚本显式提交标准 SO/PO、创建并提交 DN/PE，回读交付率、收款与总账；严格限定 loopback/frontend/Example，按持久映射复用同一单据。实测结果为 SO 1000、PO 420/280、DN 数量 100、PE 1000、GL 借贷各 1000。源业务 payload/revision 与其他租户均不变，Trade 已收金额仍为 0。
 
-提交只是独立虚构验收能力。常规产品界面本轮交付草稿同步；正式提交审批、取消/amend、双向业务回写、跨币种采购、库存与税费模板须后续开发。验收脚本不能充当生产自动收款流程。
+提交只是独立虚构验收能力。常规产品界面本轮交付草稿同步；正式提交审批、取消/amend、双向业务回写、跨币种采购、库存与税费模板须后续开发。验收脚本不能充当未来商业部署的自动收款流程。

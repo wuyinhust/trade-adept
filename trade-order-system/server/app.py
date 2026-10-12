@@ -1,7 +1,8 @@
-"""Same-origin loopback HTTP API with an explicit static-file allowlist."""
+"""Same-origin HTTP API, bound to loopback with an explicit static-file allowlist."""
 from __future__ import annotations
 
 import argparse
+import ipaddress
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -18,6 +19,35 @@ PREVIEW_ROOT = SOURCE_ROOT.parent / "local-preview"
 DEFAULT_RUNTIME = Path(os.environ.get("TRADE_RUNTIME_DIR", SOURCE_ROOT / "server" / "runtime"))
 COOKIE_NAME = "trade_session"
 MAX_BODY = 5 * 1024 * 1024
+
+
+def normalize_public_origin(value):
+    """Configure one HTTPS origin behind a same-host loopback reverse proxy."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or any(character.isspace() or ord(character) < 32 for character in value) or "?" in value or "#" in value:
+        raise ValueError("Public origin must be one HTTPS origin with a DNS hostname")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except (TypeError, ValueError):
+        raise ValueError("Public origin must be one HTTPS origin with a DNS hostname") from None
+    hostname = parsed.hostname or ""
+    if (parsed.scheme != "https" or parsed.username is not None or parsed.password is not None
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+            or not hostname or len(hostname) > 253
+            or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+", hostname)
+            or hostname == "localhost" or hostname.endswith(".localhost")
+            or (port is not None and not 1 <= port <= 65535)):
+        raise ValueError("Public origin must be one HTTPS origin with a DNS hostname")
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("Public origin requires a DNS hostname, not an IP address")
+    authority = hostname if port in (None, 443) else f"{hostname}:{port}"
+    return f"https://{authority}"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -41,14 +71,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _origin(self, required=False):
         host = self.headers.get("Host", "")
-        allowed = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
-        if host not in allowed:
+        public_origin = self.server.public_origin
+        allowed = {urlsplit(public_origin).netloc} if public_origin else {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+        if len(self.headers.get_all("Host", [])) != 1 or host not in allowed:
             raise APIError(403, "HOST_DENIED", "Invalid host")
         origin = self.headers.get("Origin")
-        if (required and not origin) or (origin and origin != "http://" + host):
+        expected_origin = public_origin or "http://" + host
+        if len(self.headers.get_all("Origin", [])) > 1 or (required and not origin) or (origin and origin != expected_origin):
             raise APIError(403, "ORIGIN_DENIED", "Same-origin request required")
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
             raise APIError(403, "ORIGIN_DENIED", "Cross-site request denied")
+
+    def _session_cookie(self, token, max_age):
+        cookie = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}"
+        return cookie + "; Secure" if self.server.public_origin else cookie
 
     def _body(self):
         try:
@@ -110,11 +146,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/login":
                 token = self.store.login(body.get("tenantId"), body.get("username"), body.get("password"))
                 actor = self.store.actor(token)
-                self._json(200, {"ok": True, "user": self.store.session(actor)["user"]}, f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}")
+                self._json(200, {"ok": True, "user": self.store.session(actor)["user"]}, self._session_cookie(token, SESSION_TTL))
                 return
             if path == "/api/logout":
                 self.store.logout(self._token())
-                self._json(200, {"ok": True}, f"{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+                self._json(200, {"ok": True}, self._session_cookie("", 0))
                 return
             actor = self.store.actor(self._token())
             if path == "/api/changes":
@@ -171,10 +207,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
 
-def create_server(runtime, port=3087):
+def create_server(runtime, port=3087, public_origin=None):
+    public_origin = normalize_public_origin(public_origin)
     store = Store(runtime)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.store = store
+    server.public_origin = public_origin
     return server
 
 
@@ -182,10 +220,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=3087)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
+    parser.add_argument("--public-origin", help="Fixed HTTPS origin behind a same-host loopback reverse proxy; never trusts forwarded headers")
     args = parser.parse_args()
-    with create_server(args.runtime, args.port) as server:
+    try:
+        public_origin = normalize_public_origin(args.public_origin)
+    except ValueError as error:
+        parser.error(str(error))
+    with create_server(args.runtime, args.port, public_origin=public_origin) as server:
         print(f"Local trade workspace: http://127.0.0.1:{server.server_port}", flush=True)
-        print("Loopback only. Production database connections are disabled.", flush=True)
+        print("Local test environment. Listening on loopback only.", flush=True)
+        if public_origin:
+            print(f"Cloud test reverse proxy origin: {public_origin}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

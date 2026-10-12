@@ -35,4 +35,4 @@ jobs:
               run: python3 scripts/version.py
 
             - name: Deployment boundary
-              run: echo "Validation only. The workspace now requires its authenticated business API. Configure and approve API hosting before a production release; a static-only upload is insufficient."
+              run: echo "Validation only. All current environments are test environments. Updating a hosted test environment requires the authenticated business API and persistent storage; a static-only upload is insufficient."

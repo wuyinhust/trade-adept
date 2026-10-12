@@ -95,7 +95,7 @@ const originalCloudStatus = App.updateCloudStatus;
 App.updateCloudStatus = function () {
     originalCloudStatus.call(this);
     const text = document.getElementById('cloudStatusText');
-    if (text) text.textContent = '数据库工作区 · 本地试运行';
+    if (text) text.textContent = '数据库工作区 · 测试环境';
 };
 
 const conflictBar = document.createElement('div');

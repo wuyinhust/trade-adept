@@ -2,7 +2,11 @@
 
 通用外贸订单系统，以 Grandware 为首个演示客户。账号由管理员配置，支持租户、公司主体、角色和订单分配权限。界面沿用现有毛玻璃与简洁布局，使用 Tradept 标识。
 
-当前正式开发版本为 **0.1.0**。本阶段交付范围和后续需求见 [发布验收](trade-order-system/docs/RELEASE-0.1.0.md)，版本递增规则见 [VERSIONING](trade-order-system/docs/VERSIONING.md)。Git 源码发布与生产系统上线分别验证。
+当前正式开发版本为 **0.1.1**。本阶段交付范围和后续需求见 [首次发布验收](trade-order-system/docs/RELEASE-0.1.0.md)，本次更新见 [测试环境更新记录](trade-order-system/docs/RELEASE-0.1.1.md)，版本递增规则见 [VERSIONING](trade-order-system/docs/VERSIONING.md)。Git 源码发布与测试环境更新分别验证。
+
+当前没有生产环境。`127.0.0.1:3087` 的 Tradept 应用、`127.0.0.1:3088` 的隔离 ERPNext 以及旧 CloudBase 在线系统均为测试环境。环境属性不改变各次验收记录的执行范围；具体更新版本和结果以对应部署回读为准。
+
+`0.1.1` 新增独立云测试环境，通过本机 SSH 加密转发入口 `http://localhost:3089/#/dashboard` 访问；云端使用虚构数据与独立账号，隧道需保持运行。当前没有公网 HTTPS 入口。实际部署和重启持久化验证见 [测试环境更新记录](trade-order-system/docs/RELEASE-0.1.1.md)。
 
 ## 本地启动
 
@@ -48,4 +52,4 @@ python3 -m unittest discover -s server/tests -v
 python3 scripts/version.py
 ```
 
-GitHub Actions 执行上述源码验证；生产数据库接入和生产部署需要单独的环境配置与验收。
+GitHub Actions 执行上述源码验证；测试数据库接入和测试部署需要对应的环境配置与验收。未来商业生产部署另行配置并验收。
