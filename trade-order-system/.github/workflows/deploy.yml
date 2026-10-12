@@ -1,4 +1,4 @@
-name: Validate Trade Workspace
+name: Validate Tradept
 
 on:
     push:
@@ -29,7 +29,10 @@ jobs:
               run: npm run lint
 
             - name: Run local API integration tests
-              run: python3 -m unittest server.tests.test_service -v
+              run: python3 -m unittest discover -s server/tests -v
+
+            - name: Check release metadata
+              run: python3 scripts/version.py
 
             - name: Deployment boundary
               run: echo "Validation only. The workspace now requires its authenticated business API. Configure and approve API hosting before a production release; a static-only upload is insufficient."

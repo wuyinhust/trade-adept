@@ -1,0 +1,52 @@
+# Official Lima VM structure adapted for Ubuntu-packaged rootful Docker.
+# Upstream: https://github.com/lima-vm/lima/blob/v2.2.1/templates/docker.yaml
+minimumLimaVersion: 2.2.1
+vmType: vz
+arch: aarch64
+cpus: 4
+memory: 4GiB
+disk: 20GiB
+mounts: []
+images:
+  - location: https://cloud-images.ubuntu.com/releases/noble/release-20260926/ubuntu-24.04-server-cloudimg-arm64.img
+    arch: aarch64
+    digest: sha256:1d6bffe64b848468ac97f821d369a4846d983de1800ccf6b5ec8853e85cefc55
+    variant: server
+containerd:
+  system: false
+  user: false
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eu -o pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+        sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources
+      fi
+      if ! command -v docker >/dev/null 2>&1; then
+        apt-get update
+        apt-get install -y --no-install-recommends docker.io docker-compose-v2
+      fi
+      mkdir -p /etc/docker
+      if [ ! -f /etc/docker/daemon.json ]; then
+        echo '{"features":{"containerd-snapshotter":false},"max-concurrent-downloads":1}' > /etc/docker/daemon.json
+      fi
+      systemctl unmask docker.service docker.socket containerd.service containerd.socket
+      systemctl enable --now docker
+      systemctl restart docker
+      # mDNS is unnecessary in this VM and should not be forwarded to macOS.
+      systemctl disable --now avahi-daemon.socket avahi-daemon.service 2>/dev/null || true
+probes:
+  - script: |
+      #!/bin/sh
+      set -eu
+      timeout 30s sh -c 'until sudo docker info >/dev/null 2>&1; do sleep 2; done'
+    hint: Check guest /var/log/cloud-init-output.log and sudo systemctl status docker.
+portForwards:
+  - guestPort: 3088
+    hostPort: 3088
+    hostIP: 127.0.0.1
+  - guestPortRange: [1, 65535]
+    proto: any
+    ignore: true

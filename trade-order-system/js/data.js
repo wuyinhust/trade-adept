@@ -1133,6 +1133,9 @@ const DB = {
         result = this.filterByCompany(result);
         result = Auth.filterOrders(result);
         if (filter.status && filter.status !== 'all') result = result.filter(o => o.status === filter.status);
+        if (filter.salespersonId && filter.salespersonId !== 'all') {
+            result = result.filter(o => String(o.salespersonId) === String(filter.salespersonId));
+        }
         if (filter.paymentStatus && filter.paymentStatus !== 'all') {
             result = result.filter(o => o.paymentStatus === filter.paymentStatus);
         }
@@ -1140,12 +1143,18 @@ const DB = {
             result = result.filter(o => o.shippingStatus === filter.shippingStatus);
         }
         if (filter.search) {
-            const q = filter.search.toLowerCase();
+            const q = String(filter.search).toLowerCase();
             result = result.filter(
                 o =>
-                    o.id.toLowerCase().includes(q) ||
-                    o.customerName.toLowerCase().includes(q) ||
-                    o.productName.toLowerCase().includes(q) ||
+                    String(o.id || '')
+                        .toLowerCase()
+                        .includes(q) ||
+                    String(o.customerName || '')
+                        .toLowerCase()
+                        .includes(q) ||
+                    String(o.productName || '')
+                        .toLowerCase()
+                        .includes(q) ||
                     (o.customerOrderNo || '').toLowerCase().includes(q) ||
                     (o.companyOperationNo || '').toLowerCase().includes(q) ||
                     (o.contactPerson || '').toLowerCase().includes(q)
@@ -1444,13 +1453,14 @@ const DB = {
         });
         if (filter.status && filter.status !== 'all') result = result.filter(s => s.status === filter.status);
         if (filter.search) {
-            const q = filter.search.toLowerCase();
-            result = result.filter(
-                s =>
-                    s.orderId.toLowerCase().includes(q) ||
-                    s.blNumber.toLowerCase().includes(q) ||
-                    s.customerName.toLowerCase().includes(q) ||
-                    s.containerNo.toLowerCase().includes(q)
+            const q = String(filter.search).toLowerCase();
+            result = result.filter(s =>
+                [s.id, s.orderId, s.companyOperationNo, s.invoiceNo, s.customerName, s.blNumber, s.containerNo].some(
+                    value =>
+                        String(value || '')
+                            .toLowerCase()
+                            .includes(q)
+                )
             );
         }
         result.sort((a, b) => new Date(b.etd || 0) - new Date(a.etd || 0));
@@ -1471,13 +1481,23 @@ const DB = {
     },
 
     addShipment(shipment) {
-        shipment.id =
-            'SHP-' +
-            Date.now().toString(36).toUpperCase().slice(-6) +
-            Math.random().toString(36).toUpperCase().slice(2, 4);
+        const order = this.getOrder(shipment.orderId);
+        if (!order || this.getShipmentByOrder(order.id)) {
+            toast('请选择有效、尚未建立出运记录的订单', 'warning');
+            return null;
+        }
+        const companyId = shipment.companyId || order.companyId;
+        if (String(companyId) !== String(order.companyId)) {
+            toast('出运记录必须与订单归属同一法人', 'warning');
+            return null;
+        }
+        shipment.id = 'SHP-' + crypto.randomUUID();
+        shipment.companyId = companyId;
+        shipment.createdBy = Auth.currentUser?.id || null;
+        shipment.customerName = order.customerName;
+        shipment.companyOperationNo = order.companyOperationNo;
         this.data.shipments.unshift(shipment);
         this._backupToLocal();
-        // ★ 不在此处 flush，由调用方显式 flush
         return shipment;
     },
 

@@ -1,0 +1,79 @@
+{
+  "checkedAt": "2026-10-12",
+  "method": "REA owned Chromium profiles against actual loopback preview",
+  "captures": [
+    {
+      "name": "desktop-login-light",
+      "evidenceId": "ev_68f07149b16ec0984b880a6fd66b94d4284b7dbd4527906403bc44432b13ffc2",
+      "viewport": {
+        "width": 1280,
+        "height": 720,
+        "device_scale_factor": 1
+      },
+      "browser": {
+        "mode": "launch",
+        "process_ownership": "provider-owned",
+        "cleanup": "terminated-owned-process",
+        "product": "Chromium",
+        "version": "155.0.8059.39"
+      },
+      "completeness": {
+        "status": "complete",
+        "equality_eligible": true,
+        "missing_sections": [],
+        "truncated_sections": []
+      },
+      "pageErrors": [],
+      "screenshotSha256": "62be19dcc315e70767671e42729574274378f113363df298cc74420bae719cb9"
+    },
+    {
+      "name": "mobile-login-light",
+      "evidenceId": "ev_18de2f70442dce8d12d423abf4b0b5c82f6724d4a96c2c5d8e376c97145a74ff",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "device_scale_factor": 1
+      },
+      "browser": {
+        "mode": "launch",
+        "process_ownership": "provider-owned",
+        "cleanup": "terminated-owned-process",
+        "product": "Chromium",
+        "version": "155.0.8059.39"
+      },
+      "completeness": {
+        "status": "complete",
+        "equality_eligible": true,
+        "missing_sections": [],
+        "truncated_sections": []
+      },
+      "pageErrors": [],
+      "screenshotSha256": "7cf5bdcacf7347ef0ea4a83cd54af971a3cd268bf5c8cd6a89eb9438a50d0d65"
+    },
+    {
+      "name": "desktop-login-saved-dark",
+      "evidenceId": "ev_320c3ec46819f8c378a7889f1c4ce9a20bbc804464a5624b688d4b6e96b4fc9c",
+      "viewport": {
+        "width": 1280,
+        "height": 720,
+        "device_scale_factor": 1
+      },
+      "browser": {
+        "mode": "launch",
+        "process_ownership": "provider-owned",
+        "cleanup": "terminated-owned-process",
+        "product": "Chromium",
+        "version": "155.0.8059.39"
+      },
+      "completeness": {
+        "status": "complete",
+        "equality_eligible": true,
+        "missing_sections": [],
+        "truncated_sections": []
+      },
+      "pageErrors": [],
+      "screenshotSha256": "ce8b723b058585061102fb83f32b0857ade6d9c028ccfa5ed471013539503208"
+    }
+  ],
+  "limits": "Login rendering and logo fit only; business operations separately verified by live-api-acceptance-20261012.json. Full mobile business workflow is not claimed."
+}

@@ -55,6 +55,7 @@ const App = {
 
     async init() {
         UI.init();
+        this.initTheme();
         // === 全局错误边界 ===
         window.addEventListener('error', e => {
             // 只处理应用代码错误，忽略资源加载失败和 SDK 内部错误
@@ -427,14 +428,25 @@ const App = {
         document.getElementById('userAvatar').textContent = user.name.charAt(0);
         document.getElementById('userNameDisplay').textContent = user.name;
 
-        const roleNames = { admin: '管理员', finance: '财务', manager: '经理', salesperson: '业务员' };
+        const roleNames = {
+            admin: '管理员',
+            finance: '财务',
+            manager: '经理',
+            salesperson: '业务员',
+            document: '单证'
+        };
+        const roleName =
+            Auth.roles?.[user.role]?.label ||
+            Auth.roles?.[user.role]?.name ||
+            roleNames[user.baseRole || user.role] ||
+            user.role;
         const roleBadge = document.getElementById('userRoleBadge');
-        roleBadge.textContent = roleNames[user.role] || '';
+        roleBadge.textContent = roleName;
         roleBadge.className = 'user-role-badge role-' + user.role;
 
         document.getElementById('dropdownName').textContent = user.name;
         document.getElementById('dropdownRole').textContent =
-            roleNames[user.role] + (user.teamId ? ' | ' + (Auth.teams[user.teamId]?.name || user.teamId) : '');
+            roleName + (user.teamId ? ' | ' + (Auth.teams[user.teamId]?.name || user.teamId) : '');
     },
 
     toggleUserMenu() {
@@ -596,7 +608,7 @@ const App = {
         intro.className = 'page-intro';
         intro.innerHTML =
             '<div><div class="page-eyebrow">' +
-            escapeHtml(this.workspaceName || 'Trade Workspace') +
+            escapeHtml(this.workspaceName || 'Tradept') +
             '</div><h2>' +
             escapeHtml(title) +
             '</h2><p class="page-description">' +

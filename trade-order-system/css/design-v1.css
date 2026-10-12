@@ -1,4 +1,4 @@
-/* Grandware@once — shared workbench surfaces and components, UI design v1. */
+/* Tradept — shared workbench surfaces and components, UI design v1. */
 :root {
     color-scheme: light;
     --bg-primary: #f5f5f7;
@@ -8,8 +8,8 @@
     --text-primary: #1d1d1f;
     --text-secondary: #6e6e73;
     --text-tertiary: #76767d;
-    --accent: #0071e3;
-    --accent-hover: #0066cc;
+    --accent: #185cf4;
+    --accent-hover: #124bcf;
     --accent-bg: #e9f2ff;
     --success: #24834c;
     --success-bg: #edf6ef;
@@ -114,21 +114,52 @@ button:disabled {
 }
 .logo {
     display: block;
+    min-width: 0;
+    flex: 1;
 }
 .logo::before {
     display: none;
 }
 .logo-text {
-    font-size: 17px;
-    font-weight: 650;
-    letter-spacing: -0.04em;
+    display: block;
+}
+.brand-mark {
+    display: block;
+    width: 180px;
+    max-width: 100%;
+    padding: 6px;
+    margin-left: -6px;
+    border-radius: 10px;
+}
+.brand-logo {
+    display: block;
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1986 / 575;
+    overflow: hidden;
+}
+.brand-logo img {
+    position: absolute;
+    width: 103.978%;
+    max-width: none;
+    height: auto;
+    left: -2.165%;
+    top: -19.826%;
+}
+:root[data-theme='dark'] .brand-mark {
+    background: #f5f8ff;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 .brand-caption {
     display: block;
     margin-top: 4px;
     font-size: 10px;
-    letter-spacing: 0.16em;
+    letter-spacing: 0.04em;
     color: var(--text-secondary);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .sidebar-nav {
     padding: 12px;
@@ -949,13 +980,13 @@ tbody .btn-danger {
     text-align: left;
     margin-bottom: 28px;
 }
-.login-brand-icon {
-    display: none;
-}
 .login-title {
     font-size: 23px;
     font-weight: 600;
     letter-spacing: -0.04em;
+}
+.brand-mark-login {
+    width: 230px;
 }
 .login-welcome {
     font-size: 15px;

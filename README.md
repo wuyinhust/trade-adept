@@ -1,45 +1,51 @@
 # Tradept
 
-通用外贸订单系统。Trade + Adept（精通者），寓意“贸易行家”。
+通用外贸订单系统，以 Grandware 为首个演示客户。账号由管理员配置，支持租户、公司主体、角色和订单分配权限。界面沿用现有毛玻璃与简洁布局，使用 Tradept 标识。
 
-产品面向外贸企业，支持按配置管理账号、租户、公司主体和角色；Grandware 是首个 demo 客户。当前开发版包含本地 SQLite 业务 API、权限校验、并发版本检查、快照，以及重订的界面设计。具体实现和验证边界以开发文档为准。
-
-## 两个版本
-
-| 版本 | Git 位置 | 内容 |
-| --- | --- | --- |
-| 最初 ZIP 版本 | [original-zip 分支](https://github.com/wuyinhust/tradept/tree/original-zip)、同名标签 | 原 ZIP 的全部 82 个源码文件，按文件 SHA-256 校验一致 |
-| 当前开发版本 | `main`、`current-20261011` 标签 | 当前工作区的 130 个源码、文档、预览和品牌文件 |
-
-[比较两个固定版本](https://github.com/wuyinhust/tradept/compare/original-zip...current-20261011) · [原版校验清单](docs/source-snapshots/original-zip.json) · [当前快照清单](docs/source-snapshots/current-20261011.json)
-
-## 目录
-
-- `trade-order-system/`：前端业务源码、Python API、需求、审查报告和测试。
-- `local-preview/`：独立预览启动层、虚构示例种子、导入工具及本地前端库。
-- `brand/tradept-v1/`：Tradept 标识与预览资源。
+当前正式开发版本为 **0.1.0**。本阶段交付范围和后续需求见 [发布验收](trade-order-system/docs/RELEASE-0.1.0.md)，版本递增规则见 [VERSIONING](trade-order-system/docs/VERSIONING.md)。Git 源码发布与生产系统上线分别验证。
 
 ## 本地启动
 
-Python 3.10+，建议 3.12。从仓库目录执行：
+服务使用 Python 3.12；CI 使用 Node.js 22。本机验收环境为 Python 3.12.14、Node.js 24.19.0。从仓库根目录执行：
 
 ```sh
 cd trade-order-system
-python3 -m server.cli --runtime /private/tmp/tradept-runtime init --config server/config.example.json
-python3 -m server.app --runtime /private/tmp/tradept-runtime --port 3087
+python3 -m server.cli --runtime "$HOME/Library/Application Support/Tradept/workspace" init --config server/config.example.json
+python3 -m server.app --runtime "$HOME/Library/Application Support/Tradept/workspace" --port 3087
 ```
 
-打开 `http://127.0.0.1:3087/`。初始化生成的本机演示口令保存在指定运行目录的 `demo-credentials.json`；运行目录应放在支持文件权限与 SQLite 锁的本地磁盘，不能放在 SMB 网络共享卷。临时运行目录适合演示，持久使用请指定受备份保护的目录。
+打开 `http://127.0.0.1:3087/`。初始化生成的随机演示账号口令保存在指定运行目录的 `demo-credentials.json`。SQLite 运行目录必须放在支持权限和文件锁的本地磁盘；SMB 共享卷只存源码。持久使用请另选本机目录并配置备份。
 
-更多配置、导入和验证命令见 [服务说明](trade-order-system/server/README.md)。界面独立预览可从仓库目录运行 `python3 local-preview/server.py --dataset example --port 3086`。
+服务只监听本机回环地址。配置、数据导入、权限、快照和恢复说明见 [API 服务说明](trade-order-system/server/README.md)。真实客户数据通过已授权副本另行导入；源码仓库不包含运行数据库、业务导出或密钥。
 
-## 数据和验证记录
+## 成熟组件
 
-此仓库保存开发源码与虚构示例种子。依赖目录、缓存、运行数据库、随机演示口令和 `local-preview/data/` 下的线上 Grandware 业务快照按忽略规则排除；需要真实业务数据时，通过本地导入器另行导入已获授权的数据副本。
+ERPNext 承接客户、供应商、销售订单、采购订单、交货与收款单据。当前桥接使用明确的 SKU、数量和价格映射，后台 outbox 负责幂等重试及来源版本检查；默认创建草稿。Grandware 原有利润口径仍在 Tradept 中兼容。
+
+隔离本地测试部署与真实单据验收见 [ERPNext 集成](trade-order-system/integrations/erpnext/README.md) 和 [验收记录](trade-order-system/docs/ERPNEXT-ACCEPTANCE.md)。
+
+## 需求与验收
 
 - [通用产品需求](trade-order-system/docs/通用外贸订单系统-产品需求-v1.md)
-- [代码审查](trade-order-system/docs/CODE-REVIEW-20261011.md)
-- [界面规范](trade-order-system/docs/UI-DESIGN-v1.md)
-- [本地交付与验证记录](trade-order-system/docs/本地交付与验证-20261011.md)
+- [原始需求与代码审查](trade-order-system/docs/CODE-REVIEW-20261011.md)
+- [品牌验收](trade-order-system/docs/BRAND-ACCEPTANCE.md)
+- [业务验收](trade-order-system/docs/BUSINESS-RELEASE-ACCEPTANCE.md)
+- [独立发布审查](trade-order-system/docs/RELEASE-REVIEW.md)
+- [变更记录](trade-order-system/CHANGELOG.md)
 
-本次提交是源码版本归档；本地验证记录保留在上述文档中。
+## 历史归档
+
+`original-zip` 分支及同名标签保留原始 ZIP 源码；`current-20261011` 标签保留正式开发之前的快照。历史文件校验清单位于 `docs/source-snapshots/`。发布版本使用 `v大.中.小` 标签。
+
+## 验证
+
+```sh
+cd trade-order-system
+npm ci
+npm test -- --runInBand
+npm run lint
+python3 -m unittest discover -s server/tests -v
+python3 scripts/version.py
+```
+
+GitHub Actions 执行上述源码验证；生产数据库接入和生产部署需要单独的环境配置与验收。

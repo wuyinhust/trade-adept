@@ -561,6 +561,7 @@ describe('App — Company Selection', () => {
 // ==================== User Display ====================
 describe('App — User Display', () => {
     beforeEach(() => {
+        Auth.roles = {};
         setupDom({
             userAvatar: 'span',
             userNameDisplay: 'span',
@@ -582,6 +583,23 @@ describe('App — User Display', () => {
     test('updateUserDisplay handles null user gracefully', () => {
         Auth.currentUser = null;
         expect(() => App.updateUserDisplay()).not.toThrow();
+    });
+
+    test('document role has a readable badge and menu label', () => {
+        Auth.currentUser = { name: 'Demo Document', role: 'document' };
+        App.updateUserDisplay();
+        expect(document.getElementById('userRoleBadge').textContent).toBe('单证');
+        expect(document.getElementById('dropdownRole').textContent).toBe('单证');
+    });
+
+    test('configured role label is used and custom roles fall back to their base role', () => {
+        Auth.currentUser = { name: 'Demo Document', role: 'custom-document', baseRole: 'document' };
+        Auth.roles = { 'custom-document': { label: '出口单证' } };
+        App.updateUserDisplay();
+        expect(document.getElementById('dropdownRole').textContent).toBe('出口单证');
+        Auth.roles = {};
+        App.updateUserDisplay();
+        expect(document.getElementById('userRoleBadge').textContent).toBe('单证');
     });
 
     test('toggleUserMenu toggles dropdown visibility', () => {
@@ -734,6 +752,16 @@ describe('App — Login / Logout', () => {
         App.showLogin();
         expect(document.getElementById('loginPage').style.display).toBe('flex');
         expect(document.getElementById('app').style.display).toBe('none');
+    });
+
+    test('initial login applies the saved theme before showing the form', async () => {
+        localStorage.setItem(App.THEME_KEY, 'dark');
+        document.documentElement.removeAttribute('data-theme');
+        await App.init();
+        expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+        expect(document.getElementById('loginPage').style.display).toBe('flex');
+        localStorage.removeItem(App.THEME_KEY);
+        document.documentElement.removeAttribute('data-theme');
     });
 
     test('handleLogin shows error for empty fields', async () => {

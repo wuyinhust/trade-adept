@@ -90,7 +90,7 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path.startswith("/api/"):
                 actor = self.store.actor(self._token())
-                routes = {"/api/session": self.store.session, "/api/data": self.store.data, "/api/meta": self.store.meta, "/api/snapshots": self.store.snapshots}
+                routes = {"/api/session": self.store.session, "/api/data": self.store.data, "/api/meta": self.store.meta, "/api/snapshots": self.store.snapshots, "/api/erpnext/status": self.store.erp_status}
                 action = routes.get(path)
                 if not action:
                     raise APIError(404, "NOT_FOUND", "API endpoint not found")
@@ -121,6 +121,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.store.changes(actor, body.get("expectedVersion"), body.get("changes"), body.get("exchangeRates"), body.get("rateMetas"))
             elif path == "/api/restore":
                 result = self.store.restore(actor, body.get("snapshotId"), body.get("expectedVersion"))
+            elif path == "/api/erpnext/queue":
+                result = self.store.erp_queue(actor, body.get("orderId"), body.get("expectedVersion"))
             else:
                 raise APIError(404, "NOT_FOUND", "API endpoint not found")
             self._json(200, result)

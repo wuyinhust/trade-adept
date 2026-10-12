@@ -3,6 +3,7 @@ import { jest } from '@jest/globals';
 const auth = {
     currentUser: { id: 'demo-user', name: 'Alex', role: 'admin' },
     users: [{ id: 'demo-user', name: 'Alex', role: 'admin' }],
+    canEdit: () => true,
     canSeeAll: jest.fn(() => true),
     canSeeFinancials: jest.fn(() => true),
     getVisibleCompanyIds: () => null,
@@ -48,7 +49,19 @@ jest.unstable_mockModule('../js/exchange.js', () => ({
     }
 }));
 const { DB } = await import('../js/data.js');
-const { processImportRows } = await import('../js/order-import.js');
+const { processImportRows: parseImportRows } = await import('../js/order-import.js');
+// These regressions exercise confirmed imports. Preview/cancellation have separate release tests.
+const processImportRows = (rows, result) => {
+    const headers = [...rows[0], '客户联系人', '付款条件', '客户订单号'];
+    const enriched = [headers, ...rows.slice(1).map(row => [...row, 'Demo Contact', 'T/T', 'PO-DEMO'])];
+    // Avoid adding a second alias when the case already contains the PO column.
+    if (rows[0].some(header => /客户订单号|PO/.test(header))) {
+        enriched[0].pop();
+        enriched.slice(1).forEach(row => row.pop());
+    }
+    parseImportRows(enriched, result);
+    result.querySelector('[data-import-confirm]')?.onclick?.();
+};
 await import('../js/customers.js');
 await import('../js/orders.js');
 await import('../js/shipping.js');
@@ -327,7 +340,7 @@ describe('role-limited order edits', () => {
         DB.flush.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         const form = document.createElement('form');
         form.innerHTML =
-            '<input name="customerId" value="demo-customer"><input name="orderAmountUSD" value="1000"><input name="companyOperationNo" value=""><input name="remarks" value="First">';
+            '<input name="contactPerson" value="Demo Contact"><input name="customerOrderNo" value="PO-DEMO"><input name="orderDate" value="2026-10-11"><input name="loadingPort" value="上海港"><input name="paymentTerms" value="T/T"><input name="customerId" value="demo-customer"><input name="orderAmountUSD" value="1000"><input name="companyOperationNo" value=""><input name="remarks" value="First">';
         const event = { preventDefault() {}, target: form };
         await Orders.saveOrder(event);
         expect(app.closeModal).not.toHaveBeenCalled();
@@ -491,10 +504,17 @@ describe('customer persistence retry', () => {
 describe('shipment persistence feedback', () => {
     const setup = () => {
         DB.data.orders.push({ ...orderInput(), id: 'legacy-id' });
-        DB.data.shipments.push({ id: 'demo-shipment', orderId: 'legacy-id', status: '待出运' });
+        DB.data.shipments.push({
+            id: 'demo-shipment',
+            orderId: 'legacy-id',
+            companyId: 'CO-GR',
+            loadingPort: '上海港',
+            status: '待出运',
+            customsStatus: '未报关'
+        });
         const form = document.createElement('form');
         form.innerHTML =
-            '<input name="status" value="已出运"><input name="customsStatus" value="已报关"><input name="etd" value="2026-01-01">';
+            '<input name="status" value="已出运"><input name="customsStatus" value="已报关"><input name="etd" value="2026-01-01"><input name="actualShipDate" value="2026-01-02">';
         return { preventDefault() {}, target: form };
     };
     test('keeps the modal open and avoids success when saving fails', async () => {

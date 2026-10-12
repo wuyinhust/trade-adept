@@ -1,0 +1,56 @@
+{
+    "checkedAt": "2026-10-12",
+    "transport": "real loopback HTTP / SQLite",
+    "roles": [
+        {
+            "role": "salesperson",
+            "assignedOrderAndShipmentVisible": true,
+            "financeHidden": true
+        },
+        {
+            "role": "document",
+            "assignedOrderAndShipmentVisible": true,
+            "financeHidden": true
+        }
+    ],
+    "documentSaveConfirmed": true,
+    "staleSave409PreservesCurrent": true,
+    "financeWrite403": true,
+    "hiddenFinancialValuesPreserved": true,
+    "grandwareRevision": 1,
+    "grandwareUnchanged": true,
+    "exampleRevision": 9,
+    "grandwareArchiveCheck": {
+        "archiveSha256": "931c75b7c003ced61449d39e6cd136dfbef3333cc181ecd660598849a6b7ba0f",
+        "grandwareRevision": 1,
+        "tenantBindingAdded": true,
+        "businessFieldsMatchArchive": true,
+        "exchangeRatesMatchArchive": true,
+        "countsIncludingDeleted": {
+            "customers": 13,
+            "factories": 33,
+            "orders": 21,
+            "shipments": 0,
+            "invoices": 0
+        },
+        "normalization": "Each imported record adds tenantId=grandware; original business fields and ordering are preserved."
+    },
+    "postRestartVerification": {
+        "checkedAt": "2026-10-12",
+        "serverRestartConfirmed": true,
+        "exampleRevision": 9,
+        "erpEnabled": true,
+        "erpJobSynced": true,
+        "submittedTransactionCounts": {
+            "Delivery Note": 1,
+            "Payment Entry": 1,
+            "Purchase Order": 2,
+            "Sales Order": 1
+        },
+        "mastersHiddenFromStatus": true,
+        "salesFinanceEndpoint403": true,
+        "grandwareArchiveStillPreserved": true,
+        "grandwareRevision": 1,
+        "databaseQuickCheck": "ok"
+    }
+}

@@ -668,8 +668,9 @@ describe('DB — Shipments CRUD', () => {
     });
 
     test('addShipment creates with auto ID', () => {
+        DB.data.orders = [makeOrder({ id: 'O1' })];
         const s = DB.addShipment({ orderId: 'O1' });
-        expect(s.id).toMatch(/^SHP-[A-Z0-9]{8}$/);
+        expect(s.id).toMatch(/^SHP-[0-9a-f-]{36}$/);
     });
 
     test('updateShipment modifies shipment', () => {
@@ -1336,10 +1337,11 @@ describe('DB — Shipments extended', () => {
     beforeEach(() => resetDB());
 
     test('addShipment generates unique IDs', () => {
+        DB.data.orders = [makeOrder({ id: 'O1' }), makeOrder({ id: 'O2' })];
         const s1 = DB.addShipment({ orderId: 'O1', status: '待出运', etd: '2026-08-01', blNumber: 'BL001', customerName: 'Test', containerNo: 'C1' });
         const s2 = DB.addShipment({ orderId: 'O2', status: '已出运', etd: '2026-08-02', blNumber: 'BL002', customerName: 'Test2', containerNo: 'C2' });
-        expect(s1.id).toMatch(/^SHP-[A-Z0-9]{8}$/);
-        expect(s2.id).toMatch(/^SHP-[A-Z0-9]{8}$/);
+        expect(s1.id).toMatch(/^SHP-[0-9a-f-]{36}$/);
+        expect(s2.id).toMatch(/^SHP-[0-9a-f-]{36}$/);
         expect(s1.id).not.toBe(s2.id);
     });
 

@@ -26,6 +26,8 @@ python3 -m server.app --runtime /private/tmp/trade-order-runtime --port 3087
 
 ## 账号与租户配置
 
+正式开发版本建议使用持久本机目录，例如 `--runtime "$HOME/Library/Application Support/Tradept/workspace"`，并建立独立备份。角色可配置 `label` 或 `name` 用于界面显示；未设置时按 `baseRole` 显示默认名称。
+
 `config.example.json` 包含 Grandware Demo 与独立 Example Trading Demo 两租户。Grandware 保留历史 U00x 和 CO-xx 标识，便于已归档订单归属匹配；用户密码全部重新生成。未授权/未知账号归属和无 companyId 的旧记录不会向普通角色返回。管理员可检查隔离中的旧数据，但写入必须补齐有效法人。
 
 ```sh
@@ -53,16 +55,18 @@ python3 -m server.cli --runtime /private/tmp/trade-order-runtime import /path/to
 
 GET 返回值不增加外层 data wrapper；所有 POST 必须使用同源 Origin。除了无需正文的 logout，POST 使用 JSON Content-Type。
 
-| 请求 | 返回/说明 |
-| --- | --- |
-| `POST /api/login` `{tenantId,username,password}` | `{ok,user}`；设置随机 `trade_session` Cookie，HttpOnly、SameSite=Strict，8 小时有效 |
-| `GET /api/session` | `{user,users,teams,companies,roles,tenant}`；不返回密码/摘要；普通账号仅自己及同团队安全名录 |
-| `POST /api/logout` | `{ok:true}`；撤销当前会话并清 Cookie |
-| `GET /api/data` | `{data,exchangeRates,rateMetas,meta}`；record/字段裁剪后的当前数据 |
-| `GET /api/meta` | `{ok:true,meta:{version,updatedAt,updatedBy}}` |
-| `POST /api/changes` | `{expectedVersion,changes:[{collection,id,value} 或 {collection,id,deleted:true}],exchangeRates?,rateMetas?}` → `{ok,meta,snapshotId}` |
-| `GET /api/snapshots` | `{snapshots:[{id,version,createdAt,createdBy,kind}]}`；只返回当前租户元数据，默认仅 admin |
-| `POST /api/restore` `{snapshotId,expectedVersion}` | `{ok,meta,snapshotId}`；恢复为新的 revision，禁止跨租户 |
+| 请求                                                  | 返回/说明                                                                                                                              |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/login` `{tenantId,username,password}`      | `{ok,user}`；设置随机 `trade_session` Cookie，HttpOnly、SameSite=Strict，8 小时有效                                                    |
+| `GET /api/session`                                    | `{user,users,teams,companies,roles,tenant}`；不返回密码/摘要；普通账号仅自己及同团队安全名录                                           |
+| `POST /api/logout`                                    | `{ok:true}`；撤销当前会话并清 Cookie                                                                                                   |
+| `GET /api/data`                                       | `{data,exchangeRates,rateMetas,meta}`；record/字段裁剪后的当前数据                                                                     |
+| `GET /api/meta`                                       | `{ok:true,meta:{version,updatedAt,updatedBy}}`                                                                                         |
+| `POST /api/changes`                                   | `{expectedVersion,changes:[{collection,id,value} 或 {collection,id,deleted:true}],exchangeRates?,rateMetas?}` → `{ok,meta,snapshotId}` |
+| `GET /api/snapshots`                                  | `{snapshots:[{id,version,createdAt,createdBy,kind}]}`；只返回当前租户元数据，默认仅 admin                                              |
+| `POST /api/restore` `{snapshotId,expectedVersion}`    | `{ok,meta,snapshotId}`；恢复为新的 revision，禁止跨租户                                                                                |
+| `GET /api/erpnext/status`                             | 财务读权限；返回当前授权订单的同步状态与精确关联单据，不公开客户/供应商主数据                                                          |
+| `POST /api/erpnext/queue` `{orderId,expectedVersion}` | 财务写权限、CAS 与关联检查；原子写入 outbox，返回 `{ok,job,meta}`，不在 SQLite 事务中发起远端请求                                      |
 
 `value` 是字段 patch：省略字段保留原值；contacts 等公开数组整体替换。新记录 value 提供整条数据。新记录创建人和更新时间由服务器写入；客户端不能转租户或改创建来源。id 可使用稳定 UUID，不使用可修改操作单号当数据库主键；兼容归档旧 id。技术 ID（记录 id、嵌套联系人 id、factoryId）限定 `\w`、点、冒号、短横线，长度 1–200，包含中文字母数字及下划线；拒绝引号、反斜杠、控制符等，导入同样校验且不改源件。显示名称和业务操作号保留自由文本，前端仍须正确 HTML 转义。操作单号在租户+法人范围内 trim/case-insensitive 唯一，包括软删除记录，不自动复用。
 
@@ -74,10 +78,12 @@ GET 返回值不增加外层 data wrapper；所有 POST 必须使用同源 Origi
 
 ## 并发、快照和金额
 
+历史订单保持原客户/工厂 ID 时，公开生产和备注编辑保留历史跨主体关联及财务值；新增关联、变更主体、显式主体重校验和 ERP 排队仍严格验证。出运与发票继承父订单的记录范围，且仍需当前租户、法人及集合权限；删除父订单后不能继续访问子记录。一订单当前只支持一条活动出运记录。存在 ERP outbox 或关联单据时，CLI 整库导入与快照恢复均要求先对账，不允许回退后重新执行旧单据。
+
 SQLite `BEGIN IMMEDIATE` 原子校验整租户 revision 后提交整个 changes 批次、汇率、快照和审计。一个操作失败整批回滚。两个用户基于同一版本保存，至多一个成功；另一个收到 HTTP 409：
 
 ```json
-{"error":"Data changed; reload and review your pending changes","code":"VERSION_CONFLICT","latestVersion":2}
+{ "error": "Data changed; reload and review your pending changes", "code": "VERSION_CONFLICT", "latestVersion": 2 }
 ```
 
 客户端保留草稿并让用户重新检查，不得自动改 expectedVersion 重试覆盖。此版本采用租户级 CAS，不同记录的同时编辑也可能冲突；后续可升级逐记录版本，但不会用 last-writer-wins 代替冲突检查。
@@ -96,4 +102,6 @@ python3 -m unittest server.tests.test_service -v
 
 2026-10-11 最终运行：42 项通过，耗时 6.910 秒；另有独立增量审查 12 个合成 SQLite 场景通过。技术 ID 注入、恶意批次回滚、联系人/工厂嵌套 ID 与只读源件导入拒绝均有回归。
 
-静态服务仅允许 index/manifest、css、js 运行模块、assets 图片、两本地 vendor 文件；server/runtime、配置、文档、测试、云函数、SDK、目录列表和路径穿越都拒绝。默认 Cookie 未设置 Secure，因为服务只支持 loopback HTTP；公网发布需要 HTTPS、Secure Cookie、正式反向代理与运维控制。本轮交付 SQLite 本地适配；企业本地 SQL/云数据库驱动、计费和注册产品尚未实现，不能据此声明通用商业部署已完成。
+上述为前期基础验证。`0.1.0` 发布审查的最终完整后端回归为 117 项全部通过，24.482 秒，见 [独立发布审查](../docs/RELEASE-REVIEW.md)。2026-10-12 使用保留的实际预览数据库再次通过两角色、父订单物流、财务字段保全及 409/403 验收，见 [本地 API 记录](../docs/live-api-acceptance-20261012.json)。真实 ERPNext 隔离链路及总账回读见 [实际记录](../docs/erpnext-real-acceptance.json)。
+
+静态服务仅允许 index/manifest、css、js 运行模块、assets 图片、两本地 vendor 文件；server/runtime、配置、文档、测试、云函数、SDK、目录列表和路径穿越都拒绝。默认 Cookie 未设置 Secure，因为服务只支持 loopback HTTP；公网发布需要 HTTPS、Secure Cookie、正式反向代理与运维控制。本轮交付 SQLite 本地适配；企业本地 SQL/云数据库驱动、计费与商业运维尚未交付，不能据此声明通用商业部署已完成。账号始终按配置管理，不提供公开注册。

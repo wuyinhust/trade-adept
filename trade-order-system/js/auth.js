@@ -16,6 +16,7 @@ const Auth = {
     // Directory and roles are supplied by the authenticated business API.
     users: [],
     teams: {},
+    roles: {},
     _provider: null,
     _serverDataAuthorized: false,
     configureProvider(provider) {

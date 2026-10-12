@@ -10,7 +10,7 @@ const api = new BusinessAPIClient({ canReplaceData: () => !document.querySelecto
 const tenantInput = document.createElement('div');
 tenantInput.className = 'form-group';
 tenantInput.innerHTML =
-    '<label class="form-label" for="loginTenant">企业工作区</label><input id="loginTenant" class="form-input" required autocomplete="organization" placeholder="工作区 ID" value="grandware">';
+    '<label class="form-label" for="loginTenant">企业工作区</label><input id="loginTenant" class="form-input" required autocomplete="organization" placeholder="管理员提供的工作区 ID">';
 document.getElementById('loginForm').prepend(tenantInput);
 const teamImage = document.querySelector('.login-footer-image');
 if (teamImage) teamImage.hidden = true;
@@ -19,6 +19,7 @@ function applySession(session) {
     Auth._serverDataAuthorized = true;
     Auth.users = session.users || [];
     Auth.teams = session.teams || {};
+    Auth.roles = session.roles || {};
     Auth.currentUser = session.user;
     DB.companies = session.companies || [];
     DB.COMPANY_KEY = `trade_company_${session.user.tenantId}`;
@@ -34,8 +35,8 @@ function applySession(session) {
     DB._BACKUP_KEY = `trade_api_draft_v1:${location.origin}:${session.user.tenantId}:${session.user.id}:${authorization}`;
     DB._cloudReady = false;
     const tenant = session.tenant || {};
-    App.workspaceName = tenant.branding?.workspaceName || tenant.name || 'Trade Workspace';
-    document.title = `${tenant.name || session.user.tenantId} · Trade Workspace`;
+    App.workspaceName = tenant.branding?.workspaceName || tenant.name || 'Tradept';
+    document.title = `${tenant.name || session.user.tenantId} · Tradept`;
     document.querySelector('.brand-caption').textContent = tenant.name || session.user.tenantId;
     const image = document.querySelector('.login-footer-image');
     if (image) image.hidden = true;
@@ -59,6 +60,7 @@ Auth.configureProvider({
         await api.logout();
         DB._cloudReady = DB._cloudConnected = false;
         Auth._serverDataAuthorized = false;
+        document.title = 'Tradept · 登录工作区';
         DB.data = { customers: [], orders: [], factories: [], shipments: [], invoices: [] };
     }
 });

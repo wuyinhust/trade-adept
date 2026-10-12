@@ -37,8 +37,14 @@ def config():
     ]}
 
 
+def factory_line(identifier="factory-1", **values):
+    """A valid public production line, with costs supplied only by its caller."""
+    return {"factoryId": identifier, "productType": "Public product", "totalQuantity": 10,
+            "inspectionDate": "2026-10-20", "estimatedShipDate": "2026-10-25", **values}
+
+
 def order(identifier, company="C1", owner="s", number=None):
-    return {"id": identifier, "companyOperationNo": number or identifier, "companyId": company, "createdBy": owner, "salespersonId": owner, "customerId": "c", "orderAmountUSD": 1000, "factoryCostRMB": 100, "freightCostUSD": 20, "insuranceCostUSD": 13, "otherCostUSD": 10, "profitRMB": 987.65, "orderAmountRMB": 1234.56, "profitRate": 88, "paidAmountUSD": 25, "factories": [{"factoryId": "factory-1", "productType": "Public product", "totalAmount": 100, "prepayment": 20}]}
+    return {"id": identifier, "companyOperationNo": number or identifier, "companyId": company, "createdBy": owner, "salespersonId": owner, "customerId": "c", "customerOrderNo": "PO-" + identifier, "contactPerson": "Synthetic contact", "loadingPort": "Shanghai", "overseasPort": "Los Angeles", "paymentTerms": "T/T", "orderDate": "2026-10-11", "expectedShipDate": "2026-10-25", "status": "进行中", "shippingStatus": "待出运", "paymentStatus": "部分收款", "factoryPaidStatus": "未付款", "orderAmountUSD": 1000, "factoryCostRMB": 100, "freightCostUSD": 20, "insuranceCostUSD": 13, "otherCostUSD": 10, "profitRMB": 987.65, "orderAmountRMB": 1234.56, "profitRate": 88, "paidAmountUSD": 25, "factories": [factory_line(totalAmount=100, prepayment=20)]}
 
 
 class ServiceTest(unittest.TestCase):
@@ -86,6 +92,148 @@ class ServiceTest(unittest.TestCase):
             call()
         self.assertEqual(raised.exception.status, status)
         self.assertEqual(raised.exception.code, code)
+
+    def business_state(self):
+        """All persisted business/ERP side effects, for atomic rejection checks."""
+        with self.store.connect() as db:
+            return {table: [tuple(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                    for table in ("tenants", "audit", "snapshots", "erp_outbox", "erp_links")}
+
+    def admin_documents(self):
+        self.seed()
+        self.patch({"ownerId": "d"})
+        self.store.changes(self.actor(), 2, [
+            {"collection": "shipments", "id": "admin-shipment", "value": {
+                "companyId": "C1", "orderId": "self", "loadingPort": "Shanghai",
+                "etd": "2026-10-25", "status": "待出运", "customsStatus": "未报关"}},
+            {"collection": "invoices", "id": "admin-invoice", "value": {
+                "companyId": "C1", "orderId": "self"}},
+        ])
+
+    def test_admin_created_documents_follow_sales_and_document_order_assignments(self):
+        self.admin_documents()
+        for uid in ("s", "d"):
+            for collection, identifier in (("shipments", "admin-shipment"), ("invoices", "admin-invoice")):
+                visible = self.store.data(self.actor(uid))["data"][collection]
+                document = next(row for row in visible if row["id"] == identifier)
+                self.assertEqual(document["createdBy"], "a")
+                self.patch({"remarks": f"Public update by {uid}"}, uid=uid,
+                           identifier=identifier, collection=collection)
+                full = self.store.data(self.actor())["data"][collection]
+                document = next(row for row in full if row["id"] == identifier)
+                self.assertEqual(document["remarks"], f"Public update by {uid}")
+                self.assertEqual(document["createdBy"], "a")
+                self.assertEqual(document["updatedBy"], uid)
+        self.assertEqual(self.revision(), 7)
+
+    def test_parent_document_grants_do_not_extend_to_other_sales_or_tenants(self):
+        cfg = config()
+        for tenant in cfg["tenants"]:
+            for user in tenant["users"]:
+                user.pop("password", None)
+        cfg["tenants"][0]["users"].append({"id": "outsider", "username": "outsider",
+            "role": "salesperson", "visibleCompanyIds": ["C1"], "password": PASSWORD})
+        self.store.configure(cfg)
+        outsider = self.store.actor(self.store.login("one", "outsider", PASSWORD))
+        self.admin_documents()
+        before = self.business_state()
+        for actor in (outsider, self.actor("b"), self.actor(tenant="two")):
+            visible = self.store.data(actor)["data"]
+            for collection, identifier in (("shipments", "admin-shipment"), ("invoices", "admin-invoice")):
+                self.assertNotIn(identifier, {row["id"] for row in visible[collection]})
+                expected = 0 if actor["tenantId"] == "two" else 3
+                code = "ASSIGNMENT_DENIED" if actor["tenantId"] == "two" else "RECORD_DENIED"
+                value = {"companyId": "C1", "orderId": "self", "loadingPort": "Shanghai", "etd": "2026-10-25", "remarks": "Unauthorized"}
+                self.error(403, code, lambda actor=actor, expected=expected, collection=collection,
+                    identifier=identifier, value=value: self.store.changes(actor, expected,
+                        [{"collection": collection, "id": identifier, "value": value}]))
+        self.assertEqual(self.business_state(), before)
+
+    def test_parent_scope_does_not_bypass_document_collection_permissions(self):
+        self.admin_documents()
+        cfg = config()
+        cfg["tenants"][0]["roles"] = {"salesperson": {"collections": ["orders"]}}
+        for tenant in cfg["tenants"]:
+            for user in tenant["users"]:
+                user.pop("password", None)
+        self.store.configure(cfg)
+        before = self.business_state()
+        visible = self.store.data(self.actor("s"))["data"]
+        self.assertIn("self", {row["id"] for row in visible["orders"]})
+        for collection, identifier in (("shipments", "admin-shipment"), ("invoices", "admin-invoice")):
+            self.assertEqual(visible[collection], [])
+            self.error(403, "RECORD_DENIED", lambda collection=collection, identifier=identifier:
+                self.patch({"remarks": "Collection denied"}, uid="s", identifier=identifier, collection=collection))
+        self.assertEqual(self.business_state(), before)
+
+    def test_deleted_parent_denies_documents_even_if_legacy_child_remains_active(self):
+        self.admin_documents()
+        self.store.changes(self.actor(), 3, [{"collection": "orders", "id": "self", "deleted": True}])
+        with self.store.connect() as db:
+            payload = json.loads(db.execute("SELECT payload FROM tenants WHERE id='one'").fetchone()[0])
+            for collection, identifier in (("shipments", "admin-shipment"), ("invoices", "admin-invoice")):
+                child = next(row for row in payload[collection] if row["id"] == identifier)
+                self.assertTrue(child["deleted"])
+                child["deleted"] = False  # Simulate an old imported orphan, never a customer database.
+            db.execute("UPDATE tenants SET payload=? WHERE id='one'", (json.dumps(payload),))
+        before = self.business_state()
+        for uid in ("a", "s", "d"):
+            visible = self.store.data(self.actor(uid))["data"]
+            for collection, identifier in (("shipments", "admin-shipment"), ("invoices", "admin-invoice")):
+                self.assertNotIn(identifier, {row["id"] for row in visible[collection]})
+                self.error(403, "RECORD_DENIED", lambda uid=uid, collection=collection, identifier=identifier:
+                    self.patch({"remarks": "Parent deleted"}, uid=uid, identifier=identifier, collection=collection))
+        self.assertEqual(self.business_state(), before)
+
+    def test_parent_and_documents_can_be_created_in_one_atomic_batch(self):
+        self.seed()
+        self.store.changes(self.actor(), 1, [
+            {"collection": "orders", "id": "new-parent", "value": order("new-parent")},
+            {"collection": "shipments", "id": "new-shipment", "value": {
+                "companyId": "C1", "orderId": "new-parent", "loadingPort": "Shanghai", "etd": "2026-10-25"}},
+            {"collection": "invoices", "id": "new-invoice", "value": {"companyId": "C1", "orderId": "new-parent"}},
+        ])
+        visible = self.store.data(self.actor("s"))["data"]
+        self.assertIn("new-parent", {row["id"] for row in visible["orders"]})
+        self.assertIn("new-shipment", {row["id"] for row in visible["shipments"]})
+        self.assertIn("new-invoice", {row["id"] for row in visible["invoices"]})
+        self.assertEqual(self.revision(), 2)
+
+    def test_import_refuses_any_erp_job_state_without_source_or_database_changes(self):
+        self.seed()
+        job = self.store.erp_queue(self.actor(), "self", 1)["job"]
+        source = Path(self.directory.name) / "replacement-business.json"
+        source.write_text(json.dumps({"customers": [{"id": "replacement", "companyId": "C1"}],
+                                     "exchangeRates": {"C1": 99}, "rateMetas": {"C1": {"source": "replacement"}}}))
+        original = source.read_bytes()
+        for state in ("pending", "running", "synced", "failed", "blocked"):
+            with self.subTest(state=state):
+                with self.store.connect() as db:
+                    db.execute("UPDATE erp_outbox SET state=? WHERE id=?", (state, job["id"]))
+                before = self.business_state()
+                self.error(409, "ERP_RESTORE_REQUIRES_RECONCILIATION",
+                    lambda: self.store.import_data("one", source, expected=1))
+                self.assertEqual(source.read_bytes(), original)
+                self.assertEqual(self.business_state(), before)
+
+    def test_import_refuses_erp_links_without_jobs_but_other_tenant_remains_independent(self):
+        self.seed()
+        with self.store.connect() as db:
+            db.execute("INSERT INTO erp_links(tenant_id,doctype,source_id,external_id,name,modified,managed_payload,docstatus,order_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                       ("one", "Sales Order", "self", "synthetic-external", "SYNTHETIC-SO", "2026-10-11", "{}", 0, "self"))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM erp_outbox").fetchone()[0], 0)
+        source = Path(self.directory.name) / "replacement-business.json"
+        source.write_text(json.dumps({"customers": [{"id": "independent", "companyId": "C1"}]}))
+        original = source.read_bytes()
+        before = self.business_state()
+        self.error(409, "ERP_RESTORE_REQUIRES_RECONCILIATION", lambda: self.store.import_data("one", source, expected=1))
+        self.assertEqual(self.business_state(), before)
+        result = self.store.import_data("two", source, expected=0)
+        self.assertEqual(result["meta"]["version"], 1)
+        self.assertEqual(self.revision(), 1)
+        self.assertEqual(source.read_bytes(), original)
+        with self.store.connect() as db:
+            self.assertEqual([tuple(row) for row in db.execute("SELECT * FROM erp_links ORDER BY rowid")], before["erp_links"])
 
     def test_passwords_private_and_random_session_not_user_id(self):
         token = self.store.login("one", "admin", PASSWORD)
@@ -156,7 +304,7 @@ class ServiceTest(unittest.TestCase):
 
     def test_public_patch_and_nested_arrays_preserve_hidden_fields(self):
         self.seed()
-        self.patch({"remarks": "new note", "factories": [{"factoryId": "factory-1", "productType": "Changed public product"}]}, uid="s")
+        self.patch({"remarks": "new note", "factories": [factory_line(productType="Changed public product")]}, uid="s")
         full = self.store.data(self.actor())["data"]["orders"][0]
         self.assertEqual(full["factoryCostRMB"], 100)
         self.assertEqual(full["paidAmountUSD"], 25)
@@ -299,16 +447,16 @@ class ServiceTest(unittest.TestCase):
         self.error(403, "RELATED_RECORD_DENIED", lambda: self.patch({"factoryIds": ["does-not-exist"]}, uid="s"))
         self.store.changes(self.actor(), 1, [{"collection": "customers", "id": "foreign-c", "value": {"company": "Other company customer", "companyId": "C2", "salespersonId": "b"}}])
         self.error(403, "RELATED_RECORD_DENIED", lambda: self.patch({"customerId": "foreign-c"}, uid="s"))
-        self.error(403, "RELATED_RECORD_DENIED", lambda: self.store.changes(self.actor("s"), 2, [{"collection": "shipments", "id": "fake-link", "value": {"companyId": "C1", "orderId": "other"}}]))
+        self.error(403, "ASSIGNMENT_DENIED", lambda: self.store.changes(self.actor("s"), 2, [{"collection": "shipments", "id": "fake-link", "value": {"companyId": "C1", "orderId": "other", "loadingPort": "Shanghai", "etd": "2026-10-25"}}]))
 
     def test_unknown_nested_costs_and_embedded_financial_fields_protected(self):
         self.seed()
-        self.patch({"factories": [{"factoryId": "factory-1", "totalAmount": 100, "prepayment": 20, "paidCostEUR": 33}], "financialSummary": {"profitUSD": 123, "note": "Public note"}})
+        self.patch({"factories": [factory_line(totalAmount=100, prepayment=20, paidCostEUR=33)], "financialSummary": {"profitUSD": 123, "note": "Public note"}})
         row = self.store.data(self.actor("s"))["data"]["orders"][0]
         self.assertNotIn("paidCostEUR", row["factories"][0])
         self.assertNotIn("profitUSD", row["financialSummary"])
         self.error(403, "FIELD_DENIED", lambda: self.patch({"financialSummary": {"profitUSD": 0}}, uid="s"))
-        self.patch({"factories": [{"factoryId": "factory-1", "productType": "New public label"}], "financialSummary": {"note": "Updated public note"}}, uid="s")
+        self.patch({"factories": [factory_line(productType="New public label")], "financialSummary": {"note": "Updated public note"}}, uid="s")
         full = self.store.data(self.actor())["data"]["orders"][0]
         self.assertEqual(full["factories"][0]["paidCostEUR"], 33)
         self.assertEqual(full["financialSummary"]["profitUSD"], 123)
@@ -326,7 +474,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(self.store.data(self.actor(tenant="two"))["data"]["factories"], [])
         self.error(403, "RECORD_DENIED", lambda: self.patch({"name": "Unauthorized"}, uid="s", identifier="admin-factory", collection="factories"))
         self.error(403, "RECORD_DENIED", lambda: self.store.changes(self.actor("s"), 2, [{"collection": "factories", "id": "admin-factory", "deleted": True}]))
-        self.patch({"factories": [{"factoryId": "admin-factory", "productType": "New public supplier"}]})
+        self.patch({"factories": [factory_line("admin-factory", productType="New public supplier")]})
         # Read override is an explicit role configuration, not a client role-name switch.
         cfg = config()
         cfg["tenants"][0]["roles"] = {"salesperson": {"readScopes": {"factories": "self"}}}
@@ -365,12 +513,12 @@ class ServiceTest(unittest.TestCase):
 
     def test_factory_nested_sensitive_fields_are_guarded_and_omissions_preserved(self):
         self.seed()
-        self.patch({"factories": [{"factoryId": "factory-1", "totalAmount": 100, "prepayment": 20, "details": {"bankAccount": "Private bank", "cost": 55, "note": "Visible note"}}]})
+        self.patch({"factories": [factory_line(totalAmount=100, prepayment=20, details={"bankAccount": "Private bank", "cost": 55, "note": "Visible note"})]})
         public = self.store.data(self.actor("s"))["data"]["orders"][0]["factories"][0]
         self.assertEqual(public["details"], {"note": "Visible note"})
         for details in ({"bankAccount": "Unauthorized"}, {"cost": 0}, None):
             self.error(403, "FIELD_DENIED", lambda details=details: self.patch({"factories": [{"factoryId": "factory-1", "details": details}]}, uid="s"))
-        self.patch({"factories": [{"factoryId": "factory-1", "productType": "Updated public label"}]}, uid="s")
+        self.patch({"factories": [factory_line(productType="Updated public label")]}, uid="s")
         full = self.store.data(self.actor())["data"]["orders"][0]
         self.assertEqual(full["factories"][0]["details"]["bankAccount"], "Private bank")
         self.assertEqual(full["factories"][0]["details"]["cost"], 55)
@@ -381,9 +529,9 @@ class ServiceTest(unittest.TestCase):
         with self.store.connect() as db:
             payload = json.loads(db.execute("SELECT payload FROM tenants WHERE id='one'").fetchone()[0])
             payload["factories"].append({"id": "factory-2", "companyId": "C1", "createdBy": "a", "tenantId": "one"})
-            payload["orders"][0]["factories"].append({"factoryId": "factory-2", "productType": "Second line", "totalAmount": 200})
+            payload["orders"][0]["factories"].append(factory_line("factory-2", productType="Second line", totalAmount=200))
             db.execute("UPDATE tenants SET payload=? WHERE id='one'", (json.dumps(payload),))
-        self.patch({"factories": [{"factoryId": "factory-2", "productType": "Second line"}, {"factoryId": "factory-1", "productType": "First line"}]}, uid="s")
+        self.patch({"factories": [factory_line("factory-2", productType="Second line"), factory_line(productType="First line")]}, uid="s")
         full = self.store.data(self.actor())["data"]["orders"][0]
         self.assertEqual(full["profitRMB"], 987.65)
         self.assertEqual(full["factories"][0]["totalAmount"], 200)
@@ -395,11 +543,84 @@ class ServiceTest(unittest.TestCase):
             {"collection": "customers", "id": "customer-2", "value": {"company": "Second entity", "companyId": "C2"}},
             {"collection": "factories", "id": "factory-2", "value": {"name": "Second entity", "companyId": "C2"}},
         ])
-        for patch_value in ({"customerId": "customer-2"}, {"factoryIds": ["factory-2"]}, {"factories": [{"factoryId": "factory-2"}]}, {"companyId": "C2"}):
+        for patch_value in ({"customerId": "customer-2"}, {"factoryIds": ["factory-2"]}, {"factories": [factory_line("factory-2")]}, {"companyId": "C2"}):
             self.error(403, "RELATED_RECORD_DENIED", lambda patch_value=patch_value: self.patch(patch_value))
         self.assertEqual(self.revision(), 2)
-        self.patch({"companyId": "C2", "customerId": "customer-2", "factories": [{"factoryId": "factory-2"}]})
+        self.patch({"companyId": "C2", "customerId": "customer-2", "factories": [factory_line("factory-2")]})
         self.assertEqual(self.store.data(self.actor())["data"]["orders"][0]["companyId"], "C2")
+
+    def test_historical_cross_entity_edits_preserve_finance_but_new_links_entity_and_erp_stay_strict(self):
+        """Grandware-shaped legacy references, using wholly fictional records."""
+        legacy = order("legacy-production", company="C2", owner="b")
+        legacy.update(customerId="customer-2", factoryCostRMB=150,
+            factories=[factory_line("historical-factory", totalAmount=100, prepayment=20),
+                       factory_line("local-factory", totalAmount=50, prepayment=10)],
+            erpItems=[{"id": "legacy-line", "itemCode": "SYNTHETIC-A", "quantity": 10,
+                       "saleRate": 50, "purchaseRate": 10, "factoryId": "historical-factory"},
+                      {"id": "local-line", "itemCode": "SYNTHETIC-B", "quantity": 10,
+                       "saleRate": 50, "purchaseRate": 5, "factoryId": "local-factory"}])
+        legacy_customer = order("legacy-customer", company="C2", owner="b")
+        legacy_customer.update(customerId="historical-customer",
+            factories=[factory_line("local-factory", totalAmount=100, prepayment=20)],
+            erpItems=[{"id": "customer-line", "itemCode": "SYNTHETIC-A", "quantity": 10,
+                       "saleRate": 100, "purchaseRate": 10, "factoryId": "local-factory"}])
+        source = Path(self.directory.name) / "fictional-legacy-business.json"
+        source.write_text(json.dumps({"data": {
+            "orders": [legacy, legacy_customer],
+            "customers": [{"id": "customer-2", "company": "Local customer", "companyId": "C2", "createdBy": "b"},
+                          {"id": "historical-customer", "company": "Historical customer", "companyId": "C1", "createdBy": "s"},
+                          {"id": "other-foreign-customer", "company": "New foreign customer", "companyId": "C1", "createdBy": "s"}],
+            "factories": [{"id": "historical-factory", "name": "Historical supplier", "companyId": "C1", "createdBy": "s"},
+                          {"id": "other-foreign-factory", "name": "New foreign supplier", "companyId": "C1", "createdBy": "s"},
+                          {"id": "local-factory", "name": "Local supplier", "companyId": "C2", "createdBy": "b"}],
+            "shipments": [], "invoices": []}}))
+        original = source.read_bytes()
+        self.store.import_data("one", source)
+        self.assertEqual(source.read_bytes(), original)
+        public = self.store.data(self.actor("b"))["data"]
+        self.assertNotIn("historical-factory", {row["id"] for row in public["factories"]})
+        old = copy.deepcopy(self.store.data(self.actor())["data"]["orders"][0])
+        self.patch({"remarks": "Continue historical production",
+                    "factories": [factory_line("historical-factory", totalQuantity=12, inspectionDate="2026-10-21"),
+                                  factory_line("local-factory")]}, uid="b", identifier="legacy-production")
+        updated = self.store.data(self.actor())["data"]["orders"][0]
+        self.assertEqual(updated["factories"][0]["totalQuantity"], 12)
+        self.assertEqual(updated["factories"][0]["inspectionDate"], "2026-10-21")
+        for key in ("factoryCostRMB", "paidAmountUSD", "profitRMB", "orderAmountRMB", "profitRate", "erpItems"):
+            self.assertEqual(updated[key], old[key])
+        for index in (0, 1):
+            for key in ("totalAmount", "prepayment"):
+                self.assertEqual(updated["factories"][index][key], old["factories"][index][key])
+        self.patch({"customerId": "historical-customer", "remarks": "Retain historical customer"},
+                   uid="b", identifier="legacy-customer")
+        before = self.business_state()
+        for identifier, value in (
+            ("legacy-production", {"factories": [factory_line("other-foreign-factory", totalAmount=100, prepayment=20),
+                                                  factory_line("local-factory", totalAmount=50, prepayment=10)]}),
+            # The old local supplier becomes foreign after this entity change.
+            # Keeping both supplier IDs must not bypass revalidation.
+            ("legacy-production", {"companyId": "C1", "customerId": "historical-customer"}),
+            ("legacy-production", {"companyId": "C2"}),
+            ("legacy-customer", {"customerId": "other-foreign-customer"}),
+        ):
+            with self.subTest(identifier=identifier, value=value):
+                self.error(403, "RELATED_RECORD_DENIED", lambda identifier=identifier, value=value:
+                    self.patch(value, identifier=identifier))
+                self.assertEqual(self.business_state(), before)
+        # A fully configured, otherwise valid USD mapping is still forbidden:
+        # legacy editing compatibility is never an ERP authorization grant.
+        configuration = {"tenants": {"one": {"enabled": True, "baseUrl": "http://127.0.0.1:3999",
+            "site": "fictional.test", "apiKey": "fictional-key", "apiSecret": "fictional-secret",
+            "companies": {"C2": {"name": "Fictional Trade", "currency": "USD"}}}}}
+        path = Path(self.directory.name) / "erpnext.json"
+        path.write_text(json.dumps(configuration))
+        path.chmod(0o600)
+        for identifier in ("legacy-production", "legacy-customer"):
+            with self.subTest(erp_order=identifier):
+                self.error(403, "RELATED_RECORD_DENIED", lambda identifier=identifier:
+                    self.store.erp_queue(self.actor(), identifier, 3))
+                self.assertEqual(self.business_state(), before)
+        self.assertEqual(self.revision(), 3)
 
     def test_orders_with_shipping_or_invoice_history_cannot_change_legal_entity(self):
         self.seed()

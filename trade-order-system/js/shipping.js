@@ -4,6 +4,7 @@
 import { App } from './app.js';
 import { DB } from './data.js';
 import { Auth } from './auth.js';
+import { requiresOverseasPort } from './order-import.js';
 import { Exchange } from './exchange.js';
 import { escapeHtml, toast, validate } from './utils.js';
 
@@ -25,6 +26,7 @@ const Shipping = {
                 </select>
                 <div style="margin-left:auto">
                     <button class="btn btn-secondary" onclick="Shipping.exportExcel()">📥 导出Excel</button>
+                    ${Auth.canEdit() ? '<button class="btn btn-primary" onclick="Shipping.showAddForm()">＋ 建立出运记录</button>' : ''}
                 </div>
             </div>
 
@@ -116,8 +118,8 @@ const Shipping = {
             .map(
                 s => `
             <tr>
-                <td><span class="table-link" onclick="window.location.hash='#/shipping/${App.escapeHtml(s.id)}'">${App.escapeHtml(s.id)}</span></td>
-                <td><span class="table-link" onclick="window.location.hash='#/orders/${App.escapeHtml(s.orderId)}'">${App.escapeHtml(s.orderId)}</span></td>
+                <td><span class="table-link" onclick="window.location.hash='#/shipping/${App.escapeHtml(s.id)}'">${App.escapeHtml(s.invoiceNo || '未填写')}</span></td>
+                <td><span class="table-link" onclick="window.location.hash='#/orders/${App.escapeHtml(s.orderId)}'">${App.escapeHtml(s.companyOperationNo || DB.getOrder(s.orderId)?.companyOperationNo || '未关联')}</span></td>
                 <td>${App.escapeHtml(s.customerName)}</td>
                 <td>${App.escapeHtml(s.loadingPort)}</td>
                 <td>${App.escapeHtml(s.overseasPort) || '-'}</td>
@@ -142,13 +144,14 @@ const Shipping = {
         }
         const order = DB.getOrder(shipment.orderId);
 
-        document.getElementById('pageTitle').textContent = '出运详情 - ' + shipment.id;
+        const operationNo = order?.companyOperationNo || shipment.companyOperationNo;
+        document.getElementById('pageTitle').textContent = operationNo ? '出运详情 - ' + operationNo : '出运详情';
 
         container.innerHTML = `
             <div class="flex gap-3 mb-4">
                 <button class="btn btn-secondary" onclick="window.location.hash='#/shipping'">← 返回列表</button>
                 ${order ? `<button class="btn btn-primary" onclick="window.location.hash='#/orders/${App.escapeHtml(order.id)}'">查看关联操作单</button>` : ''}
-                <button class="btn btn-secondary" onclick="Shipping.updateStatus('${App.escapeHtml(shipment.id)}')">更新状态</button>
+                ${Auth.canEdit() ? `<button class="btn btn-secondary" onclick="Shipping.updateStatus('${App.escapeHtml(shipment.id)}')">更新状态</button>` : ''}
             </div>
 
             <div class="card mb-6">
@@ -158,7 +161,7 @@ const Shipping = {
                         <div class="timeline-item">
                             <div class="timeline-dot ${shipment.status !== '待出运' ? 'done' : 'current'}"></div>
                             <div class="timeline-content">
-                                <div class="timeline-title">货物备妥</div>
+                                <div class="timeline-title">订单建立</div>
                                 <div class="timeline-date">${order ? App.formatDate(order.orderDate) : '-'}</div>
                                 <div class="timeline-desc">订单已确认，工厂开始生产</div>
                             </div>
@@ -167,7 +170,7 @@ const Shipping = {
                             <div class="timeline-dot ${['已出运', '已到港', '已签收'].includes(shipment.status) ? 'done' : shipment.status === '待出运' ? 'current' : 'pending'}"></div>
                             <div class="timeline-content">
                                 <div class="timeline-title">报关完成</div>
-                                <div class="timeline-date">${App.formatDate(shipment.etd)}</div>
+                                <div class="timeline-date">${App.formatDate(shipment.customsDate)}</div>
                                 <div class="timeline-desc">${App.escapeHtml(shipment.customsStatus)}</div>
                             </div>
                         </div>
@@ -175,7 +178,7 @@ const Shipping = {
                             <div class="timeline-dot ${['已出运', '已到港', '已签收'].includes(shipment.status) ? 'done' : shipment.status === '待出运' ? 'current' : 'pending'}"></div>
                             <div class="timeline-content">
                                 <div class="timeline-title">货物装船出运</div>
-                                <div class="timeline-date">${App.formatDate(shipment.etd)}</div>
+                                <div class="timeline-date">${App.formatDate(shipment.actualShipDate)}</div>
                                 <div class="timeline-desc">${App.escapeHtml(shipment.loadingPort)} → ${App.escapeHtml(shipment.overseasPort) || App.escapeHtml(shipment.destinationPort)}</div>
                             </div>
                         </div>
@@ -183,8 +186,8 @@ const Shipping = {
                             <div class="timeline-dot ${shipment.status === '已签收' ? 'done' : shipment.status === '已到港' ? 'current' : 'pending'}"></div>
                             <div class="timeline-content">
                                 <div class="timeline-title">客户签收</div>
-                                <div class="timeline-date">${shipment.status === '已签收' ? App.formatDate(shipment.etd) : '待签收'}</div>
-                                <div class="timeline-desc">货物已交付客户</div>
+                                <div class="timeline-date">${App.formatDate(shipment.receivedDate)}</div>
+                                <div class="timeline-desc">${shipment.receivedDate ? '货物已交付客户' : '尚未记录签收日期'}</div>
                             </div>
                         </div>
                     </div>
@@ -195,16 +198,16 @@ const Shipping = {
                 <div class="card-header"><span class="card-title">出运信息</span></div>
                 <div class="card-body">
                     <div class="detail-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-                        <div class="detail-item"><div class="detail-label">发票号码</div><div class="detail-value">${App.escapeHtml(shipment.id)}</div></div>
-                        <div class="detail-item"><div class="detail-label">关联操作单号</div><div class="detail-value">${App.escapeHtml(shipment.orderId)}</div></div>
+                        <div class="detail-item"><div class="detail-label">发票号码</div><div class="detail-value">${App.escapeHtml(shipment.invoiceNo || '未填写')}</div></div>
+                        <div class="detail-item"><div class="detail-label">关联操作单号</div><div class="detail-value">${App.escapeHtml(operationNo || '未关联')}</div></div>
                         <div class="detail-item"><div class="detail-label">客户</div><div class="detail-value">${App.escapeHtml(shipment.customerName)}</div></div>
                         <div class="detail-item"><div class="detail-label">货物描述</div><div class="detail-value">${App.escapeHtml(shipment.cargoDesc)}</div></div>
                         <div class="detail-item"><div class="detail-label">起运港</div><div class="detail-value">${App.escapeHtml(shipment.loadingPort)}</div></div>
                         <div class="detail-item"><div class="detail-label">海外港口</div><div class="detail-value">${App.escapeHtml(shipment.overseasPort) || '-'}</div></div>
                         <div class="detail-item"><div class="detail-label">ETD (预计出运)</div><div class="detail-value">${App.formatDate(shipment.etd)}</div></div>
-                        <div class="detail-item"><div class="detail-label">毛重 (KG)</div><div class="detail-value">${shipment.grossWeight.toLocaleString()}</div></div>
-                        <div class="detail-item"><div class="detail-label">净重 (KG)</div><div class="detail-value">${shipment.netWeight.toLocaleString()}</div></div>
-                        <div class="detail-item"><div class="detail-label">体积 (CBM)</div><div class="detail-value">${shipment.volume}</div></div>
+                        <div class="detail-item"><div class="detail-label">毛重 (KG)</div><div class="detail-value">${Number(shipment.grossWeight || 0).toLocaleString()}</div></div>
+                        <div class="detail-item"><div class="detail-label">净重 (KG)</div><div class="detail-value">${Number(shipment.netWeight || 0).toLocaleString()}</div></div>
+                        <div class="detail-item"><div class="detail-label">体积 (CBM)</div><div class="detail-value">${Number(shipment.volume || 0)}</div></div>
                         <div class="detail-item"><div class="detail-label">报关状态</div><div class="detail-value">${App.getCustomsBadge(shipment.customsStatus)}</div></div>
                         <div class="detail-item"><div class="detail-label">出运状态</div><div class="detail-value">${App.getShippingBadge(shipment.status)}</div></div>
                     </div>
@@ -219,11 +222,11 @@ const Shipping = {
                 <div class="table-container">
                     <table>
                         <tbody>
-                            <tr><td>操作单号</td><td>${App.escapeHtml(order.id)}</td></tr>
+                            <tr><td>操作单号</td><td>${App.escapeHtml(order.companyOperationNo || order.id)}</td></tr>
                             <tr><td>客户</td><td>${App.escapeHtml(order.customerName)}</td></tr>
                             <tr><td>产品</td><td>${App.escapeHtml(order.productName)}</td></tr>
                             <tr><td>订单金额</td><td>${App.formatMoney(order.orderAmountUSD, 'USD')}</td></tr>
-                            <tr><td>收款状态</td><td>${App.getPaymentBadge(order.paymentStatus)}</td></tr>
+                            ${Auth.canSeeFinancials() ? `<tr><td>收款状态</td><td>${App.getPaymentBadge(order.paymentStatus)}</td></tr>` : ''}
                             <tr><td>订单状态</td><td>${App.getStatusBadge(order.status)}</td></tr>
                         </tbody>
                     </table>
@@ -234,68 +237,212 @@ const Shipping = {
         `;
     },
 
+    showAddForm(orderId = '') {
+        if (!Auth.canEdit()) return;
+        const orders = DB.getOrders().filter(order => !DB.getShipmentByOrder(order.id));
+        const selected = orderId || orders[0]?.id || '';
+        if (!orders.some(order => String(order.id) === String(selected))) {
+            App.toast('当前法人没有可建立出运记录的订单', 'info');
+            return;
+        }
+        const order = DB.getOrder(selected);
+        const body = `<form id="shipmentForm" onsubmit="Shipping.saveShipment(event); return false;">
+            <div class="form-group"><label class="form-label">关联操作单 *</label><select name="orderId" class="form-select" required onchange="Shipping.onOrderChange(this)">
+            ${orders.map(item => `<option value="${App.escapeHtml(item.id)}" ${item.id === selected ? 'selected' : ''}>${App.escapeHtml(item.companyOperationNo || item.id)} · ${App.escapeHtml(item.customerName)}</option>`).join('')}</select></div>
+            <div class="form-group"><label class="form-label">发票号码</label><input name="invoiceNo" class="form-input"></div>
+            <div class="form-row"><div class="form-group"><label class="form-label">起运港 *</label><input name="loadingPort" class="form-input" value="${App.escapeHtml(order.loadingPort || '')}" required></div>
+            <div class="form-group"><label class="form-label">海外港口</label><input name="overseasPort" class="form-input" value="${App.escapeHtml(order.overseasPort || '')}" ${requiresOverseasPort(DB.getCurrentCompany()) ? 'required' : ''}></div></div>
+            <div class="form-group"><label class="form-label">货物描述</label><input name="cargoDesc" class="form-input" value="${App.escapeHtml(order.productName || '')}"></div>
+            ${this.statusFields({ status: '待出运', customsStatus: '未报关', etd: order.expectedShipDate || '' })}
+            <div class="form-row-3">${[
+                ['grossWeight', '毛重 (KG)'],
+                ['netWeight', '净重 (KG)'],
+                ['volume', '体积 (CBM)']
+            ]
+                .map(
+                    ([key, label]) =>
+                        `<div class="form-group"><label class="form-label">${label}</label><input type="number" min="0" step="0.01" name="${key}" class="form-input" value="0"></div>`
+                )
+                .join('')}</div>
+        </form>`;
+        App.showModal('建立出运记录', body, {
+            footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('shipmentForm').requestSubmit()">保存</button>`
+        });
+    },
+
+    onOrderChange(select) {
+        const order = DB.getOrder(select.value);
+        if (!order) return;
+        for (const key of ['loadingPort', 'overseasPort']) select.form.elements[key].value = order[key] || '';
+        select.form.elements.cargoDesc.value = order.productName || '';
+        select.form.elements.etd.value = order.expectedShipDate || '';
+    },
+
+    statusFields(shipment) {
+        return `<div class="form-row"><div class="form-group"><label class="form-label">出运状态</label><select class="form-select" name="status">${['待出运', '已出运', '已到港', '已签收'].map(status => `<option value="${status}" ${status === shipment.status ? 'selected' : ''}>${status}</option>`).join('')}</select></div>
+            <div class="form-group"><label class="form-label">报关状态</label><select class="form-select" name="customsStatus">${['未报关', '已报关', '清关中', '已清关'].map(status => `<option value="${status}" ${status === shipment.customsStatus ? 'selected' : ''}>${status}</option>`).join('')}</select></div></div>
+            <div class="form-group"><label class="form-label">ETD (预计出运日期)</label><input type="date" class="form-input" name="etd" value="${App.escapeHtml(shipment.etd || '')}"></div>
+            <div class="form-row">${[
+                ['customsDate', '实际报关日期'],
+                ['actualShipDate', '实际装船出运日期'],
+                ['arrivalDate', '实际到港日期'],
+                ['receivedDate', '实际签收日期']
+            ]
+                .map(
+                    ([key, label]) =>
+                        `<div class="form-group"><label class="form-label">${label}</label><input type="date" class="form-input" name="${key}" value="${App.escapeHtml(shipment[key] || '')}"></div>`
+                )
+                .join('')}</div>`;
+    },
+
+    validateShipment(value, creating = false) {
+        if (!value.orderId || !String(value.loadingPort || '').trim()) return '请选择订单并填写起运港';
+        const company = DB.companies.find(item => item.id === value.companyId);
+        if (requiresOverseasPort(company) && !String(value.overseasPort || '').trim()) {
+            return '香港公司出运记录须填写海外港口';
+        }
+        if (
+            !['待出运', '已出运', '已到港', '已签收'].includes(value.status) ||
+            !['未报关', '已报关', '清关中', '已清关'].includes(value.customsStatus)
+        ) {
+            return '出运或报关状态无效';
+        }
+        const validDate = date =>
+            /^\d{4}-\d{2}-\d{2}$/.test(date || '') &&
+            !Number.isNaN(Date.parse(date)) &&
+            new Date(date).toISOString().slice(0, 10) === date;
+        for (const key of ['etd', 'customsDate', 'actualShipDate', 'arrivalDate', 'receivedDate']) {
+            if ((value[key] || (creating && key === 'etd')) && !validDate(value[key])) return '请填写有效日期';
+        }
+        const requiredMilestone = { 已出运: 'actualShipDate', 已到港: 'arrivalDate', 已签收: 'receivedDate' }[
+            value.status
+        ];
+        if (requiredMilestone && !value[requiredMilestone]) return '请填写当前出运状态的实际发生日期';
+        const dates = ['actualShipDate', 'arrivalDate', 'receivedDate'].map(key => value[key]).filter(Boolean);
+        if (dates.some((date, index) => index > 0 && date < dates[index - 1])) {
+            return '实际装船、到港及签收日期须按时间先后填写';
+        }
+        for (const key of ['grossWeight', 'netWeight', 'volume']) {
+            if (Object.hasOwn(value, key) && (!Number.isFinite(value[key]) || value[key] < 0)) {
+                return '重量和体积必须为非负数';
+            }
+        }
+        if (Number(value.netWeight || 0) > Number(value.grossWeight || 0)) return '净重不能超过毛重';
+        return '';
+    },
+
+    async saveShipment(event) {
+        event.preventDefault();
+        if (!Auth.canEdit() || !DB._cloudReady) {
+            App.toast('当前账号无编辑权限或数据库未连接', 'error');
+            return;
+        }
+        const form = event.target;
+        if (form.dataset.saving === 'true') return;
+        const fd = new FormData(form);
+        const order = DB.getOrder(fd.get('orderId'));
+        if (!order || String(order.companyId) !== String(DB.currentCompanyId)) {
+            App.toast('请选择当前法人的有效订单', 'error');
+            return;
+        }
+        const value = { orderId: order.id, companyId: order.companyId };
+        for (const key of [
+            'invoiceNo',
+            'loadingPort',
+            'overseasPort',
+            'cargoDesc',
+            'status',
+            'customsStatus',
+            'etd',
+            'customsDate',
+            'actualShipDate',
+            'arrivalDate',
+            'receivedDate'
+        ]) {
+            value[key] = fd.get(key) || '';
+        }
+        for (const key of ['grossWeight', 'netWeight', 'volume']) value[key] = Number(fd.get(key) || 0);
+        const invalid = this.validateShipment(value, true);
+        if (invalid) {
+            App.toast(invalid, 'error');
+            return;
+        }
+        const saved = form.dataset.pendingRecordId
+            ? DB.updateShipment(form.dataset.pendingRecordId, value)
+            : DB.addShipment(value);
+        if (!saved) return;
+        form.dataset.pendingRecordId = saved.id;
+        DB.updateOrder(order.id, {
+            shippingStatus: saved.status,
+            ...(saved.actualShipDate ? { actualShipDate: saved.actualShipDate } : {})
+        });
+        form.dataset.saving = 'true';
+        let ok = false;
+        try {
+            ok = await DB.flush();
+        } catch {
+            /* Keep this form and record for retry. */
+        } finally {
+            form.dataset.saving = 'false';
+        }
+        if (!ok) {
+            App.toast('出运记录保存失败，草稿已保留，请重试', 'error');
+            return;
+        }
+        App.toast('出运记录已建立');
+        App.closeModal();
+        window.location.hash = '#/shipping/' + encodeURIComponent(saved.id);
+    },
+
     updateStatus(shipmentId) {
         const shipment = DB.getShipment(shipmentId);
-        if (!shipment) return;
-        const bodyHtml = `
-            <form id="statusForm" onsubmit="Shipping.saveStatus(event, '${shipmentId}'); return false;">
-                <div class="form-group">
-                    <label class="form-label">出运状态</label>
-                    <select class="form-select" name="status">
-                        ${['待出运', '已出运', '已到港', '已签收'].map(s => `<option value="${s}" ${s === shipment.status ? 'selected' : ''}>${s}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">报关状态</label>
-                    <select class="form-select" name="customsStatus">
-                        ${['未报关', '已报关', '清关中', '已清关'].map(s => `<option value="${s}" ${s === shipment.customsStatus ? 'selected' : ''}>${s}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">实际出运日期 (ETD)</label>
-                    <input type="date" class="form-input" name="etd" value="${shipment.etd}">
-                </div>
-            </form>
-        `;
-        App.showModal('更新出运状态', bodyHtml, {
-            footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('statusForm').requestSubmit()">💾 保存</button>`
-        });
+        if (!shipment || !Auth.canEdit()) return;
+        App.showModal(
+            '更新出运状态',
+            `<form id="statusForm" onsubmit="Shipping.saveStatus(event, '${App.escapeHtml(shipmentId)}'); return false;">${this.statusFields(shipment)}</form>`,
+            {
+                footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('statusForm').requestSubmit()">保存</button>`
+            }
+        );
     },
 
     async saveStatus(event, shipmentId) {
         event.preventDefault();
-        if (!DB._cloudReady) {
-            App.toast('⚠️ 数据库未连接，请检查连接后重试', 'error');
+        if (!DB._cloudReady || !Auth.canEdit()) {
+            App.toast('当前账号无编辑权限或数据库未连接', 'error');
             return;
         }
-        const fd = new FormData(event.target);
-        const updated = DB.updateShipment(shipmentId, {
-            status: fd.get('status'),
-            customsStatus: fd.get('customsStatus'),
-            etd: fd.get('etd')
-        });
-        if (!updated) {
-            App.toast('⚠️ 出运记录不存在，无法更新', 'error');
-            return;
-        }
-        // 同步更新订单状态
         const shipment = DB.getShipment(shipmentId);
-        if (shipment) {
-            const orderUpdates = { shippingStatus: fd.get('status') };
-            const order = DB.getOrder(shipment.orderId);
-            if (order && fd.get('status') === '已出运' && !order.actualShipDate) {
-                orderUpdates.actualShipDate = fd.get('etd');
-                orderUpdates.status = '已订船';
-            }
-            if (fd.get('status') === '已签收') {
-                orderUpdates.status = '已订船';
-            }
-            if (order) DB.updateOrder(shipment.orderId, orderUpdates);
+        if (!shipment) return;
+        const fd = new FormData(event.target);
+        const updates = {};
+        for (const key of [
+            'status',
+            'customsStatus',
+            'etd',
+            'customsDate',
+            'actualShipDate',
+            'arrivalDate',
+            'receivedDate'
+        ]) {
+            if (fd.has(key)) updates[key] = fd.get(key) || '';
         }
-        // ★ 显式 flush（updateOrder / updateShipment 不再自动 flush）
+        const invalid = this.validateShipment({ ...shipment, ...updates });
+        if (invalid) {
+            App.toast(invalid, 'error');
+            return;
+        }
+        if (!DB.updateShipment(shipmentId, updates)) return;
+        const order = DB.getOrder(shipment.orderId);
+        if (order) {
+            DB.updateOrder(order.id, {
+                shippingStatus: updates.status || shipment.status,
+                ...(updates.actualShipDate ? { actualShipDate: updates.actualShipDate } : {})
+            });
+        }
         const ok = await DB.flush();
         if (!ok) {
-            App.toast('⚠️ 保存失败，请重试', 'error');
+            App.toast('保存失败，草稿已保留，请重试', 'error');
             return;
         }
         App.toast('出运状态已更新');
@@ -306,12 +453,17 @@ const Shipping = {
     exportExcel() {
         const shipments = DB.getShipments();
         const headers = [
-            'id',
+            'invoiceNo',
+            'companyOperationNo',
             'orderId',
             'customerName',
             'loadingPort',
             'overseasPort',
             'etd',
+            'customsDate',
+            'actualShipDate',
+            'arrivalDate',
+            'receivedDate',
             'customsStatus',
             'status',
             'grossWeight',
@@ -319,12 +471,17 @@ const Shipping = {
             'volume'
         ];
         const labels = {
-            id: '发票号码',
-            orderId: '操作单号',
+            invoiceNo: '发票号码',
+            companyOperationNo: '操作单号',
+            orderId: '关联订单ID',
             customerName: '客户',
             loadingPort: '起运港',
             overseasPort: '海外港口',
             etd: '预计离港',
+            customsDate: '实际报关日期',
+            actualShipDate: '实际装船日期',
+            arrivalDate: '实际到港日期',
+            receivedDate: '实际签收日期',
             customsStatus: '报关状态',
             status: '状态',
             grossWeight: '毛重(KG)',
@@ -336,3 +493,4 @@ const Shipping = {
 };
 
 window.Shipping = Shipping;
+export { Shipping };

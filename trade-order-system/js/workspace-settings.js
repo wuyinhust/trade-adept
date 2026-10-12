@@ -2,6 +2,7 @@ import { DB } from './data.js';
 import { Auth } from './auth.js';
 import { App } from './app.js';
 import { escapeHtml, toast } from './utils.js';
+import { ERPNextPanel } from './erpnext-panel.js';
 
 const Settings = {
     async render() {
@@ -16,6 +17,7 @@ const Settings = {
                 </tbody></table></div>
                 ${canRates ? '<button class="btn btn-primary" id="saveWorkspaceRates">保存汇率</button><p class="text-sm text-gray">修改配置用于后续计算；不会自动改写历史订单利润。</p>' : ''}
             </div></div>
+            ${Auth.hasCapability('finance.read') === true ? '<div id="workspaceERPNext" class="mb-6"></div>' : ''}
             ${canSnapshots ? '<div class="card"><div class="card-header"><span class="card-title">业务快照</span></div><div class="card-body" id="workspaceSnapshots">正在读取…</div></div>' : ''}`;
         document.getElementById('saveWorkspaceRates')?.addEventListener('click', async () => {
             const inputs = [...document.querySelectorAll('[data-rate-company]')];
@@ -34,6 +36,7 @@ const Settings = {
             }
         });
         if (canSnapshots) await this.renderSnapshots();
+        if (Auth.hasCapability('finance.read') === true) await ERPNextPanel.render();
     },
 
     async renderSnapshots() {

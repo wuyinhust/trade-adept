@@ -1,0 +1,65 @@
+{
+  "acceptedAt": "2026-10-12T03:34:09.648601+00:00",
+  "site": "frontend",
+  "tenant": "example-company",
+  "company": "Example Trade Demo",
+  "sourceOrderId": "EX-ORDER-DEMO",
+  "customer": {
+    "name": "Example Buyer Demo",
+    "company": "Example Buyer Demo"
+  },
+  "salesOrder": {
+    "name": "SAL-ORD-2026-00001",
+    "customerOrderNo": "DEMO-PO-001",
+    "docstatus": 1,
+    "grandTotalUSD": 1000.0,
+    "deliveredPercent": 100.0,
+    "advancePaidUSD": 1000.0
+  },
+  "purchaseOrders": [
+    {
+      "name": "PUR-ORD-2026-00001",
+      "supplier": "Example Supplier Demo",
+      "docstatus": 1,
+      "grandTotalUSD": 420.0
+    },
+    {
+      "name": "PUR-ORD-2026-00002",
+      "supplier": "Example Supplier Two Demo",
+      "docstatus": 1,
+      "grandTotalUSD": 280.0
+    }
+  ],
+  "deliveryNote": {
+    "name": "MAT-DN-2026-00001",
+    "docstatus": 1,
+    "totalQuantity": 100.0
+  },
+  "paymentEntry": {
+    "name": "ACC-PAY-2026-00001",
+    "docstatus": 1,
+    "receivedUSD": 1000.0,
+    "ledgerEntries": [
+      {
+        "account": "Trade Demo Bank - EX",
+        "debit": 1000.0,
+        "credit": 0.0,
+        "voucher_no": "ACC-PAY-2026-00001"
+      },
+      {
+        "account": "Debtors - EX",
+        "debit": 0.0,
+        "credit": 1000.0,
+        "voucher_no": "ACC-PAY-2026-00001"
+      }
+    ]
+  },
+  "sqliteBusinessUnchangedByERPSubmit": true,
+  "productionDeployment": false,
+  "sourceRevision": 9,
+  "tradePaidAmountUSD": 0,
+  "nonDemoTenantsUnchangedByERPSubmit": true,
+  "otherTenantRevisions": {
+    "grandware": 1
+  }
+}

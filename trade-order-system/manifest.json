@@ -1,18 +1,18 @@
 {
-    "name": "Trade Workspace",
-    "short_name": "Trade",
-    "description": "外贸订单跟踪系统",
+    "name": "Tradept",
+    "short_name": "Tradept",
+    "description": "通用外贸订单工作区",
     "start_url": "/",
     "display": "standalone",
     "orientation": "portrait",
     "background_color": "#f5f5f7",
-    "theme_color": "#0071e3",
+    "theme_color": "#185cf4",
     "icons": [
         {
-            "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230071e3'/><text x='50' y='68' font-size='55' font-weight='700' fill='white' text-anchor='middle' font-family='sans-serif'>G</text></svg>",
-            "sizes": "100x100",
-            "type": "image/svg+xml",
-            "purpose": "any maskable"
+            "src": "assets/brand/tradept-icon.png",
+            "sizes": "1254x1254",
+            "type": "image/png",
+            "purpose": "any"
         }
     ]
 }

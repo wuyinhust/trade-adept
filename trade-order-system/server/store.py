@@ -21,6 +21,8 @@ from contextlib import contextmanager
 import re
 import subprocess
 import sys
+from . import erpnext
+from .validation import validate_order, validate_shipment
 
 COLLECTIONS = ("orders", "customers", "factories", "shipments", "invoices")
 SESSION_TTL = 8 * 3600
@@ -33,8 +35,8 @@ DEFAULT_ROLES = {
     "document": {"scope": "self", "permissions": ["read", "create", "edit"], "pages": ["dashboard", "orders", "customers", "factories", "shipping"]},
 }
 DEFAULT_ROLES = {name: {**policy, "readScopes": {"factories": "entities"}} for name, policy in DEFAULT_ROLES.items()}
-HIDDEN_FIELDS = {"factoryCostRMB", "factoryCostUSD", "freightCostUSD", "freightCostRMB", "insuranceCostUSD", "otherCostUSD", "otherCostRMB", "orderAmountRMB", "profitRMB", "profitUSD", "profitRate", "margin", "paidAmountUSD", "paymentStatus", "costPaidUSD", "costPaymentStatus", "bankInfo", "bankAccount", "paidCostRMB", "paidCostUSD", "factoryCostPaid", "factoryPaidRMB"}
-NESTED_COST = {"totalAmount", "prepayment", "paidAmount", "cost", "costUSD", "costRMB", "paidCostRMB", "paidCostUSD", "costPaidUSD", "paymentStatus", "costPaymentStatus"}
+HIDDEN_FIELDS = {"factoryCostRMB", "factoryCostUSD", "freightCostUSD", "freightCostRMB", "insuranceCostUSD", "otherCostUSD", "otherCostRMB", "orderAmountRMB", "profitRMB", "profitUSD", "profitRate", "margin", "paidAmountUSD", "paymentStatus", "costPaidUSD", "costPaymentStatus", "bankInfo", "bankAccount", "paidCostRMB", "paidCostUSD", "factoryCostPaid", "factoryPaidRMB", "erpItems", "purchaseRate"}
+NESTED_COST = {"totalAmount", "prepayment", "paidAmount", "cost", "costUSD", "costRMB", "paidCostRMB", "paidCostUSD", "costPaidUSD", "paymentStatus", "costPaymentStatus", "purchaseRate"}
 DERIVED = {"profitRMB", "profitUSD", "profitRate", "orderAmountRMB"}
 FINANCIAL_INPUT = {"orderAmountUSD", "factoryCostRMB", "freightCostUSD", "insuranceCostUSD", "otherCostUSD", "factories", "companyId"}
 
@@ -157,6 +159,7 @@ class Store:
                 revision INTEGER NOT NULL,actor_id TEXT NOT NULL,created_at TEXT NOT NULL,kind TEXT NOT NULL,summary TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS login_attempts(key TEXT PRIMARY KEY,attempts INTEGER NOT NULL,locked_until INTEGER NOT NULL);
             """)
+            erpnext.init_schema(db)
 
     @contextmanager
     def connect(self):
@@ -322,7 +325,7 @@ class Store:
             return set()  # Explicit grants required for ordinary accounts.
         return known.intersection(map(str, team["visibleCompanyIds"]))
 
-    def record_allowed(self, db, cfg, actor, record, action="read", collection=None):
+    def record_allowed(self, db, cfg, actor, record, action="read", collection=None, payload=None):
         if not self.permitted(cfg, actor, action, collection):
             return False
         if record.get("tenantId") not in (None, actor["tenantId"]):
@@ -335,6 +338,16 @@ class Store:
             unknown = company not in {c["id"] for c in cfg["companies"]}
             complete_grants = self.company_ids(cfg, actor) == {c["id"] for c in cfg["companies"]}
             return unknown and complete_grants and policy.get("scope") == "tenant" and self.permitted(cfg, actor, "accounts.configure") and action in ("read", "edit", "delete")
+        if collection in ("shipments", "invoices"):
+            # Operational documents follow their order's assignments. A
+            # shipment created by an administrator must remain available to
+            # the order's salesperson and assigned document specialist.
+            if payload is None:
+                tenant, _ = self._tenant(db, actor)
+                payload = json.loads(tenant["payload"])
+            parent = next((r for r in payload.get("orders", []) if str(r.get("id")) == str(record.get("orderId")) and not r.get("deleted")), None)
+            parent_action = "read" if action == "read" else "edit"
+            return bool(parent and parent.get("companyId") == company and self.record_allowed(db, cfg, actor, parent, parent_action, "orders"))
         scope = policy.get("readScopes", {}).get(collection, policy.get("scope")) if action == "read" else policy.get("scope")
         if scope in ("tenant", "entities"):
             return True
@@ -388,7 +401,7 @@ class Store:
             visible_orders = set()
             for collection in COLLECTIONS:
                 for record in payload.get(collection, []):
-                    if record.get("deleted") or not self.record_allowed(db, cfg, actor, record, collection=collection):
+                    if record.get("deleted") or not self.record_allowed(db, cfg, actor, record, collection=collection, payload=payload):
                         continue
                     if collection in ("shipments", "invoices") and str(record.get("orderId")) not in visible_orders:
                         continue
@@ -402,6 +415,42 @@ class Store:
         with self.connect() as db:
             row, _ = self._tenant(db, actor)
             return {"ok": True, "meta": self._meta(row)}
+
+    def erp_status(self, actor):
+        with self.connect() as db:
+            actor = self._current_actor(db, actor)
+            row, cfg = self._tenant(db, actor)
+            if not self.permitted(cfg, actor, "finance.read", "orders"):
+                raise APIError(403, "FINANCE_DENIED", "ERP documents require financial read access")
+            payload = json.loads(row["payload"])
+            ids = [r["id"] for r in payload.get("orders", []) if not r.get("deleted") and self.record_allowed(db, cfg, actor, r, collection="orders")]
+            return erpnext.status(db, actor["tenantId"], ids, erpnext.load_config(self.runtime))
+
+    def erp_queue(self, actor, order_id, expected):
+        if not isinstance(order_id, str) or not safe_record_id(order_id):
+            raise APIError(400, "INVALID_ORDER", "Select a saved order")
+        configuration = erpnext.load_config(self.runtime)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                actor = self._current_actor(db, actor)
+                row, cfg = self._tenant(db, actor)
+                self._expected(row, expected)
+                if not self.permitted(cfg, actor, "finance.write", "orders"):
+                    raise APIError(403, "FINANCE_DENIED", "ERP synchronization requires financial write access")
+                payload = json.loads(row["payload"])
+                order = next((r for r in payload.get("orders", []) if r.get("id") == order_id and not r.get("deleted")), None)
+                if not order or not self.record_allowed(db, cfg, actor, order, "edit", "orders"):
+                    raise APIError(403, "RECORD_DENIED", "Order unavailable in your authorized scope")
+                if order.get("companyId") not in self.company_ids(cfg, actor):
+                    raise APIError(403, "COMPANY_DENIED", "Assign an authorized legal entity first")
+                self._validate_links(db, cfg, actor, payload, "orders", order, {"companyId": order["companyId"]}, False)
+                job = erpnext.queue_order(db, actor["tenantId"], actor["id"], order_id, row["revision"], payload, configuration)
+                db.execute("COMMIT")
+                return {"ok": True, "job": job, "meta": self._meta(row)}
+            except Exception:
+                db.rollback()
+                raise
 
     @staticmethod
     def _expected(row, expected):
@@ -478,6 +527,11 @@ class Store:
             value["createdBy"] = actor["id"]
             value["createdAt"] = now()
             value.setdefault("salespersonId", actor["id"])
+            if collection == "orders":
+                value.setdefault("paidAmountUSD", 0)
+                value.setdefault("paymentStatus", "未收款")
+                value.setdefault("factoryPaidRMB", 0)
+                value.setdefault("factoryPaidStatus", "未付款")
         value["tenantId"] = actor["tenantId"]
         value["updatedBy"] = actor["id"]
         value["updatedAt"] = now()
@@ -541,7 +595,7 @@ class Store:
                 if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                     raise APIError(400, "INVALID_AMOUNT", "Amounts must be finite, nonnegative numbers")
 
-    def _validate_links(self, db, cfg, actor, payload, collection, value, patch, creating):
+    def _validate_links(self, db, cfg, actor, payload, collection, value, patch, creating, prior=None):
         if collection != "orders":
             return
         references = []
@@ -549,13 +603,27 @@ class Store:
         if changing_entity or "customerId" in patch:
             if not value.get("customerId"):
                 raise APIError(400, "CUSTOMER_REQUIRED", "An order requires a customer")
-            references.append(("customers", value["customerId"]))
-        if changing_entity or any(key in patch for key in ("factoryId", "factoryIds", "factories")):
+            if changing_entity or value["customerId"] != (prior or {}).get("customerId"):
+                references.append(("customers", value["customerId"]))
+        if changing_entity or any(key in patch for key in ("factoryId", "factoryIds", "factories", "erpItems")):
             factory_ids = set(map(str, value.get("factoryIds", [])))
             if value.get("factoryId"):
                 factory_ids.add(str(value["factoryId"]))
             factory_ids.update(str(f["factoryId"]) for f in value.get("factories", []) if f.get("factoryId"))
-            references.extend(("factories", rid) for rid in factory_ids)
+            if "erpItems" in value:
+                if not isinstance(value["erpItems"], list) or any(not isinstance(f, dict) or not f.get("factoryId") for f in value["erpItems"]):
+                    raise APIError(400, "INVALID_ERP_ITEMS", "ERP item mappings need explicit supplier references")
+                factory_ids.update(str(f["factoryId"]) for f in value["erpItems"])
+            previous = prior or {}
+            previous_ids = set(map(str, previous.get("factoryIds", [])))
+            if previous.get("factoryId"):
+                previous_ids.add(str(previous["factoryId"]))
+            previous_ids.update(str(f["factoryId"]) for f in previous.get("factories", []) if f.get("factoryId"))
+            # Imported Grandware orders can retain historical cross-entity
+            # suppliers. Public quantity/date edits preserve that reference;
+            # adding a supplier, moving an entity or ERP mapping stays strict.
+            strict_erp_ids = {str(f["factoryId"]) for f in value.get("erpItems", [])} if changing_entity or "erpItems" in patch else set()
+            references.extend(("factories", rid) for rid in factory_ids if changing_entity or rid not in previous_ids or rid in strict_erp_ids)
         for target, rid in references:
             related = next((r for r in payload[target] if str(r["id"]) == str(rid) and not r.get("deleted")), None)
             if not related or related.get("companyId") != value.get("companyId") or related.get("companyId") not in self.company_ids(cfg, actor) or not self.record_allowed(db, cfg, actor, related, collection=target):
@@ -643,15 +711,25 @@ class Store:
                         if collection == "orders" and old and value.get("companyId") != old.get("companyId"):
                             if any(str(entry.get("orderId")) == rid for related in ("shipments", "invoices") for entry in payload[related]):
                                 raise APIError(409, "LEGAL_ENTITY_MIGRATION_REQUIRED", "Orders with shipping/invoice history require an explicit legal entity migration")
-                        if not self.record_allowed(db, cfg, actor, value, "read", collection):
+                        if not self.record_allowed(db, cfg, actor, value, "read", collection, payload=payload):
                             raise APIError(403, "ASSIGNMENT_DENIED", "Cannot save a record outside the account scope")
-                        self._validate_links(db, cfg, actor, payload, collection, value, change.get("value", {}), old is None)
+                        self._validate_links(db, cfg, actor, payload, collection, value, change.get("value", {}), old is None, old)
+                        company = next((c for c in cfg["companies"] if c["id"] == value.get("companyId")), {})
+                        try:
+                            if collection == "orders":
+                                validate_order(value, change.get("value", {}), old is None, company)
+                            elif collection == "shipments":
+                                validate_shipment(value, change.get("value", {}), old is None, company)
+                        except ValueError as error:
+                            raise APIError(400, "BUSINESS_VALIDATION", str(error))
                         if collection == "orders" and self._financial_changed(old, value):
                             self._derive_order(cfg, value, rates)
                         if collection in ("shipments", "invoices"):
                             parent = next((r for r in payload["orders"] if str(r["id"]) == str(value.get("orderId")) and not r.get("deleted")), None)
                             if not parent or parent.get("companyId") != value.get("companyId") or not self.record_allowed(db, cfg, actor, parent, collection="orders"):
                                 raise APIError(403, "RELATED_RECORD_DENIED", "Related order is inaccessible or belongs to another legal entity")
+                            if collection == "shipments" and any(r.get("id") != rid and not r.get("deleted") and r.get("orderId") == value.get("orderId") for r in payload["shipments"]):
+                                raise APIError(409, "SHIPMENT_EXISTS", "This order already has an active shipment; open it to update its progress")
                     if old:
                         records[records.index(old)] = value
                     else:
@@ -705,6 +783,8 @@ class Store:
                 self._expected(row, expected)
                 if not self.permitted(cfg, actor, "snapshots.restore") or self._policy(cfg, actor).get("scope") != "tenant":
                     raise APIError(403, "RESTORE_DENIED", "Tenant administrator restore permission required")
+                if erpnext.has_jobs(db, actor["tenantId"]):
+                    raise APIError(409, "ERP_RESTORE_REQUIRES_RECONCILIATION", "ERPNext-linked business must be reconciled or cancelled before restoring a local snapshot")
                 snapshot = db.execute("SELECT * FROM snapshots WHERE id=? AND tenant_id=?", (snapshot_id, actor["tenantId"])).fetchone()
                 if not snapshot:
                     raise APIError(404, "SNAPSHOT_NOT_FOUND", "Snapshot unavailable")
@@ -754,6 +834,8 @@ class Store:
                 if not row:
                     raise ValueError("Configure tenant before import")
                 self._expected(row, expected)
+                if erpnext.has_jobs(db, tenant_id):
+                    raise APIError(409, "ERP_RESTORE_REQUIRES_RECONCILIATION", "Reconcile ERP jobs and documents before replacing local business data")
                 self._unique_order_numbers(payload)
                 rates = content.get("exchangeRates", json.loads(row["rates"]))
                 metas = content.get("rateMetas", {})
