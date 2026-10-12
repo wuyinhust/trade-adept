@@ -23,7 +23,7 @@ const App = {
         factories: './factories.js',
         profit: './profit.js',
         shipping: './shipping.js',
-        settings: './settings.js'
+        settings: './workspace-settings.js'
     },
     _pendingSearch: null,
 
@@ -131,47 +131,11 @@ const App = {
                 this.router();
             }
 
-            // 页面关闭/刷新前：
-            // 1. localStorage 同步写入（100% 可靠，不做网络请求）
-            // 2. sendBeacon 作为额外保险（可能失败，但 localStorage 已经兜底）
+            // A closing tab preserves a local draft. All business writes use the
+            // authenticated, version-checked API; unload never bypasses that API.
             window.addEventListener('beforeunload', () => {
                 DB._stopPolling();
-                // ★ 第一步：localStorage 同步写入，零延迟，100% 可靠
                 DB._backupToLocal();
-
-                // ★ 第二���：sendBeacon（尽力而为，可能因网络/REST API 格式而失败）
-                if (DB._businessAPI || !DB._cloudReady || !navigator.sendBeacon) return;
-
-                const base = `https://${Cloud.envId}.service.tcloudbase.com/database`;
-                const data = {
-                    dataType: Cloud.DATA_TYPE,
-                    payload: DB.data,
-                    exchangeRates: DB.exchangeRates,
-                    rateMetas: DB.rateMetas,
-                    version: (Cloud._lastMeta.version || 0) + 1,
-                    updatedAt: new Date().toISOString(),
-                    updatedBy: Auth.currentUser ? Auth.currentUser.name : 'auto-save',
-                    active: true
-                };
-
-                if (Cloud._docId) {
-                    // REST API: POST /database/document/update
-                    // body: { collection, docId, data }
-                    const url = `${base}/document/update`;
-                    const body = JSON.stringify({
-                        collection: Cloud.COLLECTION,
-                        docId: Cloud._docId,
-                        data: data
-                    });
-                    try {
-                        navigator.sendBeacon(url, body);
-                    } catch (_) {}
-                } else {
-                    const url = `${base}/collection/add?collection=${Cloud.COLLECTION}`;
-                    try {
-                        navigator.sendBeacon(url, JSON.stringify(data));
-                    } catch (_) {}
-                }
             });
 
             // 页面隐藏时（切到后台/锁屏）也尝试保存

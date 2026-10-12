@@ -1,45 +1,32 @@
 # Tradept
 
-通用外贸订单系统，以 Grandware 为首个演示客户。账号由管理员配置，支持租户、公司主体、角色和订单分配权限。界面沿用现有毛玻璃与简洁布局，使用 Tradept 标识。
+通用外贸订单工作台，以 Grandware 的 Excel 历史数据验证企业适用性。**0.2.0 单系统版本**保留 Tradept 界面，由 Frappe/ERPNext 承担唯一在线业务存储、原生账号、公司、客户、供应商、正式订单与收付款。没有另一个需要同步的订单数据库。
 
-当前正式开发版本为 **0.1.1**。本阶段交付范围和后续需求见 [首次发布验收](trade-order-system/docs/RELEASE-0.1.0.md)，本次更新见 [测试环境更新记录](trade-order-system/docs/RELEASE-0.1.1.md)，版本递增规则见 [VERSIONING](trade-order-system/docs/VERSIONING.md)。Git 源码发布与测试环境更新分别验证。
+[单系统需求与架构](trade-order-system/docs/UNIFIED-SYSTEM.md) 承接 [通用产品需求](trade-order-system/docs/通用外贸订单系统-产品需求-v1.md)，替代其中旧 SQLite/outbox 实现方案。Grandware 通过公司、权限、汇率、历史政策和 Excel 导入配置使用通用产品。logo、现有布局和毛玻璃视觉继续保留。
 
-当前没有生产环境。`127.0.0.1:3087` 的 Tradept 应用、`127.0.0.1:3088` 的隔离 ERPNext 以及旧 CloudBase 在线系统均为测试环境。环境属性不改变各次验收记录的执行范围；具体更新版本和结果以对应部署回读为准。
+## 启动
 
-`0.1.1` 新增独立云测试环境，通过本机 SSH 加密转发入口 `http://localhost:3089/#/dashboard` 访问；云端使用虚构数据与独立账号，隧道需保持运行。当前没有公网 HTTPS 入口。实际部署和重启持久化验证见 [测试环境更新记录](trade-order-system/docs/RELEASE-0.1.1.md)。
-
-## 本地启动
-
-服务使用 Python 3.12；CI 使用 Node.js 22。本机验收环境为 Python 3.12.14、Node.js 24.19.0。从仓库根目录执行：
+先依照 [隔离 ERPNext 部署](trade-order-system/integrations/erpnext/README.md) 安装 ERPNext 与 `tradept_core`。每个企业独立 site/database，Grandware 四个公司主体处于同一站点。应用和数据库使用私有本地或云块盘，SMB 共享卷只保存源码。
 
 ```sh
 cd trade-order-system
-python3 -m server.cli --runtime "$HOME/Library/Application Support/Tradept/workspace" init --config server/config.example.json
-python3 -m server.app --runtime "$HOME/Library/Application Support/Tradept/workspace" --port 3087
+python3 -m server.cli --runtime /private/tmp/tradept-gateway init --sites server/frappe-sites.example.json
+python3 -m server.app --runtime /private/tmp/tradept-gateway --port 3087
 ```
 
-打开 `http://127.0.0.1:3087/`。初始化生成的随机演示账号口令保存在指定运行目录的 `demo-credentials.json`。SQLite 运行目录必须放在支持权限和文件锁的本地磁盘；SMB 共享卷只存源码。持久使用请另选本机目录并配置备份。
+打开 `http://127.0.0.1:3087/`。账号由原生 User 管理，密码、管理员环境文件和客户数据不进入 Git。固定路由、原生会话、权限、CAS 和 API 说明见 [网关文档](trade-order-system/server/README.md)。
 
-服务只监听本机回环地址。配置、数据导入、权限、快照和恢复说明见 [API 服务说明](trade-order-system/server/README.md)。真实客户数据通过已授权副本另行导入；源码仓库不包含运行数据库、业务导出或密钥。
+当前隔离环境的 Grandware 原生管理入口为 `http://grandware.localhost:3088/desk`，Example 为 `http://localhost:3088/desk`。管理台和工作台使用相同企业数据库。Grandware 四家公司和历史资料已迁移，真实商品及银行/会计配置仍须企业提供后验证，不能从历史汇总记录推造。
 
-## 成熟组件
+## 历史数据与正式业务
 
-ERPNext 承接客户、供应商、销售订单、采购订单、交货与收款单据。当前桥接使用明确的 SKU、数量和价格映射，后台 outbox 负责幂等重试及来源版本检查；默认创建草稿。Grandware 原有利润口径仍在 Tradept 中兼容。
+Grandware 的历史记录保留来源 ID、软删除、金额和原始关联；不凭累计收款金额推造会计流水。新订单先保存业务计划，完善真实商品和价格后生成原生 SO/PO；后续金额和余额来自同一数据库的原生业务单据。Excel 预览和表单提交执行相同的权限、验证、冲突保护和审计。
 
-隔离本地测试部署与真实单据验收见 [ERPNext 集成](trade-order-system/integrations/erpnext/README.md) 和 [验收记录](trade-order-system/docs/ERPNEXT-ACCEPTANCE.md)。
+## 版本与环境
 
-## 需求与验收
+[archive/parallel-systems-v0.1.1](https://github.com/wuyinhust/tradept/tree/archive/parallel-systems-v0.1.1) 保留两套系统并行版本，提交 `287b92407017900a1f58c138af9d522b921ebffe`。历史标签和 Releases 未移动；原始 ZIP 仍在 `original-zip`。版本规则见 [VERSIONING](trade-order-system/docs/VERSIONING.md)。
 
-- [通用产品需求](trade-order-system/docs/通用外贸订单系统-产品需求-v1.md)
-- [原始需求与代码审查](trade-order-system/docs/CODE-REVIEW-20261011.md)
-- [品牌验收](trade-order-system/docs/BRAND-ACCEPTANCE.md)
-- [业务验收](trade-order-system/docs/BUSINESS-RELEASE-ACCEPTANCE.md)
-- [独立发布审查](trade-order-system/docs/RELEASE-REVIEW.md)
-- [变更记录](trade-order-system/CHANGELOG.md)
-
-## 历史归档
-
-`original-zip` 分支及同名标签保留原始 ZIP 源码；`current-20261011` 标签保留正式开发之前的快照。历史文件校验清单位于 `docs/source-snapshots/`。发布版本使用 `v大.中.小` 标签。
+所有当前环境都是测试环境。公网 [tradept-test.szkuohu.com](https://tradept-test.szkuohu.com/) 当前运行 0.1.1，单系统新版先在隔离本地验收。公网共享主机的内存不足以稳妥叠加完整 ERP；未经资源与迁移验收，不把本地完成状态说成云端更新。
 
 ## 验证
 
@@ -49,7 +36,8 @@ npm ci
 npm test -- --runInBand
 npm run lint
 python3 -m unittest discover -s server/tests -v
+python3 -m unittest discover -s integrations/frappe_app/tests -v
 python3 scripts/version.py
 ```
 
-GitHub Actions 执行上述源码验证；测试数据库接入和测试部署需要对应的环境配置与验收。未来商业生产部署另行配置并验收。
+网关单元测试与真实原生数据库验收分别记录，当前版本结果见 [0.2.0 验收记录](trade-order-system/docs/RELEASE-0.2.0.md)。发布核对 Grandware 初始迁移、两个站点与角色隔离、多人冲突与批次回滚、Excel 导入、原生单据和重启持久化；旧 0.1.x 测试不作为新版通过的证据。

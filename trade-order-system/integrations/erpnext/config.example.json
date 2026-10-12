@@ -1,26 +1,12 @@
 {
-    "tenants": {
-        "example-company": {
-            "enabled": false,
-            "baseUrl": "http://127.0.0.1:3088",
-            "site": "frontend",
-            "apiKey": "",
-            "apiSecret": "",
-            "companies": {
-                "EX-01": {
-                    "name": "Example Trade Demo",
-                    "currency": "USD",
-                    "customerGroup": "Trade Demo Customers",
-                    "supplierGroup": "Trade Demo Suppliers",
-                    "territory": "Trade Demo Territory",
-                    "sellingPriceList": "Trade Demo Selling USD",
-                    "buyingPriceList": "Trade Demo Buying USD",
-                    "warehouse": "Finished Goods - EX",
-                    "receivableAccount": "Debtors - EX",
-                    "payableAccount": "Creditors - EX",
-                    "bankAccount": "Trade Demo Bank - EX"
-                }
-            }
-        }
+  "tenants": {
+    "grandware": {
+      "origin": "http://127.0.0.1:3088",
+      "site": "grandware.test"
+    },
+    "example-company": {
+      "origin": "http://127.0.0.1:3088",
+      "site": "frontend"
     }
+  }
 }

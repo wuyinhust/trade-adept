@@ -191,7 +191,7 @@
           "shortName": "Example",
           "jurisdiction": "US",
           "settlementCurrency": "USD",
-          "profitPolicy": "grandware-v40",
+          "profitPolicy": "generic-native",
           "orderPrefix": "EX",
           "exchangeRate": 7.25
         }

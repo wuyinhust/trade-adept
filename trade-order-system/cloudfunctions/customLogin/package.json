@@ -1,9 +1,0 @@
-{
-    "name": "customLogin",
-    "version": "1.0.0",
-    "description": "Grandware 自定义登录云函数 — 签发 CloudBase 用户票据",
-    "main": "index.js",
-    "dependencies": {
-        "@cloudbase/node-sdk": "^2.4.0"
-    }
-}

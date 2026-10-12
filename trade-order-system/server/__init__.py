@@ -1,1 +1,1 @@
-"""Local trade workspace service; standard-library-only runtime."""
+"""Stateless Tradept gateway; native Frappe/ERPNext business storage."""

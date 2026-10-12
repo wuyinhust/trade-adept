@@ -12,11 +12,12 @@ from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit
 
-from .store import APIError, Store, SESSION_TTL
+from .errors import APIError
+from .frappe_client import FrappeGateway, SESSION_TTL
 
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
 PREVIEW_ROOT = SOURCE_ROOT.parent / "local-preview"
-DEFAULT_RUNTIME = Path(os.environ.get("TRADE_RUNTIME_DIR", SOURCE_ROOT / "server" / "runtime"))
+DEFAULT_RUNTIME = Path(os.environ.get("TRADE_RUNTIME_DIR", Path.home() / "Library" / "Application Support" / "Tradept" / "gateway"))
 COOKIE_NAME = "trade_session"
 MAX_BODY = 5 * 1024 * 1024
 
@@ -57,8 +58,8 @@ class Handler(BaseHTTPRequestHandler):
         pass  # Never log usernames, credentials, cookie values or record data.
 
     @property
-    def store(self):
-        return self.server.store
+    def gateway(self):
+        return self.server.gateway
 
     def _token(self):
         cookies = SimpleCookie()
@@ -125,12 +126,12 @@ class Handler(BaseHTTPRequestHandler):
             self._origin()
             path = urlsplit(self.path).path
             if path.startswith("/api/"):
-                actor = self.store.actor(self._token())
-                routes = {"/api/session": self.store.session, "/api/data": self.store.data, "/api/meta": self.store.meta, "/api/snapshots": self.store.snapshots, "/api/erpnext/status": self.store.erp_status}
+                actor = self.gateway.actor(self._token())
+                routes = {"/api/session": "session", "/api/data": "data", "/api/meta": "meta", "/api/snapshots": "snapshots", "/api/backend/status": "backend_status", "/api/erpnext/status": "backend_status"}
                 action = routes.get(path)
                 if not action:
                     raise APIError(404, "NOT_FOUND", "API endpoint not found")
-                self._json(200, action(actor))
+                self._json(200, self.gateway.read(actor, action))
                 return
             self._static(path)
         except APIError as error:
@@ -144,23 +145,18 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             body = {} if path == "/api/logout" and self.headers.get("Content-Length", "0") == "0" else self._body()
             if path == "/api/login":
-                token = self.store.login(body.get("tenantId"), body.get("username"), body.get("password"))
-                actor = self.store.actor(token)
-                self._json(200, {"ok": True, "user": self.store.session(actor)["user"]}, self._session_cookie(token, SESSION_TTL))
+                token, session = self.gateway.login(body.get("tenantId"), body.get("username"), body.get("password"))
+                self._json(200, session, self._session_cookie(token, SESSION_TTL))
                 return
             if path == "/api/logout":
-                self.store.logout(self._token())
+                self.gateway.logout(self._token())
                 self._json(200, {"ok": True}, self._session_cookie("", 0))
                 return
-            actor = self.store.actor(self._token())
-            if path == "/api/changes":
-                result = self.store.changes(actor, body.get("expectedVersion"), body.get("changes"), body.get("exchangeRates"), body.get("rateMetas"))
-            elif path == "/api/restore":
-                result = self.store.restore(actor, body.get("snapshotId"), body.get("expectedVersion"))
-            elif path == "/api/erpnext/queue":
-                result = self.store.erp_queue(actor, body.get("orderId"), body.get("expectedVersion"))
-            else:
+            actor = self.gateway.actor(self._token())
+            action = {"/api/changes": "changes", "/api/restore": "restore", "/api/orders/convert": "convert_order", "/api/orders/submit": "submit_order", "/api/orders/payment": "receive_payment", "/api/orders/cancel": "cancel_order"}.get(path)
+            if action is None:
                 raise APIError(404, "NOT_FOUND", "API endpoint not found")
+            result = self.gateway.write(actor, action, body)
             self._json(200, result)
         except APIError as error:
             self._json(error.status, error.response())
@@ -207,11 +203,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
 
-def create_server(runtime, port=3087, public_origin=None):
+def create_server(runtime, port=3087, public_origin=None, configuration=None, gateway=None):
     public_origin = normalize_public_origin(public_origin)
-    store = Store(runtime)
+    gateway = gateway or FrappeGateway(runtime, configuration)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    server.store = store
+    server.gateway = gateway
     server.public_origin = public_origin
     return server
 
@@ -220,15 +216,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=3087)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
+    parser.add_argument("--sites", type=Path, help="Private fixed tenant-to-Frappe site routing JSON (0600)")
     parser.add_argument("--public-origin", help="Fixed HTTPS origin behind a same-host loopback reverse proxy; never trusts forwarded headers")
     args = parser.parse_args()
     try:
         public_origin = normalize_public_origin(args.public_origin)
     except ValueError as error:
         parser.error(str(error))
-    with create_server(args.runtime, args.port, public_origin=public_origin) as server:
+    with create_server(args.runtime, args.port, public_origin=public_origin, configuration=args.sites) as server:
         print(f"Local trade workspace: http://127.0.0.1:{server.server_port}", flush=True)
-        print("Local test environment. Listening on loopback only.", flush=True)
+        print("Unified Frappe/ERPNext business backend. Listening on loopback only.", flush=True)
         if public_origin:
             print(f"Cloud test reverse proxy origin: {public_origin}", flush=True)
         try:

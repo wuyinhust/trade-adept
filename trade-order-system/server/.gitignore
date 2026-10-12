@@ -2,3 +2,5 @@ runtime/
 __pycache__/
 tests/__pycache__/
 *.sqlite3*
+frappe-sites.json
+routing-secret

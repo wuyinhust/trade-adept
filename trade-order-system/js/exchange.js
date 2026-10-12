@@ -1,5 +1,5 @@
 /**
- * 汇率与利润计算模块 — Grandware Group
+ * 公司汇率与报价展示；正式订单使用后端冻结的单据汇率。
  *
  * 职责：实时汇率获取、利润公式计算、全量订单重算
  * 依赖：DB 实例（exchangeRates, rateMetas, data, save）
@@ -38,6 +38,14 @@ const Exchange = {
     calcOrderProfit(orderAmountUSD, factoryCostRMB, freightCostUSD, insuranceCostUSD, otherCostUSD, companyId, policy) {
         const rate = DB.getExchangeRate(companyId);
         const formula = policy || DB.companies?.find(c => c.id === companyId)?.profitPolicy;
+        if (formula === 'generic-native') {
+            const conversion = this.isDomestic(companyId) ? rate : 1;
+            return (
+                orderAmountUSD * conversion -
+                factoryCostRMB -
+                ((freightCostUSD || 0) + (insuranceCostUSD || 0) + (otherCostUSD || 0)) * conversion
+            );
+        }
         if (this.isDomestic(companyId) && formula === 'grandware-v40') {
             const rebate = (factoryCostRMB / 1.13) * ((insuranceCostUSD || 0) / 100);
             return orderAmountUSD * rate - factoryCostRMB - (freightCostUSD || 0) - (otherCostUSD || 0) + rebate;
@@ -57,21 +65,79 @@ const Exchange = {
 
     getOrderFinancials(order) {
         const domestic = this.isDomestic(order.companyId);
-        const rate = DB.getExchangeRate(order.companyId);
+        const rate =
+            order.stage === 'native' && Number.isFinite(order.exchangeRateUsed) && order.exchangeRateUsed > 0
+                ? order.exchangeRateUsed
+                : DB.getExchangeRate(order.companyId);
         const policy =
-            order.formulaVersion || DB.companies?.find(c => c.id === order.companyId)?.profitPolicy || 'legacy-usd-v56';
+            order.profitPolicy ||
+            order.formulaVersion ||
+            DB.companies?.find(c => c.id === order.companyId)?.profitPolicy ||
+            'legacy-usd-v56';
         const n = value => Number(value) || 0;
         const currency = domestic ? 'CNY' : 'USD';
+        if (order.stage === 'legacy' || (order.historicalReference && order.stage !== 'native')) {
+            const known = value => (Number.isFinite(value) ? value : null);
+            const storedRevenue = known(domestic ? order.orderAmountRMB : order.orderAmountUSD);
+            const factoryCost = known(order.factoryCostRMB);
+            const legacy = policy === 'grandware-v40';
+            const historicRate =
+                Number.isFinite(order.exchangeRateUsed) && order.exchangeRateUsed > 0 ? order.exchangeRateUsed : null;
+            const convertedExpense = value => {
+                const amount = known(value);
+                if (amount === null) return null;
+                if (!domestic || legacy || amount === 0) return amount;
+                return historicRate === null ? null : amount * historicRate;
+            };
+            const freightCost = !domestic && legacy ? 0 : convertedExpense(order.freightCostUSD);
+            const insuranceCost = legacy ? 0 : convertedExpense(order.insuranceCostUSD);
+            const otherCost = convertedExpense(order.otherCostUSD);
+            const taxRebate =
+                domestic && legacy
+                    ? factoryCost !== null && known(order.insuranceCostUSD) !== null
+                        ? ((factoryCost / 1.13) * order.insuranceCostUSD) / 100
+                        : null
+                    : 0;
+            const totalCost = [factoryCost, freightCost, insuranceCost, otherCost].every(Number.isFinite)
+                ? factoryCost + freightCost + insuranceCost + otherCost
+                : null;
+            const profit = known(order.profitRMB);
+            return {
+                currency,
+                revenue: storedRevenue,
+                factoryCost,
+                freightCost,
+                insuranceCost,
+                otherCost,
+                taxRebate,
+                totalCost,
+                profit,
+                computedProfit: null,
+                profitRate:
+                    known(order.profitRate) ??
+                    (Number.isFinite(profit) && Number.isFinite(storedRevenue) && storedRevenue > 0
+                        ? (profit / storedRevenue) * 100
+                        : null),
+                policy,
+                incompleteHistory: [storedRevenue, totalCost, profit].some(value => value === null)
+            };
+        }
         const revenue =
             domestic && Number.isFinite(order.orderAmountRMB)
                 ? order.orderAmountRMB
                 : n(order.orderAmountUSD) * (domestic ? rate : 1);
         const factoryCost = n(order.factoryCostRMB);
         const legacy = policy === 'grandware-v40';
-        const freightCost = domestic ? n(order.freightCostUSD) * (legacy ? 1 : rate) : 0;
-        const insuranceCost = domestic && !legacy ? n(order.insuranceCostUSD) * rate : 0;
+        const generic = policy === 'generic-native';
+        const freightCost = domestic
+            ? n(order.freightCostUSD) * (legacy ? 1 : rate)
+            : generic
+              ? n(order.freightCostUSD)
+              : 0;
+        const insuranceCost = !legacy ? n(order.insuranceCostUSD) * (domestic ? rate : generic ? 1 : 0) : 0;
         const otherCost = n(order.otherCostUSD) * (domestic && !legacy ? rate : 1);
-        const taxRebate = domestic ? (factoryCost / 1.13) * (legacy ? n(order.insuranceCostUSD) / 100 : 0.13) : 0;
+        const taxRebate =
+            domestic && !generic ? (factoryCost / 1.13) * (legacy ? n(order.insuranceCostUSD) / 100 : 0.13) : 0;
         const totalCost = factoryCost + freightCost + insuranceCost + otherCost;
         const computedProfit = revenue - totalCost + taxRebate;
         const profit = Number.isFinite(order.profitRMB) ? order.profitRMB : computedProfit;

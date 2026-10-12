@@ -2,7 +2,7 @@ import { DB } from './data.js';
 import { Auth } from './auth.js';
 import { App } from './app.js';
 import { escapeHtml, toast } from './utils.js';
-import { ERPNextPanel } from './erpnext-panel.js';
+import { BusinessBackendPanel } from './erpnext-panel.js';
 
 const Settings = {
     async render() {
@@ -11,13 +11,13 @@ const Settings = {
         document.getElementById('pageContent').innerHTML = `
             <div class="card mb-6"><div class="card-header"><span class="card-title">企业工作区</span></div><div class="card-body">
                 <p>当前企业：${escapeHtml(Auth.currentUser?.tenantId || '')} · 数据库版本 ${DB._cloudVersion}</p>
-                <p class="text-sm text-gray">账号与角色由管理员在服务器配置。法人主体属于当前企业，记录与历史按企业隔离。</p>
+                <p class="text-sm text-gray">账号与角色由管理员配置。法人主体属于当前企业，记录与历史按企业隔离。</p>
                 <div class="table-responsive"><table class="table"><thead><tr><th>法人主体</th><th>结算币种</th><th>USD → CNY 汇率</th></tr></thead><tbody>
                 ${DB.companies.map(c => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.settlementCurrency || '')}</td><td>${canRates ? `<input class="form-input" aria-label="${escapeHtml(c.name)} 汇率" data-rate-company="${escapeHtml(c.id)}" type="number" min="0.000001" step="0.000001" value="${Number(DB.getExchangeRate(c.id))}">` : Number(DB.getExchangeRate(c.id))}</td></tr>`).join('')}
                 </tbody></table></div>
                 ${canRates ? '<button class="btn btn-primary" id="saveWorkspaceRates">保存汇率</button><p class="text-sm text-gray">修改配置用于后续计算；不会自动改写历史订单利润。</p>' : ''}
             </div></div>
-            ${Auth.hasCapability('finance.read') === true ? '<div id="workspaceERPNext" class="mb-6"></div>' : ''}
+            <div id="workspaceBusinessBackend" class="mb-6"></div>
             ${canSnapshots ? '<div class="card"><div class="card-header"><span class="card-title">业务快照</span></div><div class="card-body" id="workspaceSnapshots">正在读取…</div></div>' : ''}`;
         document.getElementById('saveWorkspaceRates')?.addEventListener('click', async () => {
             const inputs = [...document.querySelectorAll('[data-rate-company]')];
@@ -36,7 +36,7 @@ const Settings = {
             }
         });
         if (canSnapshots) await this.renderSnapshots();
-        if (Auth.hasCapability('finance.read') === true) await ERPNextPanel.render();
+        await BusinessBackendPanel.render();
     },
 
     async renderSnapshots() {
@@ -44,7 +44,7 @@ const Settings = {
         const snapshots = Array.isArray(result) ? result : result.snapshots || [];
         const target = document.getElementById('workspaceSnapshots');
         if (!target) return;
-        target.innerHTML = `<div class="table-responsive"><table class="table"><thead><tr><th>版本</th><th>时间</th><th>原因</th><th>操作</th></tr></thead><tbody>${snapshots.map(s => `<tr><td>${s.version ?? s.revision}</td><td>${escapeHtml(s.createdAt || s.updatedAt || s.created_at || '')}</td><td>${escapeHtml(s.reason || s.kind || '')}</td><td>${Auth.hasCapability('snapshots.restore') === true ? `<button class="btn btn-secondary" data-restore-snapshot="${escapeHtml(String(s.id))}">恢复此版本</button>` : '只读'}</td></tr>`).join('')}</tbody></table></div><p class="text-sm text-gray">恢复会创建新的数据库版本并保留历史，不会恢复账号或权限配置。</p>`;
+        target.innerHTML = `<div class="table-responsive"><table class="table"><thead><tr><th>版本</th><th>时间</th><th>原因</th><th>操作</th></tr></thead><tbody>${snapshots.map(s => `<tr><td>${s.version ?? s.revision}</td><td>${escapeHtml(s.createdAt || s.updatedAt || s.created_at || '')}</td><td>${escapeHtml(s.reason || s.kind || '')}</td><td>${Auth.hasCapability('snapshots.restore') === true ? `<button class="btn btn-secondary" data-restore-snapshot="${escapeHtml(String(s.id))}">恢复此版本</button>` : '只读'}</td></tr>`).join('')}</tbody></table></div><p class="text-sm text-gray">恢复会创建新的业务版本并保留历史，不会恢复账号或权限。已提交订单、收款和账务记录保护期间，恢复操作将被阻止。</p>`;
         for (const button of target.querySelectorAll('[data-restore-snapshot]')) {
             button.onclick = async () => {
                 const api = window.Workspace.api;

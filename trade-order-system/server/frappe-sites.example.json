@@ -1,0 +1,6 @@
+{
+  "tenants": {
+    "grandware": {"origin": "http://127.0.0.1:3088", "site": "grandware.test"},
+    "example-company": {"origin": "http://127.0.0.1:3088", "site": "frontend"}
+  }
+}

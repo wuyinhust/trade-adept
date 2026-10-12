@@ -1,58 +1,40 @@
-"""Administrator-only local configuration/import tools; no registration API."""
+"""Configure the stateless gateway; use Frappe for accounts and business imports."""
 import argparse
-import getpass
 import json
+import os
 from pathlib import Path
 
 from .app import DEFAULT_RUNTIME
-from .store import APIError, Store, password_hash
+from .frappe_client import FrappeGateway, secure_runtime
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
     sub = parser.add_subparsers(dest="command", required=True)
-    init = sub.add_parser("init", help="Initialize/update configured tenants and accounts")
-    init.add_argument("--config", type=Path, default=Path(__file__).with_name("config.example.json"))
-    init.add_argument("--import", dest="source", type=Path)
-    init.add_argument("--tenant", default="grandware")
-    init.add_argument("--expected-version", type=int, default=0)
-    configure = sub.add_parser("configure", help="Apply account/role configuration, revoking disabled or omitted users")
-    configure.add_argument("--config", type=Path, required=True)
-    importer = sub.add_parser("import", help="Import a read-only archived business export into one tenant")
-    importer.add_argument("source", type=Path)
-    importer.add_argument("--tenant", required=True)
-    importer.add_argument("--expected-version", type=int, required=True)
-    reset = sub.add_parser("set-password", help="Reset a configured account and revoke all sessions")
-    reset.add_argument("--tenant", required=True)
-    reset.add_argument("--user", required=True)
+    init = sub.add_parser("init", help="Install fixed site routing; does not create accounts or business data")
+    init.add_argument("--sites", type=Path, required=True)
+    sub.add_parser("check", help="Validate private fixed site routing")
     args = parser.parse_args()
     try:
-        store = Store(args.runtime)
-        if args.command in ("init", "configure"):
-            count = store.configure(json.loads(args.config.read_text(encoding="utf-8")))
-            print(f"Configuration applied; {count} random credentials stored privately in runtime/demo-credentials.json")
-            if args.command == "init" and args.source:
-                result = store.import_data(args.tenant, args.source, args.expected_version)
-                print(f"Read-only archive imported as revision {result['meta']['version']}")
-        elif args.command == "import":
-            result = store.import_data(args.tenant, args.source, args.expected_version)
-            print(f"Read-only archive imported as revision {result['meta']['version']}")
-        else:
-            password = getpass.getpass("New password (at least 12 characters): ")
-            if password != getpass.getpass("Confirm new password: "):
-                parser.error("Passwords do not match")
-            encoded = password_hash(password)
-            with store.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                result = db.execute("UPDATE users SET password=? WHERE tenant_id=? AND id=?", (encoded, args.tenant, args.user))
-                if not result.rowcount:
-                    db.rollback()
-                    parser.error("Account not found")
-                db.execute("DELETE FROM sessions WHERE tenant_id=? AND user_id=?", (args.tenant, args.user))
-                db.commit()
-            print("Password updated; existing sessions revoked")
-    except (APIError, ValueError, RuntimeError) as error:
+        runtime = secure_runtime(args.runtime)
+        if args.command == "init":
+            data = json.loads(args.sites.read_text(encoding="utf-8"))
+            if set(data) != {"tenants"} or any(set(site) != {"origin", "site"} for site in data["tenants"].values()):
+                raise ValueError("Routing accepts only tenants with origin and site; credentials belong to Frappe")
+            temporary = runtime / "frappe-sites.pending.json"
+            descriptor = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, ensure_ascii=False, indent=2)
+            os.chmod(temporary, 0o600)
+            try:
+                FrappeGateway(runtime, temporary)
+                os.replace(temporary, runtime / "frappe-sites.json")
+            finally:
+                temporary.unlink(missing_ok=True)
+        gateway = FrappeGateway(runtime)
+        print(f"Validated {len(gateway.sites)} independent native sites; no local business database")
+    except (ValueError, RuntimeError, OSError) as error:
         parser.error(str(error))
 
 

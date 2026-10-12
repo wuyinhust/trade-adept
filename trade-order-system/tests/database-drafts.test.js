@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals';
+import { workspaceDraftKey } from '../js/api-client.js';
 
 const user = { id: 'U1', tenantId: 'tenant-a', role: 'admin' };
 const cloud = {
@@ -146,5 +147,29 @@ test('API initialization preserves imported financial values instead of migratin
     cloud.loadData.mockResolvedValue({ data: clone(data), exchangeRates: {}, rateMetas: {}, meta: { version: 1 } });
     await DB._initFromBusinessAPI();
     expect(DB.data.orders[0].profitRMB).toBe(123.45);
+    expect(cloud.saveData).not.toHaveBeenCalled();
+});
+
+test('old SQLite drafts remain stored without being replayed into the native workspace', async () => {
+    const authorization = encodeURIComponent(
+        JSON.stringify([user.role, user.scope, user.permissions, user.visibleCompanyIds])
+    );
+    const oldKey = `trade_api_draft_v1:https://example.test:${user.tenantId}:${user.id}:${authorization}`;
+    const oldDraft = JSON.stringify({
+        tenantId: user.tenantId,
+        actorId: user.id,
+        baseVersion: 1,
+        data: { ...initial(), orders: [{ id: 'old-backend-row' }] }
+    });
+    localStorage.setItem(oldKey, oldDraft);
+    DB._BACKUP_KEY = workspaceDraftKey(
+        { user, backendIdentity: 'tenant-a.site:new-native-instance' },
+        'https://example.test'
+    );
+    cloud.loadData.mockResolvedValue({ data: initial(), exchangeRates: {}, rateMetas: {}, meta: { version: 1 } });
+    await DB._initFromBusinessAPI();
+    expect(DB.data.orders[0].id).toBe('O1');
+    expect(DB._saveConflict).toBe(false);
+    expect(localStorage.getItem(oldKey)).toBe(oldDraft);
     expect(cloud.saveData).not.toHaveBeenCalled();
 });

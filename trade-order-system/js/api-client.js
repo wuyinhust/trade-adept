@@ -26,7 +26,8 @@ const FINANCIAL_FIELDS = new Set([
     'costPaidUSD',
     'costPaymentStatus',
     'bankInfo',
-    'bankAccount'
+    'bankAccount',
+    'erpItems'
 ]);
 const NESTED_FINANCIAL_FIELDS = new Set(['totalAmount', 'prepayment', 'paidAmount', 'cost', 'costUSD', 'costRMB']);
 const SERVER_FIELDS = new Set([
@@ -40,9 +41,31 @@ const SERVER_FIELDS = new Set([
     'profitRMB',
     'profitUSD',
     'profitRate',
-    'margin'
+    'margin',
+    'stage',
+    'nativeDocuments',
+    'salesOrder',
+    'historicalReference',
+    'exchangeRateUsed',
+    'profitPolicy',
+    'settlementCurrency'
 ]);
 const clone = value => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
+
+export function workspaceDraftKey(session, origin) {
+    const user = session.user;
+    const authorization = encodeURIComponent(
+        JSON.stringify([user.role, user.scope, user.permissions, user.visibleCompanyIds])
+    );
+    const backend = encodeURIComponent(
+        session.backendIdentity ||
+            session.backendInstanceId ||
+            session.backend?.instanceId ||
+            session.backend?.site ||
+            'frappe'
+    );
+    return `trade_frappe_draft_v2:${origin}:${backend}:${user.tenantId}:${user.id}:${authorization}`;
+}
 
 function equal(a, b) {
     if (a === b) return true;
@@ -154,7 +177,8 @@ export class BusinessAPIClient {
         }
         if (!response.ok) {
             const code =
-                response.status === 409
+                response.status === 409 &&
+                (!payload.code || ['CONFLICT', 'VERSION_CONFLICT', 'STALE_VERSION'].includes(payload.code))
                     ? 'CONFLICT'
                     : payload.code || (response.status === 401 ? 'AUTH_REQUIRED' : 'API_ERROR');
             const error = apiError(payload.error || payload.message || '业务请求失败', code, response.status);
@@ -390,6 +414,118 @@ export class BusinessAPIClient {
             const result = await this._request('/snapshots');
             return clone(result.snapshots || result);
         });
+    }
+
+    async backendStatus() {
+        return this._enqueue(() => this._request('/backend/status'));
+    }
+
+    async importOrders(changes, { importPurpose = 'order-brief', expectedVersion } = {}) {
+        return this._enqueue(async () => {
+            if (this._conflict) throw this._conflict;
+            if (!this._baseline) throw apiError('请先读取当前数据版本', 'NO_BASELINE');
+            if (this.hasChanges()) throw apiError('请先保存或处理当前草稿，再确认 Excel 导入', 'LOCAL_CHANGES');
+            const version = this._baseline.meta.version;
+            if (expectedVersion !== undefined && expectedVersion !== version) {
+                throw apiError('预览版本已更新，请重新核对导入内容', 'CONFLICT', 409);
+            }
+            if (
+                !['order-brief', 'historical-reference'].includes(importPurpose) ||
+                !Array.isArray(changes) ||
+                !changes.length ||
+                changes.some(change => change.collection !== 'orders' || !change.id || !change.value || change.deleted)
+            ) {
+                throw apiError('导入用途或订单批次无效', 'INVALID_IMPORT');
+            }
+            const normalized = changes.map(change => {
+                const before = this._baseline.data.orders.find(record => String(record.id) === String(change.id));
+                const value = this._publicRecord(change.value, before);
+                if (importPurpose === 'historical-reference' && this._canWriteFinance() === true) {
+                    for (const key of ['orderAmountRMB', 'profitRMB', 'profitUSD', 'profitRate']) {
+                        if (Object.hasOwn(change.value, key)) value[key] = change.value[key];
+                    }
+                }
+                return { collection: 'orders', id: change.id, value };
+            });
+            let result;
+            try {
+                result = await this._request('/changes', {
+                    method: 'POST',
+                    body: { expectedVersion: version, importPurpose, changes: clone(normalized) }
+                });
+            } catch (error) {
+                if (error.code === 'CONFLICT') this._conflict = error;
+                throw error;
+            }
+            if (!Number.isInteger(result.meta?.version) || result.meta.version <= version) {
+                throw apiError('导入确认缺少有效新版本，请核对数据库后再重试', 'INVALID_RESPONSE');
+            }
+            if (this.hasChanges()) {
+                const error = apiError('导入已完成，期间的新修改已保留为草稿，请先处理再刷新', 'CONFLICT', 409);
+                error.latestVersion = result.meta.version;
+                error.operationApplied = true;
+                this._conflict = error;
+                throw error;
+            }
+            // Do not stage imported history into the ordinary autosave/draft path.
+            // The caller replaces the workspace only through an authorized read.
+            return clone(result);
+        });
+    }
+
+    async _orderAction(action, orderId, inputs = {}) {
+        // Native documents and payments must be one version-checked server operation.
+        // A fresh authorized read follows success; their fields cannot be acknowledged
+        // by merging the submitted request into the old business-data baseline.
+        return this._enqueue(async () => {
+            if (this._conflict) throw this._conflict;
+            if (!this._baseline) throw apiError('请先读取当前数据版本', 'NO_BASELINE');
+            if (this.hasChanges()) throw apiError('请先保存或处理当前草稿', 'LOCAL_CHANGES');
+            const expectedVersion = this._baseline.meta.version;
+            if (inputs.expectedVersion !== undefined && inputs.expectedVersion !== expectedVersion) {
+                throw apiError('操作版本与当前读取基线不一致', 'CONFLICT', 409);
+            }
+            if (!String(orderId || '').trim() || !String(inputs.idempotencyKey || '').trim()) {
+                throw apiError('订单操作缺少稳定请求标识', 'INVALID_REQUEST');
+            }
+            let result;
+            try {
+                result = await this._request(`/orders/${action}`, {
+                    method: 'POST',
+                    body: { ...clone(inputs), orderId, expectedVersion }
+                });
+            } catch (error) {
+                if (error.code === 'CONFLICT') this._conflict = error;
+                throw error;
+            }
+            if (!Number.isInteger(result.meta?.version) || result.meta.version < expectedVersion) {
+                throw apiError('操作确认缺少有效版本，请保留请求并核对业务数据', 'INVALID_RESPONSE');
+            }
+            if (this.hasChanges()) {
+                const error = apiError('操作已完成，期间的新修改已保留。请先处理草稿再刷新', 'CONFLICT', 409);
+                error.latestVersion = result.meta.version;
+                error.operationApplied = true;
+                this._conflict = error;
+                throw error;
+            }
+            return clone(result);
+        });
+    }
+
+    convertOrder(orderId, inputs) {
+        return this._orderAction('convert', orderId, inputs);
+    }
+
+    submitOrder(orderId, inputs) {
+        return this._orderAction('submit', orderId, inputs);
+    }
+
+    cancelOrder(orderId, inputs) {
+        return this._orderAction('cancel', orderId, inputs);
+    }
+
+    receivePayment(orderId, inputs) {
+        return this._orderAction('payment', orderId, inputs);
     }
 
     async restore(snapshotId, options = {}) {

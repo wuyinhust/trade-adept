@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { BusinessAPIClient } from '../js/api-client.js';
+import { BusinessAPIClient, workspaceDraftKey } from '../js/api-client.js';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const meta = version => ({
@@ -396,4 +396,172 @@ describe('BusinessAPIClient acknowledged baseline and atomic API contract', () =
         expect(await client.listSnapshots()).toEqual([{ id: 'SNAP-1', version: 2 }]);
         expect(client.lastMeta.version).toBe(4);
     });
+});
+
+describe('native order actions preserve the acknowledged baseline', () => {
+    let fetcher, client, working;
+    beforeEach(async () => {
+        fetcher = jest.fn().mockResolvedValueOnce(response(fixture()));
+        client = new BusinessAPIClient({ fetcher });
+        working = await client.loadData();
+        fetcher.mockClear();
+    });
+    test('conversion is one atomic CAS request and requires a new authorized read', async () => {
+        fetcher.mockResolvedValueOnce(
+            response({ meta: meta(5), nativeDocuments: [{ doctype: 'Sales Order', name: 'SO-1', docstatus: 0 }] })
+        );
+        await client.convertOrder('O1', { idempotencyKey: 'convert-once' });
+        expect(fetcher.mock.calls[0][0]).toBe('/api/orders/convert');
+        expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({
+            orderId: 'O1',
+            expectedVersion: 4,
+            idempotencyKey: 'convert-once'
+        });
+        expect(client.lastMeta.version).toBe(4);
+        fetcher.mockResolvedValueOnce(response({ ...fixture(), meta: meta(5) }));
+        await client.loadData();
+        expect(client.lastMeta.version).toBe(5);
+    });
+    test('a dirty workspace prevents native conversion without losing its draft', async () => {
+        working.data.orders[0].remarks = 'draft';
+        await expect(client.convertOrder('O1', { idempotencyKey: 'one' })).rejects.toMatchObject({
+            code: 'LOCAL_CHANGES'
+        });
+        expect(fetcher).not.toHaveBeenCalled();
+        expect(working.data.orders[0].remarks).toBe('draft');
+    });
+    test('a native CAS conflict holds subsequent saves against the original baseline', async () => {
+        fetcher.mockResolvedValueOnce(response({ code: 'VERSION_CONFLICT', latestVersion: 9 }, 409));
+        await expect(client.submitOrder('O1', { idempotencyKey: 'submit-once' })).rejects.toMatchObject({
+            code: 'CONFLICT',
+            latestVersion: 9
+        });
+        working.data.orders[0].remarks = 'retained';
+        await expect(client.saveData(working.data)).rejects.toMatchObject({ code: 'CONFLICT' });
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(client.lastMeta.version).toBe(4);
+    });
+    test('edits during native receipt remain a draft even when the receipt succeeds', async () => {
+        const entered = deferred(),
+            pending = deferred();
+        fetcher.mockImplementationOnce(() => {
+            entered.resolve();
+            return pending.promise;
+        });
+        const receiving = client.receivePayment('O1', {
+            idempotencyKey: 'receipt-once',
+            amountUSD: 25,
+            referenceNo: 'BANK-1',
+            referenceDate: '2026-10-12'
+        });
+        await entered.promise;
+        working.data.orders[0].remarks = 'during receipt';
+        pending.resolve(response({ meta: meta(5) }));
+        await expect(receiving).rejects.toMatchObject({ code: 'CONFLICT', operationApplied: true, latestVersion: 5 });
+        expect(working.data.orders[0].remarks).toBe('during receipt');
+        expect(client.lastMeta.version).toBe(4);
+        await expect(client.loadData()).rejects.toMatchObject({ code: 'LOCAL_CHANGES' });
+    });
+    test('network-lost receipt retries retain the exact same request identity and inputs', async () => {
+        const inputs = {
+            idempotencyKey: 'receipt-stable',
+            amountUSD: 25,
+            referenceNo: 'BANK-1',
+            referenceDate: '2026-10-12'
+        };
+        fetcher.mockRejectedValueOnce(new Error('lost'));
+        await expect(client.receivePayment('O1', inputs)).rejects.toMatchObject({ code: 'NETWORK' });
+        fetcher.mockResolvedValueOnce(response({ meta: meta(5) }));
+        await client.receivePayment('O1', inputs);
+        expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual(JSON.parse(fetcher.mock.calls[1][1].body));
+        expect(working.data.orders[0]).not.toHaveProperty('paidAmountUSD');
+    });
+    test('cancellation dependency errors do not lock unrelated edits as a version conflict', async () => {
+        fetcher.mockResolvedValueOnce(
+            response({ code: 'NATIVE_CANCELLATION_REQUIRES_RECONCILIATION', error: 'Resolve receipt first' }, 409)
+        );
+        await expect(client.cancelOrder('O1', { idempotencyKey: 'cancel-once' })).rejects.toMatchObject({
+            code: 'NATIVE_CANCELLATION_REQUIRES_RECONCILIATION'
+        });
+        expect(fetcher.mock.calls[0][0]).toBe('/api/orders/cancel');
+        working.data.orders[0].remarks = 'operational note';
+        fetcher.mockResolvedValueOnce(response({ meta: meta(5) }));
+        await client.saveData(working.data);
+        expect(JSON.parse(fetcher.mock.calls[1][1].body).expectedVersion).toBe(4);
+    });
+    test('finance editors cannot submit source or frozen-rate server metadata', async () => {
+        client.setSessionContext({ user: { permissions: ['finance.write'] } });
+        Object.assign(working.data.orders[0], {
+            stage: 'native',
+            nativeDocuments: [{ doctype: 'Sales Order', name: 'spoofed' }],
+            exchangeRateUsed: 999,
+            settlementCurrency: 'EUR',
+            profitPolicy: 'spoofed'
+        });
+        await client.saveData(working.data);
+        expect(fetcher).not.toHaveBeenCalled();
+    });
+});
+
+test('native draft namespaces bind backend instance, origin, tenant, actor and permissions', () => {
+    const session = {
+        backend: 'erpnext',
+        backendIdentity: 'site-A:uuid-A',
+        user: {
+            id: 'U1',
+            tenantId: 'tenant-A',
+            role: 'admin',
+            scope: 'tenant',
+            permissions: ['finance.write'],
+            visibleCompanyIds: ['C1']
+        }
+    };
+    const key = workspaceDraftKey(session, 'https://example.test');
+    expect(key.startsWith('trade_frappe_draft_v2:')).toBe(true);
+    for (const changed of [
+        { ...session, backendIdentity: 'site-B:uuid-B' },
+        { ...session, user: { ...session.user, tenantId: 'tenant-B' } },
+        { ...session, user: { ...session.user, id: 'U2' } },
+        { ...session, user: { ...session.user, permissions: [] } }
+    ])
+        expect(workspaceDraftKey(changed, 'https://example.test')).not.toBe(key);
+    expect(workspaceDraftKey(session, 'https://other.test')).not.toBe(key);
+});
+
+test('confirmed historical imports use one CAS batch and their purpose cannot leak into ordinary saves', async () => {
+    const fetcher = jest.fn().mockResolvedValueOnce(response(fixture()));
+    const client = new BusinessAPIClient({ fetcher });
+    const before = await client.loadData();
+    client.setSessionContext({ user: { permissions: ['finance.write'] } });
+    const change = {
+        collection: 'orders',
+        id: 'H1',
+        value: {
+            companyId: 'C1',
+            companyOperationNo: 'HIS-001',
+            orderAmountUSD: 1000,
+            paidAmountUSD: 300,
+            profitRMB: 777.77
+        }
+    };
+    fetcher.mockResolvedValueOnce(response({ meta: meta(5) }));
+    await client.importOrders([change], { importPurpose: 'historical-reference', expectedVersion: 4 });
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({
+        expectedVersion: 4,
+        importPurpose: 'historical-reference',
+        changes: [change]
+    });
+    expect(before.data.orders).toHaveLength(2);
+    expect(client.lastMeta.version).toBe(4);
+    const fresh = fixture();
+    fresh.data.orders.push({ id: 'H1', ...change.value });
+    fresh.meta = meta(5);
+    fetcher.mockResolvedValueOnce(response(fresh));
+    const working = await client.loadData();
+    working.data.orders[0].remarks = 'ordinary edit';
+    fetcher.mockResolvedValueOnce(response({ meta: meta(6) }));
+    await client.saveData(working.data);
+    const body = JSON.parse(fetcher.mock.calls[3][1].body);
+    expect(body).not.toHaveProperty('importPurpose');
+    expect(body.expectedVersion).toBe(5);
 });

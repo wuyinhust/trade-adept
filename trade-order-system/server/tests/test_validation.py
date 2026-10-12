@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from server.validation import validate_order, validate_shipment
+from integrations.frappe_app.tradept_core.validation import validate_order, validate_shipment
 
 
 class BusinessValidationTest(unittest.TestCase):

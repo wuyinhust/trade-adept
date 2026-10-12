@@ -26,4 +26,5 @@ jobs:
       - run: npm test -- --runInBand
       - run: npm run lint
       - run: python3 -m unittest discover -s server/tests -v
+      - run: python3 -m unittest discover -s integrations/frappe_app/tests -v
       - run: python3 scripts/version.py

@@ -59,11 +59,14 @@ const Dashboard = {
             const month = String(order.orderDate || '').slice(0, 7);
             if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) continue;
             const metrics = Exchange.getOrderFinancials(order);
+            if (!Number.isFinite(metrics.revenue)) continue;
             const currency = metrics.currency;
             byCurrency[currency] ||= {};
-            byCurrency[currency][month] ||= { revenue: 0, ...(showFinance ? { profit: 0 } : {}) };
+            byCurrency[currency][month] ||= { revenue: 0, ...(showFinance ? { profit: null } : {}) };
             byCurrency[currency][month].revenue += Number(metrics.revenue) || 0;
-            if (showFinance) byCurrency[currency][month].profit += Number(metrics.profit) || 0;
+            if (showFinance && Number.isFinite(metrics.profit)) {
+                byCurrency[currency][month].profit = (byCurrency[currency][month].profit ?? 0) + metrics.profit;
+            }
             monthSet.add(month);
         }
         return {
@@ -82,24 +85,41 @@ const Dashboard = {
         const isDocument = Auth.isDocument();
         const company = DB.companies.find(item => item.id === DB.currentCompanyId)?.name || '';
         const scope = Auth.canSeeAll() ? '全部公司数据 · 当前账套：' + company : '当前账套：' + company;
-        const totals = { CNY: { profit: 0, cost: 0, paid: 0 }, USD: { profit: 0, cost: 0, paid: 0 } };
+        const totals = {
+            CNY: { profit: 0, profitKnown: 0, cost: 0, paid: 0 },
+            USD: { profit: 0, profitKnown: 0, cost: 0, paid: 0 }
+        };
+        const unknownHistoryCount = showFinance
+            ? orders.filter(
+                  order =>
+                      Exchange.getOrderFinancials(order).incompleteHistory ||
+                      !Number.isFinite(order.paidAmountUSD) ||
+                      !Number.isFinite(order.factoryPaidRMB)
+              ).length
+            : 0;
+        const knownBalanceOrders = orders.filter(order => Number.isFinite(order.paidAmountUSD));
         const financialCurrencies = new Set();
         if (showFinance) {
             for (const order of orders) {
                 const metrics = Exchange.getOrderFinancials(order);
                 const currency = metrics.currency;
-                totals[currency] ||= { profit: 0, cost: 0, paid: 0 };
+                totals[currency] ||= { profit: 0, profitKnown: 0, cost: 0, paid: 0 };
                 financialCurrencies.add(currency);
-                totals[currency].profit += Number(metrics.profit) || 0;
-                totals[currency].cost += Number(metrics.factoryCost) || 0;
-                totals[currency].paid += Number(order.factoryPaidRMB) || 0;
+                if (Number.isFinite(metrics.profit)) {
+                    totals[currency].profit += metrics.profit;
+                    totals[currency].profitKnown++;
+                }
+                if (Number.isFinite(metrics.factoryCost) && Number.isFinite(order.factoryPaidRMB)) {
+                    totals[currency].cost += metrics.factoryCost;
+                    totals[currency].paid += order.factoryPaidRMB;
+                }
             }
         }
         const primaryCurrency = financialCurrencies.has('CNY')
             ? 'CNY'
             : [...financialCurrencies].sort()[0] ||
               Exchange.getOrderFinancials({ companyId: DB.currentCompanyId }).currency;
-        totals[primaryCurrency] ||= { profit: 0, cost: 0, paid: 0 };
+        totals[primaryCurrency] ||= { profit: 0, profitKnown: 0, cost: 0, paid: 0 };
         const secondaryNote =
             [...financialCurrencies]
                 .filter(currency => currency !== primaryCurrency)
@@ -108,7 +128,9 @@ const Dashboard = {
         const thirdMetric = showFinance
             ? metric(
                   '订单利润 · ' + primaryCurrency,
-                  App.formatMoney(totals[primaryCurrency].profit, primaryCurrency),
+                  totals[primaryCurrency].profitKnown || !orders.length
+                      ? App.formatMoney(totals[primaryCurrency].profit, primaryCurrency)
+                      : '—',
                   secondaryNote
               )
             : metric(
@@ -121,7 +143,7 @@ const Dashboard = {
                 .sort()
                 .filter(currency => totals[currency].cost > 0)
                 .map(currency => App.formatMoney(totals[currency].cost - totals[currency].paid, currency))
-                .join(' / ') || App.formatMoney(0, primaryCurrency);
+                .join(' / ') || (unknownHistoryCount ? '—' : App.formatMoney(0, primaryCurrency));
         const rows = stats.upcomingShipments
             .filter(shipment => visibleOrderIds.has(String(shipment.orderId)))
             .map(
@@ -179,8 +201,12 @@ const Dashboard = {
                   .join('');
         const quotedRevenueUSD = orders.reduce((sum, order) => sum + (Number(order.orderAmountUSD) || 0), 0);
         const customerPaidUSD = showFinance
-            ? orders.reduce((sum, order) => sum + (Number(order.paidAmountUSD) || 0), 0)
+            ? knownBalanceOrders.reduce((sum, order) => sum + order.paidAmountUSD, 0)
             : 0;
+        const knownBalanceRevenueUSD = knownBalanceOrders.reduce(
+            (sum, order) => sum + (Number(order.orderAmountUSD) || 0),
+            0
+        );
         container.innerHTML =
             '<section class="page-intro"><div><div class="page-eyebrow">TRADE WORKSPACE</div>' +
             '<h2>业务总览</h2><p class="page-description">订单进展与出运安排，集中掌握。</p><span class="scope-label">' +
@@ -198,12 +224,17 @@ const Dashboard = {
             metric('订单营收 · USD', App.formatMoney(quotedRevenueUSD, 'USD'), '按当前可见订单报价汇总') +
             thirdMetric +
             '</section>' +
+            (unknownHistoryCount
+                ? '<p class="text-sm text-gray">部分历史金额或余额未知；汇总只使用已知值，不按当前汇率补算历史。</p>'
+                : '') +
             '<section class="work-queue" aria-label="工作进度">' +
             queue('待出运订单', stats.pendingShipmentCount + ' 笔', 'shipping', '#/shipping') +
             (showFinance
                 ? queue(
                       '待收款 · USD',
-                      App.formatMoney(quotedRevenueUSD - customerPaidUSD, 'USD'),
+                      knownBalanceOrders.length || !orders.length
+                          ? App.formatMoney(knownBalanceRevenueUSD - customerPaidUSD, 'USD')
+                          : '—',
                       'wallet',
                       '#/orders'
                   )
@@ -260,7 +291,9 @@ const Dashboard = {
             if (showFinance && Auth.canSeeFinancials()) {
                 datasets.push({
                     label: '利润 · ' + unit,
-                    data: months.map(month => byCurrency[unit][month]?.profit || 0),
+                    data: months.map(month =>
+                        byCurrency[unit][month]?.profit === null ? null : byCurrency[unit][month]?.profit || 0
+                    ),
                     backgroundColor: '#80b8a4',
                     borderRadius: 5,
                     maxBarThickness: 48,

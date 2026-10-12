@@ -2,7 +2,7 @@
 # Pin ARM64-available version; credentials supplied only by private env file.
 services:
   backend:
-    image: ${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}
+    image: ${TRADEPT_ERPNEXT_IMAGE:-${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}}
     networks:
       - frappe_network
     deploy:
@@ -21,7 +21,7 @@ services:
         condition: service_completed_successfully
 
   configurator:
-    image: ${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}
+    image: ${TRADEPT_ERPNEXT_IMAGE:-${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}}
     networks:
       - frappe_network
     deploy:
@@ -53,7 +53,7 @@ services:
     environment:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Provide a private random administrator password}
       DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Provide a private random database password}
-    image: ${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}
+    image: ${TRADEPT_ERPNEXT_IMAGE:-${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}}
     networks:
       - frappe_network
     deploy:
@@ -113,7 +113,7 @@ services:
       - db-data:/var/lib/mysql
 
   frontend:
-    image: ${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}
+    image: ${TRADEPT_ERPNEXT_IMAGE:-${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}}
     networks:
       - frappe_network
     depends_on:
@@ -126,7 +126,9 @@ services:
       - nginx-entrypoint.sh
     environment:
       BACKEND: backend:8000
-      FRAPPE_SITE_NAME_HEADER: frontend
+      # Compose escapes $$ to a literal Nginx variable. The map permits the
+      # configured sites and preserves frontend for the native local Desk.
+      FRAPPE_SITE_NAME_HEADER: "$$tradept_site_name"
       SOCKETIO: websocket:9000
       UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
       UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
@@ -136,11 +138,13 @@ services:
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
+      - ./tradept-sites.map.conf:/etc/nginx/conf.d/00-tradept-sites-map.conf:ro
+      - ./tradept-frappe-nginx.conf.template:/templates/nginx/frappe.conf.template:ro
     ports:
       - "127.0.0.1:3088:8080"
 
   queue-long:
-    image: ${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}
+    image: ${TRADEPT_ERPNEXT_IMAGE:-${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}}
     networks:
       - frappe_network
     deploy:
@@ -162,7 +166,7 @@ services:
         condition: service_completed_successfully
 
   queue-short:
-    image: ${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}
+    image: ${TRADEPT_ERPNEXT_IMAGE:-${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}}
     networks:
       - frappe_network
     deploy:
@@ -202,7 +206,7 @@ services:
         condition: on-failure
 
   scheduler:
-    image: ${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}
+    image: ${TRADEPT_ERPNEXT_IMAGE:-${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}}
     networks:
       - frappe_network
     deploy:
@@ -219,7 +223,7 @@ services:
         condition: service_completed_successfully
 
   websocket:
-    image: ${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}
+    image: ${TRADEPT_ERPNEXT_IMAGE:-${ERPNEXT_IMAGE:-frappe/erpnext:v16.32.3}}
     networks:
       - frappe_network
     deploy:

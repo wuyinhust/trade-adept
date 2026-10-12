@@ -1,107 +1,52 @@
-# Local Trade Workspace API
+# Tradept 统一业务网关
 
-Python 标准库实现的可运行本地业务服务；数据库为 SQLite。所有记录读写经过服务端会话、租户、法人、角色能力和记录范围校验。账号由配置或管理员 CLI 管理，没有公开注册接口。
+Tradept 保留现有工作台，Frappe/ERPNext 是唯一在线业务数据库和账号系统。网关只提供同源静态文件、固定站点路由和协议适配；没有 SQLite、账号口令数据库、订单镜像、同步队列或断线写入备用库。
 
 ## 启动
 
-从 `trade-order-system/` 目录运行（Python 3.10+，建议 3.12）：
+先按 [隔离部署说明](../integrations/erpnext/README.md) 安装 ERPNext 与 `tradept_core`，建立独立租户站点并完成迁移核验。每个租户对应独立 site/database；Grandware 的四个公司在同一个租户站点内。
 
 ```sh
-python3 -m server.cli init --config server/config.example.json
-python3 -m server.app --port 3087
+python3 -m server.cli --runtime /private/tmp/tradept-gateway init --sites server/frappe-sites.example.json
+python3 -m server.app --runtime /private/tmp/tradept-gateway --port 3087
 ```
 
-服务仅监听 `127.0.0.1`，浏览器打开 `http://127.0.0.1:3087/`。默认运行目录为 `server/runtime/`，已加入 `server/.gitignore`。目录强制 0700，数据库和随机演示口令文件强制 0600；不打印口令。
+示例路由把 Grandware 指向 `grandware.test`、Example 指向 `frontend`，均由回环端口 3088 接入。企业本地部署或云端部署可指定自己的固定 HTTPS Frappe 地址。浏览器不能提交数据库地址、site、API 密钥或任意 DocType。网络共享卷只保存源码；路由和签名密钥放在支持私有权限的持久本地盘，目录 0700、文件 0600。`/private/tmp` 只适合临时演示。
 
-当前项目位于 SMB 网络挂载卷；它的 chmod 属性缓存可能短暂报告所请求权限，但实际文件仍显示 0777，而且不能假设提供本地 SQLite 锁和持久性。服务显式拒绝网络挂载运行目录，在无法落实权限时同样拒绝创建敏感数据库。此环境使用私有本机目录：
+账号、密码、密码重置、启停和会话由原生 User 管理。迁移器可按审核后的私有配置导入原有账号，工作台角色和公司范围只是原生用户的产品授权配置。企业默认由管理员配置账号。可选原生自助注册不会自动加入企业或获得业务权限；必须由管理员批准并赋予公司范围。
+
+## API
+
+所有写请求要求同源 Origin；Cookie 为 HttpOnly、SameSite=Strict。公网模式须配置 `--public-origin https://固定域名`，Cookie 使用 Secure；只信任固定 Host，不信任客户端 forwarded headers。每个写请求向原生会话取得 CSRF token，整个变更批次在一次 Frappe 事务中执行。
+
+| 请求 | 用途 |
+| --- | --- |
+| POST /api/login | `{tenantId,username,password}`，原生登录后返回安全用户信息 |
+| POST /api/logout | 原生注销并清除工作台 Cookie |
+| GET /api/session | 当前原生用户的角色、公司和工作区配置 |
+| GET /api/data | 授权记录、授权字段、公司汇率及当前 revision |
+| GET /api/meta | 当前 revision |
+| POST /api/changes | `{expectedVersion,changes,exchangeRates?,rateMetas?}`，原子补丁保存 |
+| GET /api/snapshots | 授权管理员的历史快照元数据 |
+| POST /api/restore | `{expectedVersion,snapshotId}`，受限恢复并产生新 revision |
+| GET /api/backend/status | 当前授权订单阶段和同库原生单据 |
+| POST /api/orders/convert | `{expectedVersion,orderId,idempotencyKey}`，真实明细生成 SO/PO 草稿 |
+| POST /api/orders/submit | 显式提交已有原生订单 |
+| POST /api/orders/payment | 原生收款，要求版本、幂等键和明确金额/凭证信息 |
+| POST /api/orders/cancel | 原生取消，受已提交收款/物流/发票依赖保护 |
+
+原 `/api/erpnext/status` 只保留读取兼容别名；原队列接口已关闭。网关转发原生 409，返回当前 revision，浏览器保留待保存草稿，不能自动提升版本覆盖别人的保存。服务不可用时返回 503，不能退回旧数据源。原生管理员/导入的业务修改也在同一提交事务中更新 revision，避免工作台的旧副本覆盖原生后台新值。
+
+## 数据与迁移
+
+客户、供应商、联系人、公司、汇率使用原生对象。先建订单后补明细的流程使用 `Trade Order Brief`；真实商品、供应商、数量、币种和价格完善后生成原生 Sales Order / Purchase Order。转换后金额、付款和明细来源于原生单据。外贸港口、生产计划和历史参考等缺少原生对应的内容使用最小扩展。
+
+Grandware 的 Excel 历史数据导入为有明确来源的历史记录；保留 ID、软删除、原始金额和关联。没有真实逐笔付款及商品明细时，不伪造商品、收付款或总账。Excel 导入明确选择历史参考或新业务；更新按技术 ID 或同法人操作单号匹配，空列不清空已有值。预览和表单修改使用同一权限、验证、CAS 和审计流程。已有关联原生单据的工作区禁止通过 JSON 快照倒退财务记录；应使用原生取消、修订和对账流程。
+
+## 验证范围
 
 ```sh
-python3 -m server.cli --runtime /private/tmp/trade-order-runtime init --config server/config.example.json
-python3 -m server.app --runtime /private/tmp/trade-order-runtime --port 3087
+python3 -m unittest discover -s server/tests -v
 ```
 
-`/private/tmp` 适合本地演示；系统清理可能删除该目录。长期使用应指定支持权限的持久目录并建立独立备份，不应依赖临时目录作为唯一数据库副本。也可设置 `TRADE_RUNTIME_DIR`。
-
-首次初始化会为配置中未指定密码的新账号生成随机密码，保存到私有 `runtime/demo-credentials.json`。文件只用于本地演示交付，含 Grandware Demo 和第二虚拟租户的独立凭据；不复用归档前端公开哈希。重新应用没有 password 字段的配置保留原有密码。
-
-## 账号与租户配置
-
-正式开发版本建议使用持久本机目录，例如 `--runtime "$HOME/Library/Application Support/Tradept/workspace"`，并建立独立备份。角色可配置 `label` 或 `name` 用于界面显示；未设置时按 `baseRole` 显示默认名称。
-
-`config.example.json` 包含 Grandware Demo 与独立 Example Trading Demo 两租户。Grandware 保留历史 U00x 和 CO-xx 标识，便于已归档订单归属匹配；用户密码全部重新生成。未授权/未知账号归属和无 companyId 的旧记录不会向普通角色返回。管理员可检查隔离中的旧数据，但写入必须补齐有效法人。
-
-```sh
-python3 -m server.cli --runtime /private/tmp/trade-order-runtime configure --config /path/to/private-config.json
-python3 -m server.cli --runtime /private/tmp/trade-order-runtime set-password --tenant grandware --user U001
-```
-
-CLI 重置密码采用交互式输入；口令不进入命令行参数或日志。配置 `disabled:true` 或从该租户配置中移除账号，都会立即撤销旧会话；配置提供新 password 也会撤销会话。账号/角色配置存储与业务快照分开，恢复旧业务版本不会恢复旧账号权限。
-
-角色配置字段：`scope` 为 `self`、`team`、`tenant`；`permissions` 为能力数组或布尔 map；`pages` 为前端页面名数组；可设置 `baseRole` 与 `collections`。`readScopes` 可按集合设置 `self/team/entities/tenant` 读取范围，仍先校验租户与法人授权。能力包括 `read/create/edit/delete/assign/finance.read/finance.write/rates.write/snapshots.read/snapshots.restore/accounts.configure`。所有账号（包括 admin/finance）需要显式个人 `visibleCompanyIds` 或有明确法人授权的团队，缺配置默认拒绝访问。scope=tenant 只决定已授权法人的记录范围，不自动授予全部法人；示例管理员与财务显式列出全部主体。
-
-默认 admin 为租户全部管理能力；finance 可查看/编辑财务、管理汇率，禁止删除与快照读取/恢复；manager 为团队范围，salesperson/document 为自己创建或负责的记录范围。后三类无财务权限；document 无删除。不同客户可以更改模板，但权限最终由服务端判断。
-
-五模板默认 `readScopes: {"factories":"entities"}`，工厂在用户已授权的法人内共享读取；工厂成本与银行字段仍按财务权限隐藏，修改与删除继续使用原 self/team/tenant 范围。已知模板允许部分覆盖，自定义角色必须明确 scope；pages 和 readScopes 在配置阶段验证，并随 session.user 返回。已有数据库需要重新应用不含 password 的配置才能更新模板设置，重启本身不会改配置。
-
-## 归档数据导入
-
-```sh
-python3 -m server.cli --runtime /private/tmp/trade-order-runtime import /path/to/business-export.json --tenant grandware --expected-version 0
-```
-
-也可在首次 init 时传 `--import /path/to/business-export.json --tenant grandware`。CLI 只读取源文件，不改源件、不调用线上数据库。支持顶层 `{data,exchangeRates,rateMetas}`、CloudBase 导出的 `{payload,...}` 或业务集合对象。导入保留历史金额、ID、墓碑和时间，不自动重算；导入本身生成新 revision、快照与审计。再次导入要求显式 expected-version；版本不符拒绝，不自动覆盖。
-
-## API 合同
-
-GET 返回值不增加外层 data wrapper；所有 POST 必须使用同源 Origin。除了无需正文的 logout，POST 使用 JSON Content-Type。
-
-| 请求                                                  | 返回/说明                                                                                                                              |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/login` `{tenantId,username,password}`      | `{ok,user}`；设置随机 `trade_session` Cookie，HttpOnly、SameSite=Strict，8 小时有效                                                    |
-| `GET /api/session`                                    | `{user,users,teams,companies,roles,tenant}`；不返回密码/摘要；普通账号仅自己及同团队安全名录                                           |
-| `POST /api/logout`                                    | `{ok:true}`；撤销当前会话并清 Cookie                                                                                                   |
-| `GET /api/data`                                       | `{data,exchangeRates,rateMetas,meta}`；record/字段裁剪后的当前数据                                                                     |
-| `GET /api/meta`                                       | `{ok:true,meta:{version,updatedAt,updatedBy}}`                                                                                         |
-| `POST /api/changes`                                   | `{expectedVersion,changes:[{collection,id,value} 或 {collection,id,deleted:true}],exchangeRates?,rateMetas?}` → `{ok,meta,snapshotId}` |
-| `GET /api/snapshots`                                  | `{snapshots:[{id,version,createdAt,createdBy,kind}]}`；只返回当前租户元数据，默认仅 admin                                              |
-| `POST /api/restore` `{snapshotId,expectedVersion}`    | `{ok,meta,snapshotId}`；恢复为新的 revision，禁止跨租户                                                                                |
-| `GET /api/erpnext/status`                             | 财务读权限；返回当前授权订单的同步状态与精确关联单据，不公开客户/供应商主数据                                                          |
-| `POST /api/erpnext/queue` `{orderId,expectedVersion}` | 财务写权限、CAS 与关联检查；原子写入 outbox，返回 `{ok,job,meta}`，不在 SQLite 事务中发起远端请求                                      |
-
-`value` 是字段 patch：省略字段保留原值；contacts 等公开数组整体替换。新记录 value 提供整条数据。新记录创建人和更新时间由服务器写入；客户端不能转租户或改创建来源。id 可使用稳定 UUID，不使用可修改操作单号当数据库主键；兼容归档旧 id。技术 ID（记录 id、嵌套联系人 id、factoryId）限定 `\w`、点、冒号、短横线，长度 1–200，包含中文字母数字及下划线；拒绝引号、反斜杠、控制符等，导入同样校验且不改源件。显示名称和业务操作号保留自由文本，前端仍须正确 HTML 转义。操作单号在租户+法人范围内 trim/case-insensitive 唯一，包括软删除记录，不自动复用。
-
-同一批次包含新关联记录时，提交顺序为 customers → factories → orders → shipments → invoices；服务端在操作发生时验证引用，不接受指向尚未创建或无权限的对象。
-
-没有 `finance.write` 的账号不能通过顶层字段、嵌套 factories 或其他对象改成本、利润、银行及收付款数据。读取端递归移除敏感字段，公开工厂数组变更按唯一 factoryId 保留隐藏成本及隐藏嵌套对象；重复 factoryId 拒绝。多产品重复工厂行需要后续稳定明细 ID 设计。移除含财务字段的工厂条目会拒绝，需交给有权限的账号。含隐藏字段的对象不能替换成 null/字符串等；未知含财务数据数组不能由普通账号重排或替换，避免按位置挂错隐藏金额。
-
-新建/变更订单关联的客户与工厂、出运关联订单必须存在、可读取且属于订单同一法人；仅变更订单法人时也会重查全部关联。工厂共享读不会允许跨法人引用，未来跨法人共享须显式设计映射。已有出运或发票历史的订单不能直接切换法人，返回 `LEGAL_ENTITY_MIGRATION_REQUIRED`；需要后续专门迁移事务。
-
-## 并发、快照和金额
-
-历史订单保持原客户/工厂 ID 时，公开生产和备注编辑保留历史跨主体关联及财务值；新增关联、变更主体、显式主体重校验和 ERP 排队仍严格验证。出运与发票继承父订单的记录范围，且仍需当前租户、法人及集合权限；删除父订单后不能继续访问子记录。一订单当前只支持一条活动出运记录。存在 ERP outbox 或关联单据时，CLI 整库导入与快照恢复均要求先对账，不允许回退后重新执行旧单据。
-
-SQLite `BEGIN IMMEDIATE` 原子校验整租户 revision 后提交整个 changes 批次、汇率、快照和审计。一个操作失败整批回滚。两个用户基于同一版本保存，至多一个成功；另一个收到 HTTP 409：
-
-```json
-{ "error": "Data changed; reload and review your pending changes", "code": "VERSION_CONFLICT", "latestVersion": 2 }
-```
-
-客户端保留草稿并让用户重新检查，不得自动改 expectedVersion 重试覆盖。此版本采用租户级 CAS，不同记录的同时编辑也可能冲突；后续可升级逐记录版本，但不会用 last-writer-wins 代替冲突检查。
-
-每次成功写入/导入/恢复生成完整内部快照及审计。软删除保留记录，删除订单同步标记关联出运/单证。普通 patch 不能复活已删除记录；快照恢复需要当前管理员能力、租户全部法人授权和正确当前 revision，恢复生成新历史，不篡改旧快照。仅被授权部分法人的管理员不能执行整租户恢复。目前保留全部快照，列表返回最近 200 条；生产需增加容量/留存和离线备份策略。
-
-法人配置 `profitPolicy=grandware-v40`、`settlementCurrency=CNY/USD`，保留 v40 业务字段的实际含义。国内公式：`orderAmountUSD * rate - factoryCostRMB - freightCostUSD - otherCostUSD + factoryCostRMB / 1.13 * insuranceCostUSD / 100`，其中 freight/other 的旧字段实际是人民币，insurance 实际是退税百分比；HK 为 `orderAmountUSD - factoryCostRMB - otherCostUSD`。服务器在原始财务输入变化时派生金额/利润，不采信客户端派生字段；状态/备注、读取、导入、汇率设置本身、保留各工厂金额的数组顺序变更均不重算历史。跨币种规范字段重命名与通用税务政策仍属后续模型工作。
-
-## 验证与边界
-
-```sh
-python3 -m unittest server.tests.test_service -v
-```
-
-测试使用临时私有数据库与真实 loopback HTTP，涵盖两个租户、法人/角色/字段、工厂共享读与写删边界、猜测/跨法人关联 ID、并发 CAS、批次回滚、软删/单号唯一、全租户恢复授权、不可伪造/过期/禁用会话、服务端登录锁定、配置角色、密码更改撤会话、嵌套保护容器替换/数组重排、重复工厂明细、历史利润保留、静态允许清单和跨 Origin/Host 拒绝。没有调用生产服务。
-
-2026-10-11 最终运行：42 项通过，耗时 6.910 秒；另有独立增量审查 12 个合成 SQLite 场景通过。技术 ID 注入、恶意批次回滚、联系人/工厂嵌套 ID 与只读源件导入拒绝均有回归。
-
-上述为前期基础验证。`0.1.0` 发布审查的最终完整后端回归为 117 项全部通过，24.482 秒，见 [独立发布审查](../docs/RELEASE-REVIEW.md)。2026-10-12 使用保留的实际预览数据库再次通过两角色、父订单物流、财务字段保全及 409/403 验收，见 [本地 API 记录](../docs/live-api-acceptance-20261012.json)。真实 ERPNext 隔离链路及总账回读见 [实际记录](../docs/erpnext-real-acceptance.json)。
-
-静态服务仅允许 index/manifest、css、js 运行模块、assets 图片、两本地 vendor 文件；server/runtime、配置、文档、测试、云函数、SDK、目录列表和路径穿越都拒绝。默认 Cookie 未设置 Secure，因为服务只支持 loopback HTTP；公网发布需要 HTTPS、Secure Cookie、正式反向代理与运维控制。本轮交付 SQLite 本地适配；企业本地 SQL/云数据库驱动、计费与商业运维尚未交付，不能据此声明通用商业部署已完成。账号始终按配置管理，不提供公开注册。
+这些测试验证网关协议、同源边界、签名防篡改、原生会话撤销、CSRF、冲突透传和不可用时关闭访问，不替代真实 Frappe/ERPNext 的迁移及业务验收。真实验收另保存来源哈希、记录比较、双租户权限、并发回滚、原生收付款和重启持久化证据。历史 0.1.x 验收报告属于归档版本，不能用于证明新版。

@@ -6,13 +6,51 @@ import { DB } from './data.js';
 import { Auth } from './auth.js';
 import { Exchange } from './exchange.js';
 import { escapeHtml, toast, validate } from './utils.js';
+import { BusinessBackendPanel } from './erpnext-panel.js';
 import {
     handleFileImport,
     processImportRows,
     validateOrderData,
+    validateNativeProductionPlan,
     requiresOverseasPort,
     canWriteFinancials
 } from './order-import.js';
+
+const knownNumber = value => value !== undefined && value !== null && value !== '' && Number.isFinite(Number(value));
+const formatOrderMoney = (value, currency) => (knownNumber(value) ? App.formatMoney(value, currency) : '—');
+const formatOrderPercent = (value, digits) => (knownNumber(value) ? Number(value).toFixed(digits) + '%' : '—');
+const formatOrderText = value => String(value ?? '').trim() || '—';
+const orderQuantitySummary = order => {
+    const unknown = { value: '—', unit: '—', text: '—' };
+    if (order.stage === 'native' && order.erpItems?.length) {
+        if (!order.erpItems.every(line => knownNumber(line.quantity))) return unknown;
+        const groups = new Map();
+        for (const line of order.erpItems) {
+            const unit = formatOrderText(line.uom);
+            groups.set(unit, (groups.get(unit) || 0) + Number(line.quantity));
+        }
+        if (groups.size > 1) {
+            const text = [...groups].map(([unit, quantity]) => `${quantity} ${unit}`).join(' / ');
+            return { value: text, unit: '', text };
+        }
+        const [[unit, quantity]] = groups;
+        return { value: String(quantity), unit, text: `${quantity} ${unit}` };
+    }
+    // Finance-redacted native records still expose public production quantities.
+    // Legacy records retain their original unknown quantity rather than a sum.
+    if (order.stage === 'native') {
+        if (!order.factories?.length || !order.factories.every(factory => knownNumber(factory.totalQuantity))) {
+            return unknown;
+        }
+        const quantity = order.factories.reduce((total, factory) => total + Number(factory.totalQuantity), 0);
+        return { value: String(quantity), unit: '—', text: `${quantity} —` };
+    }
+    if (knownNumber(order.quantity)) {
+        const unit = formatOrderText(order.unit);
+        return { value: String(order.quantity), unit, text: `${order.quantity} ${unit}` };
+    }
+    return unknown;
+};
 
 const Orders = {
     currentFilter: { status: 'all', paymentStatus: 'all', shippingStatus: 'all', salespersonId: 'all', search: '' },
@@ -147,12 +185,12 @@ const Orders = {
                 <td class="text-sm">${App.escapeHtml(o.productName)}</td>
                 <td>${App.formatDate(o.orderDate)}</td>
                 <td>${o.actualShipDate ? App.formatDate(o.actualShipDate) : '<span class="text-gray">' + App.formatDate(o.expectedShipDate) + '</span>'}</td>
-                <td class="text-right font-semi">${App.formatMoney(o.orderAmountUSD, 'USD')}</td>
+                <td class="text-right font-semi">${formatOrderMoney(o.orderAmountUSD, 'USD')}</td>
                 ${
                     showFinance
                         ? `
-                <td class="text-right">${App.formatMoney(o.factoryCostRMB, isListHK ? 'USD' : 'CNY')}</td>
-                <td class="text-right ${App.getProfitColor(o.profitRate)} font-semi">${o.profitRate.toFixed(1)}%</td>`
+                <td class="text-right">${formatOrderMoney(o.factoryCostRMB, isListHK ? 'USD' : 'CNY')}</td>
+                <td class="text-right ${App.getProfitColor(o.profitRate)} font-semi">${formatOrderPercent(o.profitRate, 1)}</td>`
                         : ''
                 }
                 ${showFinance ? `<td>${App.getPaymentBadge(o.paymentStatus)}</td><td>${App.getFactoryPaidBadge(o.factoryPaidStatus)}</td>` : ''}
@@ -197,7 +235,7 @@ const Orders = {
                           productType: order.productCategory,
                           totalQuantity: order.quantity,
                           totalAmount: order.factoryCostRMB,
-                          prepayment: order.factoryPaidRMB || 0,
+                          prepayment: order.stage === 'legacy' ? order.factoryPaidRMB : order.factoryPaidRMB || 0,
                           inspectionDate: '',
                           estimatedShipDate: order.expectedShipDate
                       }
@@ -213,7 +251,8 @@ const Orders = {
         const shipment = DB.getShipmentByOrder(orderId);
         const docs = DB.getInvoicesByOrder(orderId);
         const showFinance = Auth.canSeeFinancials();
-        const canDel = Auth.canDeleteOrder(order);
+        const quantity = orderQuantitySummary(order);
+        const canDel = Auth.canDeleteOrder(order) && order.stage !== 'native';
         const isDomestic = Exchange.isDomestic(order.companyId);
         const isHK = !Exchange.isDomestic(order.companyId);
         const financials = Exchange.getOrderFinancials(order);
@@ -227,16 +266,18 @@ const Orders = {
                 <button class="btn btn-secondary" onclick="window.location.hash='#/orders'">← 返回列表</button>
                 <button class="btn btn-primary" onclick="Orders.showEditForm('${App.escapeHtml(order.id)}')">✏️ 编辑订单</button>
                 ${!shipment && Auth.canEdit() ? `<button class="btn btn-secondary" onclick="Orders.createShipment('${App.escapeHtml(order.id)}')">🚢 建立出运记录</button>` : ''}
-                ${canWriteFinancials() ? `<button class="btn btn-secondary" onclick="Orders.updatePayment('${App.escapeHtml(order.id)}')">💰 更新付款</button>` : ''}
+                ${canWriteFinancials() && order.stage !== 'legacy' ? `<button class="btn btn-secondary" onclick="Orders.updatePayment('${App.escapeHtml(order.id)}')">${order.stage === 'native' ? '登记实际收款' : order.stage === 'brief' ? '收款说明' : '💰 更新付款'}</button>` : ''}
                 ${canDel ? `<div style="margin-left:auto"><button class="btn btn-danger" onclick="Orders.deleteOrder('${App.escapeHtml(order.id)}')">🗑️ 删除订单</button></div>` : ''}
             </div>
+
+            ${order.stage ? `<div class="card mb-6"><div class="card-body"><p>${order.stage === 'legacy' ? '历史参考 · 保留原始 Excel 记录与余额，不作为实际收款单据。' : order.stage === 'native' ? '正式订单 · 金额、采购和收款由业务单据维护。' : '待完善订单 · 可先安排生产，真实商品明细完善后建立正式订单。'}</p>${canWriteFinancials() && order.stage === 'brief' ? `<button class="btn btn-secondary btn-sm" onclick="Orders.editBusinessItems('${App.escapeHtml(order.id)}')">商品明细</button> <button class="btn btn-secondary btn-sm" onclick="Orders.confirmBusinessOrder('${App.escapeHtml(order.id)}', 'convert')">建立正式订单</button>` : ''}${canWriteFinancials() && order.stage === 'native' && (order.nativeDocuments || []).some(doc => doc.doctype === 'Sales Order' && Number(doc.docstatus) === 0) ? `<button class="btn btn-secondary btn-sm" onclick="Orders.confirmBusinessOrder('${App.escapeHtml(order.id)}', 'submit')">提交订单</button>` : ''}${canWriteFinancials() && order.stage === 'native' && (order.nativeDocuments || []).some(doc => doc.doctype === 'Sales Order' && Number(doc.docstatus) === 1) ? `<button class="btn btn-secondary btn-sm" onclick="Orders.confirmBusinessOrder('${App.escapeHtml(order.id)}', 'cancel')">撤销正式订单</button>` : ''}</div></div>` : ''}
 
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-card-header"><div class="stat-icon blue">💵</div></div>
                     <div class="stat-label">订单金额</div>
-                    <div class="stat-value">${App.formatMoney(order.orderAmountUSD, 'USD')}</div>
-                    ${isHK ? '' : `<div class="stat-sub">≈ ${App.formatMoney(order.orderAmountRMB, 'CNY')}</div>`}
+                    <div class="stat-value">${formatOrderMoney(order.orderAmountUSD, 'USD')}</div>
+                    ${isHK ? '' : `<div class="stat-sub">≈ ${formatOrderMoney(order.orderAmountRMB, 'CNY')}</div>`}
                 </div>
                 ${
                     showFinance
@@ -244,21 +285,21 @@ const Orders = {
                 <div class="stat-card">
                     <div class="stat-card-header"><div class="stat-icon orange">🏭</div></div>
                     <div class="stat-label">工厂成本</div>
-                    <div class="stat-value">${App.formatMoney(order.factoryCostRMB, isHK ? 'USD' : 'CNY')}</div>
+                    <div class="stat-value">${formatOrderMoney(order.factoryCostRMB, isHK ? 'USD' : 'CNY')}</div>
                     <div class="stat-sub">付款：${App.escapeHtml(order.factoryPaidStatus)}</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-card-header"><div class="stat-icon green">📈</div></div>
                     <div class="stat-label">利润</div>
-                    <div class="stat-value ${App.getProfitColor(order.profitRate)}">${App.formatMoney(order.profitRMB, isHK ? 'USD' : 'CNY')}</div>
-                    <div class="stat-sub">利润率 ${order.profitRate.toFixed(2)}%</div>
+                    <div class="stat-value ${App.getProfitColor(order.profitRate)}">${formatOrderMoney(order.profitRMB, isHK ? 'USD' : 'CNY')}</div>
+                    <div class="stat-sub">利润率 ${formatOrderPercent(order.profitRate, 2)}</div>
                 </div>`
                         : `
                 <div class="stat-card">
                     <div class="stat-card-header"><div class="stat-icon orange">📦</div></div>
                     <div class="stat-label">产品数量</div>
-                    <div class="stat-value">${order.quantity || factoryDataList.reduce((s, f) => s + (f.totalQuantity || 0), 0)}</div>
-                    <div class="stat-sub">${App.escapeHtml(order.unit)}</div>
+                    <div class="stat-value">${App.escapeHtml(quantity.value)}</div>
+                    <div class="stat-sub">${App.escapeHtml(quantity.unit)}</div>
                 </div>`
                 }
                 ${
@@ -266,8 +307,8 @@ const Orders = {
                         ? `<div class="stat-card">
                     <div class="stat-card-header"><div class="stat-icon red">💳</div></div>
                     <div class="stat-label">收款进度</div>
-                    <div class="stat-value">${App.formatMoney(order.paidAmountUSD, 'USD')}</div>
-                    <div class="stat-sub">${App.escapeHtml(order.paymentStatus)} / 共 ${App.formatMoney(order.orderAmountUSD, 'USD')}</div>
+                    <div class="stat-value">${formatOrderMoney(order.paidAmountUSD, 'USD')}</div>
+                    <div class="stat-sub">${App.escapeHtml(order.paymentStatus)} / 共 ${formatOrderMoney(order.orderAmountUSD, 'USD')}</div>
                 </div>`
                         : ''
                 }
@@ -283,9 +324,9 @@ const Orders = {
                         <div class="detail-item"><div class="detail-label">客户</div><div class="detail-value">${App.escapeHtml(order.customerName)}</div></div>
                         <div class="detail-item"><div class="detail-label">客户联系人</div><div class="detail-value">${App.escapeHtml(order.contactPerson) || '-'}</div></div>
                         <div class="detail-item"><div class="detail-label">工厂</div><div class="detail-value">${App.escapeHtml(factoryDisplay)}</div></div>
-                        <div class="detail-item"><div class="detail-label">产品名称</div><div class="detail-value">${App.escapeHtml(order.productName)}</div></div>
-                        <div class="detail-item"><div class="detail-label">产品类别</div><div class="detail-value">${App.escapeHtml(order.productCategory)}</div></div>
-                        <div class="detail-item"><div class="detail-label">数量</div><div class="detail-value">${order.quantity} ${App.escapeHtml(order.unit)}</div></div>
+                        <div class="detail-item"><div class="detail-label">产品名称</div><div class="detail-value">${App.escapeHtml(formatOrderText(order.productName))}</div></div>
+                        <div class="detail-item"><div class="detail-label">产品类别</div><div class="detail-value">${App.escapeHtml(formatOrderText(order.productCategory))}</div></div>
+                        <div class="detail-item"><div class="detail-label">数量</div><div class="detail-value">${App.escapeHtml(quantity.text)}</div></div>
                         <div class="detail-item"><div class="detail-label">下单日期</div><div class="detail-value">${App.formatDate(order.orderDate)}</div></div>
                         <div class="detail-item"><div class="detail-label">预计出运</div><div class="detail-value">${App.formatDate(order.expectedShipDate)}</div></div>
                         <div class="detail-item"><div class="detail-label">实际出运</div><div class="detail-value">${order.actualShipDate ? App.formatDate(order.actualShipDate) : '-'}</div></div>
@@ -306,12 +347,12 @@ const Orders = {
                     <div class="factory-detail-card" style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px;padding:12px 14px;margin-bottom:10px">
                         <div style="font-weight:600;color:var(--primary);margin-bottom:8px;font-size:13px">工厂 ${idx + 1}：${App.escapeHtml(f.factoryName) || '-'}</div>
                         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 16px;font-size:12px">
-                            <div><span class="text-gray">产品类型：</span>${App.escapeHtml(f.productType) || '-'}</div>
-                            <div><span class="text-gray">总数量：</span>${f.totalQuantity || 0}</div>
+                            <div><span class="text-gray">产品类型：</span>${App.escapeHtml(formatOrderText(f.productType))}</div>
+                            <div><span class="text-gray">总数量：</span>${knownNumber(f.totalQuantity) ? App.escapeHtml(f.totalQuantity) : '—'}</div>
                             ${
                                 showFinance
-                                    ? `<div><span class="text-gray">总金额：</span>${App.formatMoney(f.totalAmount || 0, isHK ? 'USD' : 'CNY')}</div>
-                            <div><span class="text-gray">预付款：</span>${App.formatMoney(f.prepayment || 0, isHK ? 'USD' : 'CNY')}</div>`
+                                    ? `<div><span class="text-gray">总金额：</span>${formatOrderMoney(order.stage === 'legacy' ? f.totalAmount : f.totalAmount || 0, isHK ? 'USD' : 'CNY')}</div>
+                            <div><span class="text-gray">预付款：</span>${formatOrderMoney(order.stage === 'legacy' ? f.prepayment : f.prepayment || 0, isHK ? 'USD' : 'CNY')}</div>`
                                     : ''
                             }
                             <div><span class="text-gray">预计验货：</span>${f.inspectionDate ? App.formatDate(f.inspectionDate) : '-'}</div>
@@ -332,19 +373,19 @@ const Orders = {
                 <div class="card-body">
                     <table>
                         <tbody>
-                            <tr><td>订单总金额 (USD)</td><td class="text-right font-bold">${App.formatMoney(order.orderAmountUSD, 'USD')}</td></tr>
-                            ${isHK ? '' : `<tr><td>订单总金额 (RMB)</td><td class="text-right">${App.formatMoney(order.orderAmountRMB, 'CNY')}</td></tr>`}
-                            <tr><td>工厂成本 (${isHK ? 'USD' : 'RMB'})</td><td class="text-right text-danger">${App.formatMoney(order.factoryCostRMB, isHK ? 'USD' : 'CNY')}</td></tr>
+                            <tr><td>订单总金额 (USD)</td><td class="text-right font-bold">${formatOrderMoney(order.orderAmountUSD, 'USD')}</td></tr>
+                            ${isHK ? '' : `<tr><td>订单总金额 (RMB)</td><td class="text-right">${formatOrderMoney(order.orderAmountRMB, 'CNY')}</td></tr>`}
+                            <tr><td>工厂成本 (${isHK ? 'USD' : 'RMB'})</td><td class="text-right text-danger">${formatOrderMoney(order.factoryCostRMB, isHK ? 'USD' : 'CNY')}</td></tr>
                             ${
                                 isHK
                                     ? ''
                                     : `
-                            <tr><td>${legacyRmbFees ? '货代费 (RMB)' : '运费 (USD)'}</td><td class="text-right text-danger">${App.formatMoney(order.freightCostUSD, legacyRmbFees ? 'CNY' : 'USD')}</td></tr>
-                            <tr><td>${legacyRmbFees ? '退税率 (%)' : '保险费 (USD)'}</td><td class="text-right text-danger">${legacyRmbFees ? Number(order.insuranceCostUSD || 0).toFixed(2) + '%' : App.formatMoney(order.insuranceCostUSD, 'USD')}</td></tr>`
+                            <tr><td>${legacyRmbFees ? '货代费 (RMB)' : '运费 (USD)'}</td><td class="text-right text-danger">${formatOrderMoney(order.freightCostUSD, legacyRmbFees ? 'CNY' : 'USD')}</td></tr>
+                            <tr><td>${legacyRmbFees ? '退税率 (%)' : '保险费 (USD)'}</td><td class="text-right text-danger">${legacyRmbFees ? Number(order.insuranceCostUSD || 0).toFixed(2) + '%' : formatOrderMoney(order.insuranceCostUSD, 'USD')}</td></tr>`
                             }
-                            <tr><td>${isDomestic && legacyRmbFees ? '其他费用 (RMB)' : '其他费用 (USD)'}</td><td class="text-right text-danger">${App.formatMoney(order.otherCostUSD, isDomestic && legacyRmbFees ? 'CNY' : 'USD')}</td></tr>
-                            <tr style="border-top:2px solid var(--gray-300)"><td class="font-bold">利润 (${isHK ? 'USD' : 'RMB'})</td><td class="text-right font-bold ${App.getProfitColor(order.profitRate)}">${App.formatMoney(order.profitRMB, isHK ? 'USD' : 'CNY')}</td></tr>
-                            <tr><td class="text-gray">利润率</td><td class="text-right font-bold ${App.getProfitColor(order.profitRate)}">${order.profitRate.toFixed(2)}%</td></tr>
+                            <tr><td>${isDomestic && legacyRmbFees ? '其他费用 (RMB)' : '其他费用 (USD)'}</td><td class="text-right text-danger">${formatOrderMoney(order.otherCostUSD, isDomestic && legacyRmbFees ? 'CNY' : 'USD')}</td></tr>
+                            <tr style="border-top:2px solid var(--gray-300)"><td class="font-bold">利润 (${isHK ? 'USD' : 'RMB'})</td><td class="text-right font-bold ${App.getProfitColor(order.profitRate)}">${formatOrderMoney(order.profitRMB, isHK ? 'USD' : 'CNY')}</td></tr>
+                            <tr><td class="text-gray">利润率</td><td class="text-right font-bold ${App.getProfitColor(order.profitRate)}">${formatOrderPercent(order.profitRate, 2)}</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -592,6 +633,16 @@ const Orders = {
         App.showModal('新建订单', bodyHtml, {
             footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('orderForm').requestSubmit()">💾 保存订单</button>`
         });
+        if (DB._businessAPI) {
+            const editor = document.getElementById('orderForm');
+            for (const input of editor.querySelectorAll('[name="paidAmountUSD"], [name="paymentStatus"]')) {
+                input.disabled = true;
+            }
+            const note = document.createElement('p');
+            note.className = 'text-sm text-gray';
+            note.textContent = '可先保存待完善订单，后续补充商品和生产安排。实际收款在正式订单提交后登记。';
+            editor.prepend(note);
+        }
     },
 
     showEditForm(orderId) {
@@ -636,7 +687,7 @@ const Orders = {
         const factoryCardsHtml = factoryDataList.map((fd, idx) => this.createFactoryRow(idx, fd)).join('');
 
         const bodyHtml = `
-            <form id="orderForm" data-company-id="${App.escapeHtml(order.companyId)}" data-formula-version="${App.escapeHtml(order.formulaVersion || '')}" onsubmit="Orders.saveOrder(event, '${orderId}'); return false;">
+            <form id="orderForm" data-order-id="${App.escapeHtml(orderId)}" data-company-id="${App.escapeHtml(order.companyId)}" data-formula-version="${App.escapeHtml(order.formulaVersion || '')}" onsubmit="Orders.saveOrder(event, '${orderId}'); return false;">
                 ${
                     showSalesSelect
                         ? `
@@ -834,6 +885,37 @@ const Orders = {
         this.updateFactoryCost();
         this.calcProfit();
         const editor = document.getElementById('orderForm');
+        if (editor && (order.stage === 'legacy' || (order.historicalReference && order.stage !== 'native'))) {
+            // Historical omissions must not block an unrelated edit before the
+            // patch-aware validator and authenticated API inspect changed fields.
+            editor.noValidate = true;
+        }
+        if (editor && order.stage === 'native') {
+            for (const input of editor.querySelectorAll(
+                '[name="customerId"], [name="customerOrderNo"], [name="orderDate"], [name="expectedShipDate"], [name="actualShipDate"], [name="shippingStatus"], [name="orderAmountUSD"], [name="factoryCostRMB"], [name="paidAmountUSD"], [name="paymentStatus"], [name="factoryPaidRMB"], [name="factoryPaidStatus"], #factoryCards [name$="_id"], #factoryCards [name$="_quantity"], #factoryCards [name$="_amount"], #factoryCards [name$="_prepayment"], #factoryCards button, [onclick="Orders.addFactoryRow()"]'
+            )) {
+                input.disabled = true;
+            }
+            for (const input of editor.querySelectorAll(
+                '#factoryCards [name$="_productType"], #factoryCards [name$="_inspectionDate"], #factoryCards [name$="_shipDate"]'
+            )) {
+                input.required = false;
+                input.closest('.form-group')?.querySelector('.required')?.remove();
+            }
+            const note = document.createElement('p');
+            note.className = 'text-sm text-gray';
+            note.textContent =
+                '正式订单的客户、客户订单号、订单与出运日期、出运状态、数量和付款由业务单据维护。此处可修改生产计划的产品类型、验货与预计出货日期、备注和港口；到港与签收在出运记录中登记。';
+            editor.prepend(note);
+            const status = editor.elements.status;
+            if (order.status === '已取消') status.disabled = true;
+            else status.querySelector('option[value="已取消"]')?.remove();
+        }
+        if (editor && DB._businessAPI && order.stage === 'brief') {
+            for (const input of editor.querySelectorAll('[name="paidAmountUSD"], [name="paymentStatus"]')) {
+                input.disabled = true;
+            }
+        }
         if (editor) editor.dataset.originalValues = JSON.stringify(Object.fromEntries(new FormData(editor)));
     },
 
@@ -994,6 +1076,14 @@ const Orders = {
         // Public production cards omit factory amounts. Their missing financial
         // inputs never become a submitted zero when an editor is opened.
         if (!document.getElementById('factoryCards')) return;
+        const editor = document.getElementById('orderForm');
+        const original = editor?.dataset.orderId ? DB.getOrder(editor.dataset.orderId) : null;
+        if (original?.stage === 'native') {
+            // Native procurement totals are projected from purchase orders;
+            // production cards cannot recalculate those authoritative amounts.
+            this.calcProfit();
+            return;
+        }
         const amounts = document.querySelectorAll('#factoryCards .factory-amount');
         let total = 0;
         amounts.forEach(input => {
@@ -1012,6 +1102,23 @@ const Orders = {
         const form = document.getElementById('orderForm');
         const el = document.getElementById('calcProfit');
         if (!form || !el) return;
+        const original = form.dataset.orderId ? DB.getOrder(form.dataset.orderId) : null;
+        if (
+            original?.stage === 'legacy' ||
+            (original?.historicalReference && original.stage !== 'native') ||
+            (original?.stage === 'native' && original.status === '已取消')
+        ) {
+            // Historical reference profit and cancelled-document profit are
+            // source values, not a current-FX quote or active native forecast.
+            const profit = original.profitRMB;
+            el.value = Number.isFinite(profit) ? profit.toFixed(2) : '—';
+            el.style.color = Number.isFinite(profit)
+                ? profit >= 0
+                    ? 'var(--success)'
+                    : 'var(--danger)'
+                : 'var(--gray-500)';
+            return;
+        }
         const value = name => parseFloat(form.elements.namedItem(name)?.value) || 0;
         const usd = value('orderAmountUSD');
         const factoryRMB = value('factoryCostRMB');
@@ -1020,11 +1127,20 @@ const Orders = {
         const insurance = value('insuranceCostUSD');
         const other = value('otherCostUSD');
 
-        // 实时预览利润：直接用当前登录公司判断公式（与表单标签一致）
+        // Quotes use configured company rates. Native previews retain document
+        // revenue, procurement cost and frozen FX; only extension expenses vary.
         const companyId = form.dataset.companyId || DB.currentCompanyId;
-        const financials =
-            typeof Exchange.getOrderFinancials === 'function'
-                ? Exchange.getOrderFinancials({
+        const preview =
+            original?.stage === 'native'
+                ? {
+                      ...original,
+                      ...Object.fromEntries(
+                          ['freightCostUSD', 'insuranceCostUSD', 'otherCostUSD']
+                              .filter(name => form.elements.namedItem(name))
+                              .map(name => [name, value(name)])
+                      )
+                  }
+                : {
                       companyId,
                       formulaVersion: form.dataset.formulaVersion || undefined,
                       orderAmountUSD: usd,
@@ -1032,8 +1148,9 @@ const Orders = {
                       freightCostUSD: freight,
                       insuranceCostUSD: insurance,
                       otherCostUSD: other
-                  })
-                : null;
+                  };
+        const financials =
+            typeof Exchange.getOrderFinancials === 'function' ? Exchange.getOrderFinancials(preview) : null;
         const profit = financials
             ? financials.computedProfit
             : DB.calcOrderProfit(usd, factoryRMB, freight, insurance, other, companyId);
@@ -1236,6 +1353,9 @@ const Orders = {
                     delete data[key];
                 }
             }
+            for (const key of ['freightCostUSD', 'insuranceCostUSD', 'otherCostUSD']) {
+                if (!fd.has(key)) delete data[key];
+            }
             if (!canWriteFinancials()) {
                 for (const key of [
                     'factoryCostRMB',
@@ -1252,12 +1372,77 @@ const Orders = {
 
         const company = DB.companies.find(item => item.id === (form.dataset.companyId || DB.currentCompanyId));
         const existing = pendingId ? DB.getOrder(pendingId) : null;
+        if (existing?.stage === 'native') {
+            for (const key of [
+                'companyId',
+                'customerId',
+                'customerOrderNo',
+                'customerName',
+                'destinationPort',
+                'orderDate',
+                'expectedShipDate',
+                'actualShipDate',
+                'shippingStatus',
+                'orderAmountUSD',
+                'orderAmountRMB',
+                'factoryCostRMB',
+                'factoryCostUSD',
+                'paidAmountUSD',
+                'paymentStatus',
+                'factoryPaidRMB',
+                'factoryPaidStatus',
+                'costPaidUSD',
+                'costPaymentStatus',
+                'erpItems',
+                'factoryId',
+                'factoryIds',
+                'factoryName',
+                'factories',
+                'productCategory',
+                'productName',
+                'quantity',
+                'unit'
+            ]) {
+                delete data[key];
+            }
+        }
+        if (existing?.stage === 'native' && !fd.has('status')) delete data.status;
+        if (existing?.stage === 'native' && form.querySelector('#factoryCards')) {
+            const original = JSON.parse(form.dataset.originalValues || '{}');
+            const plans = (existing.factories || []).map((row, index) => {
+                const value = { ...row };
+                for (const [field, suffix] of [
+                    ['productType', 'productType'],
+                    ['inspectionDate', 'inspectionDate'],
+                    ['estimatedShipDate', 'shipDate']
+                ]) {
+                    const name = `factory_${index}_${suffix}`;
+                    if (fd.has(name) && String(fd.get(name) || '') !== String(original[name] || '')) {
+                        value[field] = String(fd.get(name) || '').trim();
+                    }
+                }
+                return value;
+            });
+            if (JSON.stringify(plans) !== JSON.stringify(existing.factories || [])) data.factories = plans;
+        }
+        if (DB._businessAPI && (!existing || existing.stage === 'brief')) {
+            // Receipt history is recorded after a formal order is submitted.
+            delete data.paidAmountUSD;
+            delete data.paymentStatus;
+        }
         if (existing) {
             for (const key of Object.keys(data)) {
                 if (JSON.stringify(data[key] ?? '') === JSON.stringify(existing[key] ?? '')) delete data[key];
             }
         }
-        const invalid = validateOrderData({ ...existing, ...data }, data, !pendingId, company);
+        const validationPatch = { ...data };
+        let planInvalid = '';
+        if (existing?.stage === 'native' && data.factories) {
+            planInvalid = validateNativeProductionPlan(existing.factories || [], data.factories);
+            delete validationPatch.factories;
+        }
+        const invalid =
+            planInvalid || validateOrderData({ ...existing, ...data }, validationPatch, !pendingId, company);
         if (invalid) {
             App.toast(invalid, 'error');
             return;
@@ -1289,6 +1474,14 @@ const Orders = {
 
         App.toast(orderId ? '订单更新成功' : '订单创建成功');
         App.closeModal();
+        if (DB._businessAPI) {
+            try {
+                await DB._initFromBusinessAPI();
+            } catch (error) {
+                DB._handleSaveFailure(error);
+                return;
+            }
+        }
         if (orderId) {
             this.renderDetail(document.getElementById('pageContent'), orderId);
         } else {
@@ -1299,20 +1492,26 @@ const Orders = {
     updatePayment(orderId) {
         const order = DB.getOrder(orderId);
         if (!order || !canWriteFinancials()) return;
+        if (order.stage === 'native') return BusinessBackendPanel.receivePayment(orderId);
+        if (order.stage === 'brief') return App.toast('完善商品明细并提交正式订单后，可登记实际收款', 'info');
+        if (order.stage === 'legacy') {
+            return App.toast('此记录的历史余额来自 Excel；可在编辑订单中校对，不生成实际收款单据', 'info');
+        }
+        if (DB._businessAPI) return App.toast('请先刷新订单数据，再通过正式订单登记实际收款', 'info');
         const remaining = order.orderAmountUSD - order.paidAmountUSD;
         const bodyHtml = `
             <form id="paymentForm" onsubmit="Orders.savePayment(event, '${orderId}'); return false;">
                 <div class="detail-item mb-4">
                     <div class="detail-label">订单金额</div>
-                    <div class="detail-value">${App.formatMoney(order.orderAmountUSD, 'USD')}</div>
+                    <div class="detail-value">${formatOrderMoney(order.orderAmountUSD, 'USD')}</div>
                 </div>
                 <div class="detail-item mb-4">
                     <div class="detail-label">已收款</div>
-                    <div class="detail-value">${App.formatMoney(order.paidAmountUSD, 'USD')}</div>
+                    <div class="detail-value">${formatOrderMoney(order.paidAmountUSD, 'USD')}</div>
                 </div>
                 <div class="detail-item mb-4">
                     <div class="detail-label">待收余额</div>
-                    <div class="detail-value text-warning">${App.formatMoney(remaining, 'USD')}</div>
+                    <div class="detail-value text-warning">${formatOrderMoney(remaining, 'USD')}</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label">本次收款 (USD)</label>
@@ -1356,6 +1555,10 @@ const Orders = {
             App.toast('当前账号无收款权限', 'error');
             return;
         }
+        if (order.stage || DB._businessAPI) {
+            App.toast('请通过正式订单登记实际收款；历史余额在原始记录中校对', 'warning');
+            return;
+        }
         const form = event.target;
         if (form.dataset.saving === 'true') return;
         if (!form.dataset.receiptTarget) {
@@ -1397,6 +1600,10 @@ const Orders = {
     },
 
     deleteOrder(orderId) {
+        if (DB.getOrder(orderId)?.stage === 'native') {
+            App.toast('正式订单需使用撤销业务单据，不能删除原始记录', 'warning');
+            return;
+        }
         App.showConfirm(
             '确定要删除订单 ' + orderId + ' 吗？此操作不可撤销，关联的出运和单证信息也将被删除。',
             async () => {
@@ -1411,6 +1618,22 @@ const Orders = {
                 App.toast('订单已删除');
                 window.location.hash = '#/orders';
             }
+        );
+    },
+
+    editBusinessItems(orderId) {
+        BusinessBackendPanel.editItems(orderId);
+    },
+
+    confirmBusinessOrder(orderId, action) {
+        if (!['convert', 'submit', 'cancel'].includes(action)) return;
+        App.showConfirm(
+            action === 'convert'
+                ? '根据真实商品明细建立销售、采购订单草稿？'
+                : action === 'cancel'
+                  ? '撤销正式销售、采购订单？已有收款、发货或发票时需先处理对应业务，撤销记录将保留。'
+                  : '提交销售、采购订单？收款需单独登记。',
+            () => BusinessBackendPanel.runAction(action, orderId)
         );
     },
 
@@ -1457,7 +1680,8 @@ const Orders = {
             'shippingStatus',
             'loadingPort',
             'destinationPort',
-            'overseasPort'
+            'overseasPort',
+            'remarks'
         ];
         const labels = {
             id: '订单号',
@@ -1489,7 +1713,8 @@ const Orders = {
             shippingStatus: '出运状态',
             loadingPort: '起运港',
             destinationPort: '目的港',
-            overseasPort: '海外港口'
+            overseasPort: '海外港口',
+            remarks: '备注'
         };
         const financialHeaders = new Set([
             'factoryCostRMB',
@@ -1590,6 +1815,11 @@ const Orders = {
                     <button class="btn btn-sm btn-secondary" onclick="Orders.downloadTemplate()">📋 下载导入模板</button>
                 </div>
                 <div class="form-group">
+                    <label class="form-label" for="importPurpose">导入用途</label>
+                    <select class="form-select" id="importPurpose"><option value="order-brief">待完善订单（新业务） / 维护现有记录</option>${canWriteFinancials() ? '<option value="historical-reference">历史参考（保留累计余额，不生成账务）</option>' : ''}</select>
+                    <p class="text-sm text-gray">按记录 ID 或当前法人下的操作单号匹配已有记录；空白单元格保留现有值。新业务的实际收款请通过正式订单登记。</p>
+                </div>
+                <div class="form-group">
                     <label class="form-label">选择Excel文件 (.xlsx / .xls)</label>
                     <input type="file" id="importFileInput" class="form-input" accept=".xlsx,.xls" onchange="Orders.handleFileImport(this)">
                 </div>
@@ -1651,16 +1881,21 @@ const Orders = {
         // 权限过滤：salesperson 只能删自己的订单，越权部分剔除并提示
         const deletable = ids.filter(id => {
             const o = DB.getOrder(id);
-            return o && Auth.canDeleteOrder(o);
+            return o && o.stage !== 'native' && Auth.canDeleteOrder(o);
         });
         const blocked = ids.length - deletable.length;
         if (deletable.length === 0) {
-            App.toast('⚠️ 选中的订单均无删除权限（业务员仅可删除自己的订单）', 'error');
+            App.toast(
+                ids.some(id => DB.getOrder(id)?.stage === 'native')
+                    ? '正式订单需撤销业务单据；选中记录未删除'
+                    : '选中的订单均无删除权限',
+                'error'
+            );
             this.selectedOrders.clear();
             this.renderTable();
             return;
         }
-        const warnMsg = `<p style="margin-bottom:8px">确定要批量删除 <strong>${deletable.length}</strong> 笔订单吗？${blocked > 0 ? `<span style="color:var(--danger)">（另有 ${blocked} 笔无权限，已跳过）</span>` : ''}</p><p style="color:var(--danger);font-size:13px">⚠️ 关联的出运和单证信息也将被删除。此操作不可恢复！</p>`;
+        const warnMsg = `<p style="margin-bottom:8px">确定要批量删除 <strong>${deletable.length}</strong> 笔订单吗？${blocked > 0 ? `<span style="color:var(--danger)">（另有 ${blocked} 笔受权限或正式单据保护，已跳过）</span>` : ''}</p><p style="color:var(--danger);font-size:13px">⚠️ 关联的出运和单证信息也将被删除。此操作不可恢复！</p>`;
 
         App.showConfirm(warnMsg, async () => {
             App.toast('正在批量删除...', 'info');
@@ -1731,6 +1966,18 @@ const Orders = {
         const status = fd.get('batchStatus');
         const payment = fd.get('batchPayment');
         const shipping = fd.get('batchShipping');
+        if (status === '已取消' && ids.some(id => DB.getOrder(id)?.stage === 'native')) {
+            App.toast('正式订单需通过撤销业务单据处理，不能批量修改为已取消', 'warning');
+            return;
+        }
+        if (shipping && ids.some(id => DB.getOrder(id)?.stage === 'native')) {
+            App.toast('正式订单出运状态由业务单据和出运里程碑计算，不能批量改写', 'warning');
+            return;
+        }
+        if (payment && ids.some(id => DB.getOrder(id)?.stage && DB.getOrder(id).stage !== 'legacy')) {
+            App.toast('正式订单收款状态由实际收款记录计算，不能批量修改', 'warning');
+            return;
+        }
 
         const changes = {};
         if (status) changes.status = status;

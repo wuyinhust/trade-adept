@@ -604,7 +604,7 @@ const DB = {
             this._backupToLocal();
             App.updateSaveStatus('error', '版本冲突，修改尚未保存');
             this.onSaveConflict?.();
-            toast('其他人已保存新版本；本次修改已保留为草稿', 'warning', 8000);
+            toast('业务版本已更新；本次修改已保留为草稿', 'warning', 8000);
         } else App.updateSaveStatus('error', error?.message || '保存失败，草稿已保留');
     },
 
@@ -1689,13 +1689,14 @@ const DB = {
         const activeOrders = orders.filter(o => o.status !== '已取消');
         const completedOrders = orders.filter(o => o.status === '已订船');
         const pendingShipmentOrders = orders.filter(o => o.shippingStatus === '待出运');
-        const totalRevenueUSD = orders.reduce((sum, o) => sum + o.orderAmountUSD, 0);
-        const totalRevenueRMB = orders.reduce((sum, o) => sum + o.orderAmountRMB, 0);
-        const totalFactoryCostRMB = orders.reduce((sum, o) => sum + o.factoryCostRMB, 0);
+        const knownAmount = value => (Number.isFinite(value) ? value : 0);
+        const totalRevenueUSD = orders.reduce((sum, o) => sum + knownAmount(o.orderAmountUSD), 0);
+        const totalRevenueRMB = orders.reduce((sum, o) => sum + knownAmount(o.orderAmountRMB), 0);
+        const totalFactoryCostRMB = orders.reduce((sum, o) => sum + knownAmount(o.factoryCostRMB), 0);
         const totalFactoryPaidRMB = orders.reduce((sum, o) => sum + (o.factoryPaidRMB || 0), 0);
         const totalFactoryUnpaidRMB = totalFactoryCostRMB - totalFactoryPaidRMB;
-        const totalProfitRMB = orders.reduce((sum, o) => sum + o.profitRMB, 0);
-        const totalPaidUSD = orders.reduce((sum, o) => sum + o.paidAmountUSD, 0);
+        const totalProfitRMB = orders.reduce((sum, o) => sum + knownAmount(o.profitRMB), 0);
+        const totalPaidUSD = orders.reduce((sum, o) => sum + knownAmount(o.paidAmountUSD), 0);
         const unpaidAmount = totalRevenueUSD - totalPaidUSD;
         const isHK = this.currentCompanyId === 'CO-GW' || this.currentCompanyId === 'CO-LK';
         const avgProfitRate = isHK
@@ -1708,12 +1709,13 @@ const DB = {
 
         const monthlyStats = {};
         orders.forEach(o => {
-            const month = o.orderDate.substring(0, 7);
+            const month = String(o.orderDate || '').substring(0, 7);
+            if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return;
             if (!monthlyStats[month]) monthlyStats[month] = { revenue: 0, cost: 0, profit: 0, count: 0 };
             const isOrderHK = o.companyId === 'CO-GW' || o.companyId === 'CO-LK';
-            monthlyStats[month].revenue += isOrderHK ? o.orderAmountUSD : o.orderAmountRMB;
-            monthlyStats[month].cost += o.factoryCostRMB;
-            monthlyStats[month].profit += o.profitRMB;
+            monthlyStats[month].revenue += knownAmount(isOrderHK ? o.orderAmountUSD : o.orderAmountRMB);
+            monthlyStats[month].cost += knownAmount(o.factoryCostRMB);
+            monthlyStats[month].profit += knownAmount(o.profitRMB);
             monthlyStats[month].count++;
         });
 

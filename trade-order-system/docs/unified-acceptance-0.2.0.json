@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "version": "0.2.0",
+  "status": "passed",
+  "environmentScope": "test_only",
+  "completedAtUTC": "2026-10-12T12:43:06.323656+00:00",
+  "architecture": {
+    "singleNativeBusinessBackend": true,
+    "gatewayHasBusinessDatabase": false,
+    "nativeSessionAndAccountingReused": true,
+    "siteDatabasesDistinct": true,
+    "erpnextVersion": "16.32.3",
+    "frappeVersion": "16.31.0"
+  },
+  "archive": {
+    "branch": "archive/parallel-systems-v0.1.1",
+    "commit": "287b92407017900a1f58c138af9d522b921ebffe",
+    "olderTagsAndReleasesPreserved": true
+  },
+  "migration": {
+    "sourceSHA256": "931c75b7c003ced61449d39e6cd136dfbef3333cc181ecd660598849a6b7ba0f",
+    "grandwareSourceRecords": {
+      "orders": 21,
+      "customers": 13,
+      "factories": 33
+    },
+    "grandwareActiveRecords": {
+      "orders": 3,
+      "customers": 2,
+      "factories": 30
+    },
+    "grandwareNativeCompanies": 4,
+    "configuredNativeAccounts": 14,
+    "all67FieldsRatesMetasEqual": true,
+    "originalContactStringsPreserved": true,
+    "unknownSourceFactsRemainUnknown": true,
+    "noInventedGrandwareNativePostings": true,
+    "preservedExampleNativeDocuments": 5,
+    "preservedExampleGLRows": 2,
+    "financialFingerprintSHA256": "639c1e429896c8c0a4668bba9e065c8e335c0a71b68b785035c405370bb5f68c"
+  },
+  "tests": {
+    "frontendSuites": 15,
+    "frontendTests": 615,
+    "gatewayTests": 33,
+    "nativeAppTests": 59,
+    "allPassed": true,
+    "lintPassed": true,
+    "versionPassed": true,
+    "actualNativeAPIChecks": 64,
+    "actualFullNativeBusinessChecks": 23,
+    "latestNativeAuditFlowChecks": 10,
+    "differentAccountCASStatuses": [
+      200,
+      409
+    ],
+    "snapshotAndExcelBrowserVerified": true
+  },
+  "gates": {
+    "frozen17SourceMatchesRuntime": true,
+    "distinctSiteDatabases": true,
+    "grandwareAll67RecordsRatesMetadataLossless": true,
+    "original5NativeDocumentsAnd2GLFinancialUnchanged": true,
+    "r5ActualParentChildAndAll3LedgerActorsCorrect": true,
+    "backendOfflineHasNoOldSQLiteFallback": true,
+    "sixAppRestartContentAndDBRedisIdentityStable": true,
+    "eightFullBackupFilesSHAAndPrivateModesVerified": true,
+    "originalArchiveMoveAllFileSHAUnchanged": true,
+    "nativeConsoleFixedHostSiteBoundaryPassed": true,
+    "oldBroadIntegrationAccountDisabledAndSecretRevoked": true,
+    "rootIndependentRealAcceptancePassed": true,
+    "frontendSourceTestsPassed": true,
+    "credentialFilePrivate600": true
+  },
+  "nativeRuntime": {
+    "imageId": "sha256:f627c2d8f15b94aa1b4c3c54805a4d1f9faf600fc7a04fb4273496d69f8fa474",
+    "applicationSourceFiles": 17,
+    "sourceManifestSHA256": "2c80f89e9d0c3f3205a3306167833cea98bdb4668adc8a7f0be6adda85d08bfc",
+    "runtimeMode": "immutable_custom_image"
+  },
+  "finalRevisions": {
+    "example-company": 55,
+    "grandware": 3
+  },
+  "backup": {
+    "completeFiles": 8,
+    "bothSites": true,
+    "hashesAndPrivatePermissionsVerified": true,
+    "independentOriginalBackupRestoreVerified": true
+  },
+  "visual": {
+    "logoAndCSSPreserved": true,
+    "realNativeQuantityUnit": "10 Nos",
+    "actualWorkbenchAndNativeDeskBrowserAccepted": true,
+    "screenshotsAndRawCustomerDataExcludedFromGit": true
+  },
+  "cloud": {
+    "version": "0.1.1",
+    "updated": false,
+    "newPaidResourcesPurchased": false,
+    "localCustomerDatabaseUploaded": false
+  },
+  "boundEvidenceSHA256": {
+    "native-api-checks.json": "646560e751a7a79f4c58d1f0a15daa1e0a5bcb935a284505ab45827f92791879",
+    "native-business-checks-r4.json": "e8ead5487355360947515d009795f97b59e72520a8b53decfc19fed547b39988",
+    "native-audit-flow-r5.json": "ebc60a36c3d0210811ddf8e48a540431bbd8d87e0b3b0f7b2781b4db1a428344",
+    "two-account-concurrent-save.json": "ab5f6b5dd2a0a760b89602c79824eeb46f7cfcf072a0e9db7e488035310f45ab",
+    "grandware-browser-save.json": "db6e906776c49b86726695704ed10588821549f5c89e496bc1dec61884245a7e",
+    "grandware-snapshot-restore.json": "8a12a0446c493675364c89f59c20185eab62aeb793aab0e148586a8711350b76",
+    "browser-excel-check.json": "51f1be10984397a14c085f697743a4ed707a3d79d65a13a6b2d8d9bda0de620e",
+    "native-admin-name-readback.json": "09e03493463a7c5e44e43c307fd47bfe7670faeb2331aec544a5eacdc1e91432",
+    "native-admin-final-readback.json": "390fb8cbc1611e19bd5176074c4c223c4bf1e57b28ec344262ec96b314a21b48",
+    "backend-offline-no-fallback.json": "6926a41860022b5cec0d254afe12266d284e1b400e9558a2eb696b5dc7a3914b",
+    "post-restart-api-readback.json": "7572a8f135dbdfef4ea3a9c87fce39729293d46b9de48b565892fd899c8cc726",
+    "advance-ledger-permission.json": "671e27b140fe7e5bd593e7168eb4c0bac8dd0b42626018f4282878014d0745e5",
+    "final-browser-preview.json": "abb4539adaec27cdb99b3cc5c9f9940b7627f97598b9d7b55f218614fa0ee04d",
+    "python-checks.json": "d3b5f089376dddbec23f372da10798f4bf9a2aff3f57f8f21394b17157ecb11b",
+    "frontend-checks": "17e404c5132e7c9855c7ab54dd514e1c9837763b8141b93c514f53e8627be342",
+    "final-infra": "c110d8262615d3112208074a685d18ecd6f75aa1adbb5abf4d2cc8a2074b4d40"
+  },
+  "remainingProductScope": [
+    "Full spreadsheet cell collaboration editor",
+    "Arbitrary existing database adapter",
+    "Automatic bank reconciliation and full tax workflows",
+    "Subscription billing",
+    "Grandware real SKU and bank/accounting configuration and acceptance",
+    "Additional workbench currencies beyond current USD sales and CNY/USD mapping"
+  ]
+}

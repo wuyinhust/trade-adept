@@ -3,7 +3,7 @@ import { Auth } from './auth.js';
 import { Cloud } from './cloud.js';
 import { DB } from './data.js';
 import { Exchange } from './exchange.js';
-import { BusinessAPIClient } from './api-client.js';
+import { BusinessAPIClient, workspaceDraftKey } from './api-client.js';
 import { escapeHtml, toast } from './utils.js';
 
 const api = new BusinessAPIClient({ canReplaceData: () => !document.querySelector('#modalContainer .modal-overlay') });
@@ -24,15 +24,7 @@ function applySession(session) {
     DB.companies = session.companies || [];
     DB.COMPANY_KEY = `trade_company_${session.user.tenantId}`;
     DB.currentCompanyId = sessionStorage.getItem(`trade_company_${session.user.tenantId}`) || DB.companies[0]?.id;
-    const authorization = encodeURIComponent(
-        JSON.stringify([
-            session.user.role,
-            session.user.scope,
-            session.user.permissions,
-            session.user.visibleCompanyIds
-        ])
-    );
-    DB._BACKUP_KEY = `trade_api_draft_v1:${location.origin}:${session.user.tenantId}:${session.user.id}:${authorization}`;
+    DB._BACKUP_KEY = workspaceDraftKey(session, location.origin);
     DB._cloudReady = false;
     const tenant = session.tenant || {};
     App.workspaceName = tenant.branding?.workspaceName || tenant.name || 'Tradept';
@@ -67,35 +59,15 @@ Auth.configureProvider({
 
 DB._businessAPI = api;
 DB._preserveImportedValues = true;
-Cloud.DEFAULT_ENV_ID = Cloud.envId = 'business-api';
-Cloud.CLOUD_FN_URL = Cloud.CLOUD_SECRET = '';
-Cloud._saveQueue = [];
-Cloud.loadConfig = () => null;
-Cloud.saveConfig = () => false;
-Cloud.getConfig = () => ({ envId: 'business-api', region: 'local', cloudFnUrl: '', cloudSecret: '' });
-Cloud.isReady = () => api.isReady();
-Cloud.init = async () => ({ ok: api.isReady(), uid: Auth.currentUser?.id, loginType: 'server-session' });
-Cloud.loadData = options => api.loadData(options);
-Cloud.saveData = (...args) => api.saveData(...args);
-Cloud.checkRemoteVersion = () => api.checkRemoteVersion();
-Cloud.getLastMeta = () => api.getLastMeta();
-Cloud.testPermission = async () => ({ ok: api.isReady() });
-Cloud._drainQueue = () => api.drainQueue();
-Cloud.resetSession = () => {};
-Cloud._cleanupOldDocs = async () => {};
-Cloud.getStatus = () => ({ sdkLoaded: true, authDone: api.isReady(), dbReady: DB.CLOUD_READY });
-Cloud._tryCustomLogin = async () => ({ ok: false, skipped: true });
+Cloud.configure(api, () => Auth.currentUser);
 Exchange.startAutoRefresh = () => Exchange.stopAutoRefresh();
 App._pageModulePaths.settings = './workspace-settings.js';
-
-// Business edits use the API. The legacy anonymous CloudBase beacon is never used.
-navigator.sendBeacon = () => false;
 
 const originalCloudStatus = App.updateCloudStatus;
 App.updateCloudStatus = function () {
     originalCloudStatus.call(this);
     const text = document.getElementById('cloudStatusText');
-    if (text) text.textContent = '数据库工作区 · 测试环境';
+    if (text) text.textContent = DB._cloudReady ? '业务数据库 · 测试环境' : '业务服务未连接 · 草稿保留';
 };
 
 const conflictBar = document.createElement('div');

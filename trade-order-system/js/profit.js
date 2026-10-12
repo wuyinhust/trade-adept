@@ -27,6 +27,7 @@ const Profit = {
         if (!currencies.includes(this.reportCurrency)) this.reportCurrency = companyCurrency;
         const orders = financials
             .filter(item => item.metrics.currency === this.reportCurrency)
+            .filter(item => !item.metrics.incompleteHistory)
             .map(({ order, metrics }) => ({
                 ...order,
                 // Report copies only: never persist normalized legacy display fields.
@@ -57,7 +58,10 @@ const Profit = {
             aggregate(byCategory, order.productCategory || '未分类', order);
             aggregate(byMonth, String(order.orderDate || '').slice(0, 7) || '未填日期', order);
         });
-        return { orders, byCustomer, byCategory, byMonth, currencies, currency: this.reportCurrency };
+        const incompleteCount = financials.filter(
+            item => item.metrics.currency === this.reportCurrency && item.metrics.incompleteHistory
+        ).length;
+        return { orders, byCustomer, byCategory, byMonth, currencies, currency: this.reportCurrency, incompleteCount };
     },
 
     render(container) {
@@ -86,6 +90,7 @@ const Profit = {
             </div>
 
             <p class="text-sm text-gray mb-4">金额按所选结算币种分别汇总，其他币种不会合并相加。利润保留订单已保存的核算结果；成本按订单公式版本显示。</p>
+            ${analysis.incompleteCount ? `<p class="text-sm text-gray mb-4">${analysis.incompleteCount} 笔历史参考的核算数据不完整，未纳入本页汇总；原始记录可在订单页查询。</p>` : ''}
 
             <div class="stats-grid">
                 <div class="stat-card">
