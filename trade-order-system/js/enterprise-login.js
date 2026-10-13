@@ -48,6 +48,7 @@ export function mountEnterpriseLogin({ onPasswordSetup = () => {} } = {}) {
 
     let setupRequired = false;
     let demoMode = false;
+    let passwordRecoveryAvailable = true;
     function show(mode, key = '') {
         login.hidden = true;
         button.hidden = true;
@@ -73,7 +74,7 @@ export function mountEnterpriseLogin({ onPasswordSetup = () => {} } = {}) {
             panel.hidden = true;
             delete panel.dataset.mode;
             login.hidden = false;
-            button.hidden = setupRequired || demoMode;
+            button.hidden = setupRequired || demoMode || !passwordRecoveryAvailable;
         };
         document.getElementById('enterpriseAuthForm').onsubmit = async event => {
             event.preventDefault();
@@ -129,6 +130,7 @@ export function mountEnterpriseLogin({ onPasswordSetup = () => {} } = {}) {
                 const config = await response.json();
                 setupRequired = config.setupRequired === true;
                 demoMode = config.demoMode === true;
+                passwordRecoveryAvailable = config.passwordRecoveryAvailable !== false;
                 login.dataset.demoMode = String(demoMode);
                 document.getElementById('demoTenantField')?.remove();
                 if (demoMode) {
@@ -148,18 +150,23 @@ export function mountEnterpriseLogin({ onPasswordSetup = () => {} } = {}) {
                     }
                     login.prepend(field);
                 }
-                email.type = setupRequired || demoMode ? 'text' : 'email';
+                const accountLogin = config.mode === 'accounts' || config.emailOnly === false;
+                email.type = setupRequired || demoMode || accountLogin ? 'text' : 'email';
                 email.placeholder = demoMode
                     ? '已有演示账号'
                     : setupRequired
                       ? '部署时设置的管理员账号'
-                      : 'name@company.com';
+                      : accountLogin
+                        ? (config.mode === 'accounts' ? '管理员配置的登录账号' : '账号或邮箱')
+                        : 'name@company.com';
                 document.querySelector('label[for="loginUsername"]').textContent = demoMode
                     ? '账号'
                     : setupRequired
                       ? '初始管理员账号'
-                      : '企业邮箱';
-                button.hidden = setupRequired || demoMode || !panel.hidden;
+                      : accountLogin
+                        ? (config.mode === 'accounts' ? '账号' : '账号或邮箱')
+                        : '企业邮箱';
+                button.hidden = setupRequired || demoMode || !passwordRecoveryAvailable || !panel.hidden;
             })
             .catch(error => {
                 const box = document.getElementById('loginError');

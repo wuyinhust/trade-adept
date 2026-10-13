@@ -216,4 +216,44 @@ describe('administrator experience', () => {
         expect(document.querySelector('[data-admin-reload]')).not.toBeNull();
         expect(toast).toHaveBeenLastCalledWith('配置已保存，读取最新状态失败', 'warning');
     });
+    test('account members can omit email and receive administrator-configured passwords', () => {
+        showModal.mockImplementationOnce((_title, body, options) => {
+            document.body.insertAdjacentHTML('beforeend', body + options.footer);
+        });
+        AdminCenter.state = state();
+        AdminCenter.state.loginPolicy = { mode: 'accounts', enabled: false, emailVerificationRequired: false };
+        AdminCenter.open_member();
+        expect(document.querySelector('[name="email"]').required).toBe(false);
+        expect(document.querySelector('[name="username"]').required).toBe(true);
+        expect(document.querySelector('[name="temporaryPassword"]').required).toBe(true);
+        expect(document.querySelector('[name="sendInvitation"]')).toBeNull();
+    });
+
+    test('mail members without verification need email and a configured password, not an invitation', () => {
+        showModal.mockImplementationOnce((_title, body, options) => {
+            document.body.insertAdjacentHTML('beforeend', body + options.footer);
+        });
+        AdminCenter.state = state();
+        AdminCenter.state.loginPolicy = { mode: 'all', enabled: true, emailVerificationRequired: false };
+        AdminCenter.open_member();
+        expect(document.querySelector('[name="email"]').required).toBe(true);
+        expect(document.querySelector('[name="temporaryPassword"]').required).toBe(true);
+        expect(document.querySelector('[name="sendInvitation"]')).toBeNull();
+    });
+
+    test('business preparation can be deferred without opening an SMTP form', async () => {
+        showModal.mockImplementationOnce((_title, body, options) => {
+            document.body.insertAdjacentHTML('beforeend', body + options.footer);
+        });
+        AdminCenter.state = state();
+        Onboarding.target = document.getElementById('pageContent');
+        Onboarding.open('business');
+        expect(document.querySelector('#onboardingMailLater')).not.toBeNull();
+        document.querySelector('#onboardingMailLater').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(window.Workspace.api.adminUpdate).toHaveBeenCalledWith(expect.objectContaining({
+            resource: 'onboarding', value: expect.objectContaining({ businessPrepared: true })
+        }));
+    });
+
 });

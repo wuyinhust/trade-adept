@@ -280,9 +280,18 @@ class FrappeGateway:
             raise APIError(503, "PRIVATE_SITE_REQUIRED", "请由部署管理员配置当前企业的独立登录入口")
         value, _ = self._request(self.private_tenant, "/api/method/tradept_core.enterprise_login.login_config", "GET")
         result = value.get("message") if isinstance(value, dict) else None
-        if not isinstance(result, dict) or type(result.get("setupRequired")) is not bool or type(result.get("emailOnly")) is not bool or result["emailOnly"] == result["setupRequired"]:
+        if not isinstance(result, dict) or type(result.get("setupRequired")) is not bool or type(result.get("emailOnly")) is not bool:
             raise APIError(503, "PRIVATE_LOGIN_NOT_READY", "企业登录服务尚未配置")
-        return {"emailOnly": result["emailOnly"], "setupRequired": result["setupRequired"], "invitationOnly": True, "brand": "Tradept"}
+        ready = result.get("loginPolicyReady") is True and result.get("mode") in ("accounts", "all", "domains", "addresses")
+        if result["emailOnly"] == result["setupRequired"] and (result["setupRequired"] or not ready):
+            raise APIError(503, "PRIVATE_LOGIN_NOT_READY", "企业登录服务尚未配置")
+        public = {"emailOnly": result["emailOnly"], "setupRequired": result["setupRequired"], "invitationOnly": True, "brand": "Tradept"}
+        if result.get("mode") in ("accounts", "all", "domains", "addresses"):
+            public["mode"] = result["mode"]
+        for key in ("loginPolicyReady", "emailVerificationRequired", "passwordRecoveryAvailable"):
+            if type(result.get(key)) is bool:
+                public[key] = result[key]
+        return public
 
     def public_auth(self, action, body):
         if self.demo_mode:
@@ -309,10 +318,15 @@ class FrappeGateway:
             if tenant not in (None, "", self.private_tenant):
                 raise APIError(401, "LOGIN_FAILED", "邮箱或密码无效")
             tenant = self.private_tenant
-            setup = self.public_login_config()["setupRequired"]
-            if not setup and (not isinstance(username, str) or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", username.strip())):
+            config = self.public_login_config()
+            setup = config["setupRequired"]
+            email_only = config.get("emailOnly", not setup)
+            if email_only and (not isinstance(username, str) or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", username.strip())):
                 raise APIError(401, "EMAIL_REQUIRED", "请使用企业邮箱登录")
-            username = username.strip().lower() if isinstance(username, str) else username
+            if isinstance(username, str):
+                username = username.strip()
+                if "@" in username:
+                    username = username.lower()
         self._site(tenant)
         if not isinstance(username, str) or not 1 <= len(username) <= 200 or not isinstance(password, str) or not 1 <= len(password) <= 1000:
             raise APIError(401, "LOGIN_FAILED", "Invalid workspace or credentials")
@@ -329,8 +343,8 @@ class FrappeGateway:
         if not sid or not NATIVE_SID.fullmatch(sid.value):
             raise APIError(401, "LOGIN_FAILED", "Invalid workspace or credentials")
         session = self._dispatch(tenant, sid.value, "session")["result"]
-        if self.private_tenant and (not isinstance(session, dict) or session.get("emailLoginEnabled") is not True and session.get("loginSetupRequired") is not True):
-            raise APIError(503, "PRIVATE_LOGIN_NOT_READY", "企业邮箱登录尚未初始化，请联系部署管理员")
+        if self.private_tenant and (not isinstance(session, dict) or not any(session.get(key) is True for key in ("emailLoginEnabled", "loginSetupRequired", "loginPolicyReady"))):
+            raise APIError(503, "PRIVATE_LOGIN_NOT_READY", "企业登录方式尚未初始化，请联系部署管理员")
         if not isinstance(session, dict) or not isinstance(session.get("user"), dict):
             raise APIError(403, "WORKSPACE_ACCESS_REQUIRED", "This account is not configured for the workspace")
         return self._sign(tenant, sid.value), {"ok": True, "user": session["user"]}

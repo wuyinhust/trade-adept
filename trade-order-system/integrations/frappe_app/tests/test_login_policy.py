@@ -34,6 +34,26 @@ class EmailPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             email_address('Alice <a@company.com>')
 
+    def test_account_login_and_no_smtp_email_modes_do_not_require_an_origin(self):
+        account = normalize_policy({'mode': 'accounts', 'emailVerificationRequired': False})
+        self.assertFalse(account['enabled'])
+        self.assertFalse(account['emailVerificationRequired'])
+        self.assertEqual(account['publicOrigin'], '')
+        for mode, values in [('all', {}), ('domains', {'domains': ['company.com']}),
+                             ('addresses', {'addresses': ['a@company.com']})]:
+            with self.subTest(mode=mode):
+                policy = normalize_policy({'mode': mode, 'emailVerificationRequired': False, **values})
+                self.assertTrue(policy['enabled'])
+                self.assertTrue(permits(policy, 'a@company.com'))
+                if mode != 'all':
+                    self.assertFalse(permits(policy, 'outside@other.com'))
+
+    def test_email_verification_requires_https_and_a_boolean_choice(self):
+        for policy in [{'mode': 'all', 'emailVerificationRequired': True},
+                       {'mode': 'all', 'emailVerificationRequired': 'false'}]:
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                normalize_policy(policy)
+
 
 if __name__ == '__main__':
     unittest.main()

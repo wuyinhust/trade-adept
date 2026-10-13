@@ -305,6 +305,32 @@ class SchemaTests(unittest.TestCase):
 
 
 class NativeContractTests(unittest.TestCase):
+    def test_account_policy_initialization_keeps_the_existing_native_identity(self):
+        from tradept_core import login_setup
+        from tradept_core.login_policy import normalize_policy
+        original = {'id': 'grandware', 'companies': [{'id': 'CO-GR'}],
+                    'loginSetup': {'bootstrapUser': 'setup@bootstrap.invalid'}, 'loginPolicy': {'enabled': False}}
+        cfg = copy.deepcopy(original)
+        actor = {'id': 'enterprise-admin', 'nativeUser': 'setup@bootstrap.invalid'}
+        candidate = normalize_policy({'mode': 'accounts', 'emailVerificationRequired': False})
+        with patch.object(self.frappe, 'clear_cache', create=True), patch.object(self.login, '_queue_link') as send:
+            result = login_setup.configure(cfg, actor, candidate, {})
+        self.assertTrue(result['ready'])
+        self.assertFalse(result['setupRequired'])
+        self.assertNotIn('loginSetup', cfg)
+        self.assertEqual(cfg['companies'], original['companies'])
+        self.assertEqual(cfg['loginPolicy']['accountAdministratorId'], actor['id'])
+        self.frappe.db.set_value.assert_not_called()
+        send.assert_not_called()
+
+    def test_no_mail_verification_still_requires_a_configured_enabled_member(self):
+        policy = {'enabled': True, 'mode': 'all', 'emailVerificationRequired': False}
+        with patch.object(self.login, 'active_policy', return_value=policy), patch.object(self.login, '_native_operator', return_value=False), patch.object(self.login, '_member', return_value=True) as member, patch.object(self.frappe, 'AuthenticationError', ValueError, create=True):
+            self.login.require_access('member@company.com')
+            member.return_value = False
+            with self.assertRaises(ValueError):
+                self.login.require_access('member@company.com')
+
     @classmethod
     def setUpClass(cls):
         cls.frappe = fake_frappe()
@@ -659,6 +685,35 @@ class NativeContractTests(unittest.TestCase):
         self.assertEqual(parent.is_group, 1)
         self.assertEqual(child.parent_department, parent.name)
         self.assertEqual(changed["nativeNames"], {"C1": child.name})
+
+    def test_legacy_department_state_preserves_mapping_ids_for_editing(self):
+        profiles = {"Manager": {"id": "Manager"}, "Member": {"id": "Member"}}
+        actor = {"id": "Admin", "tenantId": "tenant", "role": "admin"}
+        for collection in ("teams", "departments"):
+            with self.subTest(collection=collection):
+                original = {
+                    "TEAM-A": {"name": "A组", "visibleCompanyIds": ["C1"], "managerId": "Manager", "memberIds": ["Member"], "nativeNames": {"C1": "Sales - GW"}},
+                    "TEAM-B": {"id": "stale-id", "name": "B组", "visibleCompanyIds": ["C2"]},
+                    "TEAM-C": {"id": "TEAM-C", "name": "C组", "visibleCompanyIds": ["C1"]},
+                }
+                cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES), "companies": [{"id": "C1"}, {"id": "C2"}], collection: copy.deepcopy(original)}
+                before = copy.deepcopy(cfg)
+                with patch.object(self.administrator, "_configured_profiles", return_value=profiles), \
+                        patch.object(self.administrator, "_company_details", side_effect=copy.deepcopy), \
+                        patch.object(self.administrator, "_finance_options", return_value={}), \
+                        patch.object(self.administrator.repo, "meta", return_value={}), \
+                        patch.object(self.frappe.db, "exists", return_value=False):
+                    public = self.administrator.state(Row(revision=1), cfg, actor, Rules(cfg, {}), profiles)["departments"]
+                    self.assertEqual(cfg, before)
+                    self.assertEqual(public, [{**item, "id": key} for key, item in original.items()])
+                    edited = self.administrator._department(cfg, {**public[0], "create": not bool(public[0].get("id"))})
+                    self.assertEqual(edited["id"], "TEAM-A")
+                    for field in ("name", "visibleCompanyIds", "managerId", "memberIds", "nativeNames"):
+                        self.assertEqual(edited[field], original["TEAM-A"][field])
+                    self.assertEqual(set(cfg["departments"]), set(original))
+                    with self.assertRaises(APIError) as caught:
+                        self.administrator._department(cfg, {**public[0], "create": True})
+                    self.assertEqual(caught.exception.code, "ADMIN_DUPLICATE")
 
     def test_email_uses_native_server_login_and_imap_fields(self):
         class Doc(Row):

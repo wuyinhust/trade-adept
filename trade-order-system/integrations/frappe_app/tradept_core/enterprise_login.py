@@ -11,7 +11,7 @@ import frappe
 from frappe.rate_limiter import rate_limit
 from frappe.utils import now_datetime, get_datetime
 
-from .login_policy import email_address, normalize_policy, permits
+from .login_policy import email_address, normalize_policy, permits, verification_required
 from .schema import loads
 
 VERIFIED = 'custom_tradept_email_verified'
@@ -28,6 +28,18 @@ def policy():
 def active_policy():
     value = policy()
     return value if value.get('enabled') else None
+
+
+def smtp_ready():
+    return bool(frappe.db.exists('Email Account', {'enable_outgoing': 1, 'default_outgoing': 1}))
+
+
+def _account_administrator(value, user):
+    member_id = value.get('accountAdministratorId')
+    if not member_id or not _member(user):
+        return False
+    profile = loads(frappe.db.get_value('Trade User Profile', {'user': user}, 'profile'), {})
+    return profile.get('id') == member_id
 
 
 def _member(email):
@@ -55,15 +67,20 @@ def require_access(user):
         cfg = login_setup.configuration()
         if login_setup.pending(cfg) and not login_setup.is_bootstrap(cfg, user):
             raise frappe.AuthenticationError('请使用初始管理员账号完成企业配置')
+        if (login_setup.pending(cfg) or cfg.get('loginPolicy', {}).get('mode') == 'accounts') and not _member(user):
+            raise frappe.AuthenticationError('请使用企业已配置且启用的账号')
+        return
+    if _account_administrator(value, user) and not verification_required(value):
         return
     if (not permits(value, user) or not _member(user)
-            or not frappe.db.get_value('User', user, VERIFIED)
-            or frappe.db.get_value('User', user, CHANGE)):
+            or verification_required(value) and (not frappe.db.get_value('User', user, VERIFIED)
+                                                 or frappe.db.get_value('User', user, CHANGE))):
         raise frappe.AuthenticationError('请使用获准的企业邮箱，并先完成邮件激活或密码设置')
 
 
 def before_login(login_manager=None):
-    if not active_policy():
+    value = active_policy()
+    if not value:
         return
     user = frappe.local.form_dict.get('usr')
     # Administrator is a native recovery operator, never a workbench account.
@@ -71,11 +88,15 @@ def before_login(login_manager=None):
         return
     if isinstance(user, str) and _native_operator(user.strip().lower()):
         return
+    if isinstance(user, str) and value.get('accountAdministratorId') and not verification_required(value):
+        native_user = frappe.db.get_value('User', {'username': user.strip()}, 'name') or user.strip().lower()
+        if _account_administrator(value, native_user):
+            return
     try:
         normalized = email_address(user)
     except ValueError:
         raise frappe.AuthenticationError('请使用企业邮箱登录') from None
-    if not permits(policy(), normalized):
+    if not permits(value, normalized):
         raise frappe.AuthenticationError('邮箱或密码无效')
     frappe.local.form_dict.usr = normalized
 
@@ -93,7 +114,12 @@ def check_session():
 def login_config():
     from . import login_setup
     cfg = login_setup.configuration()
-    return {'emailOnly': not login_setup.pending(cfg), 'setupRequired': login_setup.pending(cfg),
+    value = cfg.get('loginPolicy', {})
+    email_login = bool(value.get('enabled'))
+    return {'emailOnly': email_login and not bool(value.get('accountAdministratorId')), 'setupRequired': login_setup.pending(cfg),
+            'mode': value.get('mode', 'accounts'), 'loginPolicyReady': login_setup.policy_ready(cfg),
+            'emailVerificationRequired': bool(email_login and verification_required(value)),
+            'passwordRecoveryAvailable': bool(email_login and value.get('publicOrigin') and smtp_ready()),
             'invitationOnly': True, 'brand': 'Tradept'}
 
 
@@ -129,7 +155,7 @@ def forgot_password(email):
         email = email_address(email)
     except ValueError:
         return {'ok': True, 'message': GENERIC}
-    if value and permits(value, email) and _member(email):
+    if value and value.get('publicOrigin') and smtp_ready() and permits(value, email) and _member(email):
         # Uniform response prevents mailbox membership enumeration. Failures are
         # visible in the native error log, never expose an invitation/reset key.
         try:
@@ -201,16 +227,34 @@ def configure(cfg, actor, value):
     except ValueError as error:
         raise APIError(400, 'LOGIN_POLICY_INVALID', str(error)) from None
     from . import login_setup
+    if verification_required(candidate) and not smtp_ready():
+        raise APIError(409, 'LOGIN_MAIL_REQUIRED', '请先配置默认发信邮箱，或关闭邮箱验证后保存')
     if login_setup.pending(cfg):
         return login_setup.configure(cfg, actor, candidate, value)
-    if not permits(candidate, actor['nativeUser']):
+    retained_administrator = cfg.get('loginPolicy', {}).get('accountAdministratorId') == actor.get('id')
+    if retained_administrator and verification_required(candidate):
+        cfg['loginSetup'] = {'bootstrapUser': actor['nativeUser']}
+        cfg['loginPolicy']['enabled'] = False
+        return login_setup.configure(cfg, actor, candidate, value)
+    if candidate['enabled'] and not retained_administrator and not permits(candidate, actor['nativeUser']):
         raise APIError(409, 'ADMIN_EMAIL_REQUIRED', '新规则必须允许当前管理员的真实邮箱')
-    if not frappe.db.get_value('User', actor['nativeUser'], VERIFIED):
+    if verification_required(candidate) and not frappe.db.get_value('User', actor['nativeUser'], VERIFIED):
         raise APIError(409, 'ADMIN_VERIFICATION_REQUIRED', '请先通过部署初始化邀请验证管理员邮箱')
+    if retained_administrator:
+        email = value.get('administratorEmail', cfg.get('loginPolicy', {}).get('administratorEmail', '')) or ''
+        if email:
+            try:
+                email = email_address(email)
+            except ValueError as error:
+                raise APIError(400, 'INVALID_ADMIN_EMAIL', str(error)) from None
+            if candidate['enabled'] and not permits(candidate, email):
+                raise APIError(400, 'ADMIN_EMAIL_NOT_ALLOWED', '管理员邮箱必须在允许范围内')
+        candidate.update(accountAdministratorId=actor['id'], administratorEmail=email)
     cfg['loginPolicy'] = candidate
     frappe.db.set_single_value('Website Settings', 'disable_signup', 1)
-    frappe.db.set_single_value('System Settings', 'allow_login_using_user_name', 0)
-    return {'id': 'login-policy'}
+    frappe.db.set_single_value('System Settings', 'allow_login_using_user_name', int(not candidate['enabled'] or retained_administrator))
+    frappe.clear_cache(doctype='System Settings')
+    return {'id': 'login-policy', 'activationRequired': False, 'setupRequired': False, 'ready': True}
 
 
 def prepare_member(cfg, value, existing):
@@ -225,14 +269,15 @@ def prepare_member(cfg, value, existing):
     value['email'] = email
     # Preserve legacy native username internally; it is never accepted at login.
     value['username'] = (existing or {}).get('username') or email
-    value.pop('temporaryPassword', None)
-    if not existing:
-        value['temporaryPassword'] = secrets.token_urlsafe(36)
+    if verification_required(cfg['loginPolicy']):
+        value.pop('temporaryPassword', None)
+        if not existing:
+            value['temporaryPassword'] = secrets.token_urlsafe(36)
     return value
 
 
 def member_saved(cfg, user, is_new, value):
-    if cfg.get('loginPolicy', {}).get('enabled') and (is_new or value.get('sendInvitation')) and not value.get('disabled'):
+    if cfg.get('loginPolicy', {}).get('enabled') and verification_required(cfg['loginPolicy']) and (is_new or value.get('sendInvitation')) and not value.get('disabled'):
         return _queue_link(user, cfg['loginPolicy'], invitation=True)
     return {}
 

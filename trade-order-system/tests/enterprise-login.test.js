@@ -82,3 +82,25 @@ test('explicit demo configuration requires a tenant choice and keeps username lo
     expect(document.getElementById('loginUsername').type).toBe('text');
     expect(document.getElementById('forgotPassword').hidden).toBe(true);
 });
+
+test('completed account onboarding keeps username login and hides unavailable email recovery', async () => {
+    fetch.mockResolvedValue({ ok: true, json: async () => ({
+        setupRequired: false, mode: 'accounts', emailOnly: false, passwordRecoveryAvailable: false
+    }) });
+    mountEnterpriseLogin();
+    await tick();
+    expect(document.getElementById('loginUsername').type).toBe('text');
+    expect(document.querySelector('label[for="loginUsername"]').textContent).toBe('账号');
+    expect(document.getElementById('forgotPassword').hidden).toBe(true);
+});
+
+test('optional email onboarding retains the administrators account login without claiming recovery', async () => {
+    fetch.mockResolvedValue({ ok: true, json: async () => ({
+        mode: 'all', emailOnly: false, passwordRecoveryAvailable: false
+    }) });
+    mountEnterpriseLogin();
+    await tick();
+    expect(document.getElementById('loginUsername').type).toBe('text');
+    expect(document.querySelector('label[for="loginUsername"]').textContent).toBe('账号或邮箱');
+    expect(document.getElementById('forgotPassword').hidden).toBe(true);
+});

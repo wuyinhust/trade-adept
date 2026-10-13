@@ -68,3 +68,34 @@ class PrivateLoginTest(unittest.TestCase):
     def test_invalid_public_mode_fails_closed(self):
         with patch.object(self.gateway, '_request', return_value=({'message': {'emailOnly': False, 'setupRequired': False}}, Message())), self.assertRaises(APIError):
             self.gateway.public_login_config()
+
+    def test_configured_account_login_requires_native_ready_signal(self):
+        native = {'emailOnly': False, 'setupRequired': False, 'mode': 'accounts',
+                  'loginPolicyReady': True, 'emailVerificationRequired': False,
+                  'passwordRecoveryAvailable': False,
+                  'bootstrapUser': 'private-identity'}
+        with patch.object(self.gateway, '_request', return_value=({'message': native}, Message())):
+            public = self.gateway.public_login_config()
+        self.assertEqual(public['mode'], 'accounts')
+        self.assertTrue(public['loginPolicyReady'])
+        self.assertFalse(public['emailVerificationRequired'])
+        self.assertFalse(public['passwordRecoveryAvailable'])
+        self.assertNotIn('bootstrapUser', public)
+        for changes in ({'loginPolicyReady': False}, {'mode': 'unconfigured'}, {'setupRequired': True, 'emailOnly': True}):
+            with self.subTest(changes=changes), patch.object(self.gateway, '_request', return_value=({'message': {**native, **changes}}, Message())), self.assertRaises(APIError):
+                self.gateway.public_login_config()
+
+    def test_account_login_after_initialization_still_checks_native_session(self):
+        headers = Message()
+        headers.add_header('Set-Cookie', 'sid=' + 'a' * 64)
+        native = {'user': {'tenantId': 'enterprise'}, 'emailLoginEnabled': False,
+                  'loginSetupRequired': False, 'loginPolicyReady': True}
+        config = {'setupRequired': False, 'emailOnly': False, 'mode': 'accounts', 'loginPolicyReady': True}
+        with patch.object(self.gateway, 'public_login_config', return_value=config), patch.object(self.gateway, '_request', return_value=({}, headers)) as request, patch.object(self.gateway, '_dispatch', return_value={'result': native}) as dispatch:
+            token, result = self.gateway.login(None, 'initial-admin', 'private-password')
+            self.assertTrue(result['ok'])
+            self.assertEqual(self.gateway.actor(token)['tenant'], 'enterprise')
+            self.assertEqual(request.call_args.args[3]['usr'], 'initial-admin')
+            dispatch.return_value = {'result': {**native, 'loginPolicyReady': False}}
+            with self.assertRaises(APIError):
+                self.gateway.login(None, 'initial-admin', 'private-password')

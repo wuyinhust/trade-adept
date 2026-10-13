@@ -23,17 +23,24 @@ def domain_name(value):
 
 
 def normalize_policy(value):
-    if not isinstance(value, dict) or value.get('mode') not in ('domains', 'addresses', 'all'):
-        raise ValueError("请选择域名白名单、邮箱白名单或所有邮箱")
-    result = {'enabled': True, 'mode': value['mode']}
+    if not isinstance(value, dict) or value.get('mode') not in ('accounts', 'domains', 'addresses', 'all'):
+        raise ValueError("请选择账号登录、域名白名单、邮箱白名单或所有邮箱")
+    verification = value.get('emailVerificationRequired', True)
+    if type(verification) is not bool:
+        raise ValueError("邮箱验证设置必须是布尔值")
+    result = {'enabled': value['mode'] != 'accounts', 'mode': value['mode'], 'configured': True,
+              'emailVerificationRequired': verification if value['mode'] != 'accounts' else False}
     for field, validate in (('domains', domain_name), ('addresses', email_address)):
         values = value.get(field, [])
         if not isinstance(values, list) or len(values) > 1000:
             raise ValueError("邮箱白名单必须是列表，最多 1000 项")
         result[field] = sorted(set(validate(item) for item in values))
-    if result['mode'] != 'all' and not result[result['mode']]:
+    if result['mode'] in ('domains', 'addresses') and not result[result['mode']]:
         raise ValueError("所选白名单不能为空")
     origin = value.get('publicOrigin', '')
+    if not origin and not result['emailVerificationRequired']:
+        result['publicOrigin'] = ''
+        return result
     if not isinstance(origin, str):
         raise ValueError("请配置企业 HTTPS 登录域名")
     parsed = urlsplit(origin)
@@ -43,6 +50,10 @@ def normalize_policy(value):
     domain_name(parsed.hostname)
     result['publicOrigin'] = 'https://' + parsed.hostname
     return result
+
+
+def verification_required(policy):
+    return policy.get('mode') != 'accounts' and policy.get('emailVerificationRequired', True)
 
 
 def permits(policy, email):

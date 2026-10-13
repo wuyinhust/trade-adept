@@ -12,6 +12,11 @@ def pending(cfg):
     return bool(cfg.get('loginSetup', {}).get('bootstrapUser')) and not cfg.get('loginPolicy', {}).get('enabled')
 
 
+def policy_ready(cfg):
+    value = cfg.get('loginPolicy', {})
+    return not pending(cfg) and bool(value.get('configured') or value.get('enabled'))
+
+
 def configuration():
     if not frappe.db.exists('Trade Workspace', 'workspace'):
         return {}
@@ -30,13 +35,33 @@ def guard(cfg, actor, action, supplied):
     allowed = {'session', 'context', 'data', 'meta', 'backend_status', 'admin_state', 'admin_update'}
     resources = {'enterprise', 'company', 'department', 'email', 'login-policy', 'onboarding', 'catalog_template'}
     if action not in allowed or (action == 'admin_update' and supplied.get('resource') not in resources):
-        raise APIError(403, 'SETUP_REQUIRED', '请先完成企业邮箱初始化，再添加成员或处理业务')
+        raise APIError(403, 'SETUP_REQUIRED', '请先选择企业登录方式，再添加成员或处理业务')
 
 
 def configure(cfg, actor, candidate, value):
     from .enterprise_login import _queue_link
+    from .login_policy import verification_required
     if not is_bootstrap(cfg, actor['nativeUser']):
-        raise APIError(403, 'SETUP_ADMIN_REQUIRED', '仅初始管理员可以完成邮箱初始化')
+        raise APIError(403, 'SETUP_ADMIN_REQUIRED', '仅初始管理员可以完成登录初始化')
+    if not verification_required(candidate):
+        email = value.get('administratorEmail') or ''
+        if email:
+            try:
+                email = email_address(email)
+            except ValueError as error:
+                raise APIError(400, 'INVALID_ADMIN_EMAIL', str(error)) from None
+            if candidate['enabled'] and not permits(candidate, email):
+                raise APIError(400, 'ADMIN_EMAIL_NOT_ALLOWED', '管理员邮箱必须在允许范围内')
+        previous = cfg['loginSetup'].get('pendingUser')
+        if previous:
+            frappe.db.set_value('User', previous, {'reset_password_key': '', 'last_reset_password_key_generated_on': None}, update_modified=False)
+        # Keep the same native User, password, profile and company grants.
+        cfg['loginPolicy'] = {**candidate, 'administratorEmail': email, 'accountAdministratorId': actor['id']}
+        cfg.pop('loginSetup')
+        frappe.db.set_single_value('Website Settings', 'disable_signup', 1)
+        frappe.db.set_single_value('System Settings', 'allow_login_using_user_name', 1)
+        frappe.clear_cache(doctype='System Settings')
+        return {'id': 'login-policy', 'activationRequired': False, 'setupRequired': False, 'ready': True}
     try:
         email = email_address(value.get('administratorEmail'))
     except ValueError as error:

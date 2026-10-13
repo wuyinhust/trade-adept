@@ -117,8 +117,8 @@ const steps = [
     ['company', '建立公司', '建立至少一个实际经营主体'],
     ['organization', '组织与权限', '确认角色并建立部门'],
     ['members', '添加成员', '为团队分配岗位和公司范围'],
-    ['business', '业务准备', '配置邮箱，其他资料可稍后补充'],
-    ['login', '邮箱登录', '填写私有域名、管理员邮箱和白名单；SMTP 就绪后验证邮箱'],
+    ['business', '业务准备', '邮箱与通知可稍后配置'],
+    ['login', '登录方式', '选择账号或邮箱登录；邮件验证可选'],
     ['finish', '开始使用', '核对必需配置并进入工作台']
 ];
 
@@ -507,10 +507,11 @@ const AdminCenter = {
     },
 
     open_member(item = {}) {
-        const emailLogin = this.state.loginPolicy?.enabled === true;
+        const emailLogin = this.state.loginPolicy?.mode !== 'accounts' && this.state.loginPolicy?.enabled === true;
+        const invitation = emailLogin && this.state.loginPolicy?.emailVerificationRequired !== false;
         formModal(
             item.id ? '编辑成员' : '添加成员',
-            `<div class="admin-form-grid"><label class="form-group"><span class="form-label">成员编号</span><input class="form-input" name="id" required ${item.id ? 'readonly' : ''} value="${escapeHtml(item.id || '')}"></label><label class="form-group"><span class="form-label">姓名</span><input class="form-input" name="name" required value="${escapeHtml(item.name || '')}"></label><label class="form-group"><span class="form-label">登录邮箱</span><input class="form-input" type="email" name="email" required ${item.id ? 'readonly' : ''} value="${escapeHtml(item.email || '')}"></label>${emailLogin ? '' : `<label class="form-group"><span class="form-label">登录名</span><input class="form-input" name="username" required value="${escapeHtml(item.username || '')}"></label>`}<label class="form-group"><span class="form-label">角色</span><select class="form-select" name="role" required>${optionList(this.state.roles, item.role)}</select></label><label class="form-group"><span class="form-label">部门</span><select class="form-select" name="departmentId">${optionList(this.state.departments, item.departmentId || item.teamId, '暂不分配')}</select></label>${emailLogin ? `<label class="form-group admin-switch"><input type="checkbox" name="sendInvitation" ${item.id ? '' : 'checked disabled'}> <span>${item.id ? '重发激活 / 改密邮件（撤销现有会话）' : '发送邀请，由成员验证邮箱并设置密码'}</span></label>` : `<label class="form-group"><span class="form-label">${item.id ? '重置临时密码（可留空）' : '临时密码（至少 12 位）'}</span><input class="form-input" type="password" name="temporaryPassword" ${item.id ? '' : 'required minlength="12"'} autocomplete="new-password"></label>`}<label class="form-group admin-switch"><input type="checkbox" name="disabled" ${item.enabled === false ? 'checked' : ''}> <span>停用该成员</span></label></div><fieldset><legend>可访问公司</legend>${checkboxList(
+            `<div class="admin-form-grid"><label class="form-group"><span class="form-label">成员编号</span><input class="form-input" name="id" required ${item.id ? 'readonly' : ''} value="${escapeHtml(item.id || '')}"></label><label class="form-group"><span class="form-label">姓名</span><input class="form-input" name="name" required value="${escapeHtml(item.name || '')}"></label><label class="form-group"><span class="form-label">登录邮箱</span><input class="form-input" type="email" name="email" ${emailLogin ? 'required' : ''} ${item.id ? 'readonly' : ''} value="${escapeHtml(item.email || '')}"></label>${emailLogin ? '' : `<label class="form-group"><span class="form-label">登录名</span><input class="form-input" name="username" required value="${escapeHtml(item.username || '')}"></label>`}<label class="form-group"><span class="form-label">角色</span><select class="form-select" name="role" required>${optionList(this.state.roles, item.role)}</select></label><label class="form-group"><span class="form-label">部门</span><select class="form-select" name="departmentId">${optionList(this.state.departments, item.departmentId || item.teamId, '暂不分配')}</select></label>${invitation ? `<label class="form-group admin-switch"><input type="checkbox" name="sendInvitation" ${item.id ? '' : 'checked disabled'}> <span>${item.id ? '重发激活 / 改密邮件（撤销现有会话）' : '发送邀请，由成员验证邮箱并设置密码'}</span></label>` : `<label class="form-group"><span class="form-label">${item.id ? '重置临时密码（可留空）' : '临时密码（至少 12 位）'}</span><input class="form-input" type="password" name="temporaryPassword" ${item.id ? '' : 'required minlength="12"'} autocomplete="new-password"></label>`}<label class="form-group admin-switch"><input type="checkbox" name="disabled" ${item.enabled === false ? 'checked' : ''}> <span>停用该成员</span></label></div><fieldset><legend>可访问公司</legend>${checkboxList(
                 'visibleCompanyIds',
                 this.state.companies.map(company => [company.id, company.name]),
                 item.visibleCompanyIds || []
@@ -527,7 +528,7 @@ const AdminCenter = {
                         role: value(form, 'role'),
                         departmentId: value(form, 'departmentId'),
                         temporaryPassword: value(form, 'temporaryPassword') || undefined,
-                        sendInvitation: emailLogin && (!item.id || form.elements.namedItem('sendInvitation').checked),
+                        sendInvitation: invitation && (!item.id || form.elements.namedItem('sendInvitation').checked),
                         disabled: form.elements.namedItem('disabled').checked,
                         visibleCompanyIds: checked(form, 'visibleCompanyIds')
                     },
@@ -686,15 +687,15 @@ const Onboarding = {
         this.target.innerHTML = `<section class="onboarding-shell"><header><p class="page-eyebrow">WELCOME TO TRADEPT</p><h2>${state.onboarding.status === 'complete' ? '企业配置已完成' : '建立你的企业工作区'}</h2><p>进度会自动保存，可以随时退出后继续。</p><div class="onboarding-progress"><span style="width:${Math.round((state.onboarding.completedSteps.length / steps.length) * 100)}%"></span></div></header><div class="onboarding-steps">${steps
             .map(([key, title, description], index) => {
                 if (key === 'members' && state.loginPolicy?.setupRequired) {
-                    title = '管理员邮箱';
-                    description = '绑定初始管理员的真实邮箱；验证后再邀请其他成员';
+                    title = '管理员与成员';
+                    description = '已有部署管理员；选择登录方式后可配置其他成员';
                 }
                 const done = state.onboarding.completedSteps.includes(key);
                 return `<article class="${done ? 'done' : ''} ${index === currentIndex ? 'current' : ''}"><span>${done ? '✓' : index + 1}</span><div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(description)}</p></div><button class="btn ${index === currentIndex ? 'btn-primary' : 'btn-secondary'} btn-sm" data-onboarding-step="${key}">${done ? '查看' : '开始'}</button></article>`;
             })
             .join(
                 ''
-            )}</div><footer><a href="#/admin" class="btn btn-secondary">进入管理中心</a>${state.onboarding.requiredReady && state.onboarding.status !== 'complete' ? '<button class="btn btn-primary" data-onboarding-complete>完成初始化</button>' : state.onboarding.status === 'complete' ? '<a href="#/dashboard" class="btn btn-primary">进入工作台</a>' : '<span>完成必需企业资料及管理员邮箱验证后即可开始使用。</span>'}</footer></section>`;
+            )}</div><footer><a href="#/admin" class="btn btn-secondary">进入管理中心</a>${state.onboarding.requiredReady && state.onboarding.status !== 'complete' ? '<button class="btn btn-primary" data-onboarding-complete>完成初始化</button>' : state.onboarding.status === 'complete' ? '<a href="#/dashboard" class="btn btn-primary">进入工作台</a>' : '<span>完成必需企业资料和登录方式配置后即可开始使用。</span>'}</footer></section>`;
         for (const button of this.target.querySelectorAll('[data-onboarding-step]')) {
             button.onclick = () => this.open(button.dataset.onboardingStep);
         }
@@ -710,15 +711,22 @@ const Onboarding = {
                     ? AdminCenter.open_login_policy()
                     : AdminCenter.open_member(AdminCenter.state.members[0]),
             login: () => AdminCenter.open_login_policy(),
-            business: () =>
-                AdminCenter.state.options.emailAvailable
-                    ? AdminCenter.open_email(AdminCenter.state.emailAccounts[0])
-                    : this.markBusinessReady(),
+            business: () => this.openBusiness(),
             finish: () => this.complete()
         };
         AdminCenter.target = this.target;
         AdminCenter.returnToOnboarding = true;
         actions[step]?.();
+    },
+    openBusiness() {
+        App.showModal('业务准备', '<p>邮箱与通知可稍后配置。当前可先完成初始化，继续使用已有业务资料。</p>', {
+            footer: `<button type="button" class="btn btn-secondary" id="onboardingMailLater">稍后配置，继续</button>${AdminCenter.state.options.emailAvailable ? '<button type="button" class="btn btn-primary" id="onboardingMailNow">配置邮箱</button>' : ''}`
+        });
+        document.getElementById('onboardingMailLater').onclick = () => {
+            App.closeModal();
+            this.markBusinessReady();
+        };
+        document.getElementById('onboardingMailNow')?.addEventListener('click', () => AdminCenter.open_email(AdminCenter.state.emailAccounts[0]));
     },
     async markBusinessReady() {
         try {

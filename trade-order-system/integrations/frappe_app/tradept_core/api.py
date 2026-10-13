@@ -165,7 +165,11 @@ def _session(cfg, actor, rules, users):
     if policy.get("scope") != "tenant":
         teams = {key: value for key, value in teams.items() if key == actor.get("teamId")}
         displayed = [value for value in displayed if value["id"] == actor["id"] or (actor.get("teamId") and value.get("teamId") == actor.get("teamId"))]
-    return {"user": user, "users": displayed, "historicalOwners": historical_owners, "teams": teams, "companies": [company for company in cfg["companies"] if company["id"] in company_ids], "roles": session_roles, "tenant": {"id": cfg["id"], "name": cfg.get("name", cfg["id"]), "branding": cfg.get("branding", {})}, "onboarding": administrator.onboarding_state(cfg, users), "backend": "erpnext", "singleSystem": True, "emailLoginEnabled": bool(cfg.get("loginPolicy", {}).get("enabled")), "loginSetupRequired": setup_required}
+    from .login_policy import verification_required
+    login_policy = cfg.get("loginPolicy", {})
+    return {"user": user, "users": displayed, "historicalOwners": historical_owners, "teams": teams, "companies": [company for company in cfg["companies"] if company["id"] in company_ids], "roles": session_roles, "tenant": {"id": cfg["id"], "name": cfg.get("name", cfg["id"]), "branding": cfg.get("branding", {})}, "onboarding": administrator.onboarding_state(cfg, users), "backend": "erpnext", "singleSystem": True, "emailLoginEnabled": bool(login_policy.get("enabled")), "loginSetupRequired": setup_required,
+            "loginPolicyReady": login_setup.policy_ready(cfg), "loginMode": login_policy.get("mode", "accounts"),
+            "emailVerificationRequired": bool(login_policy.get("enabled") and verification_required(login_policy))}
 
 
 def _visible_native_refs(cfg, actor, rules, references):

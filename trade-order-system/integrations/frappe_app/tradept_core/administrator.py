@@ -7,6 +7,7 @@ committed in the same Frappe transaction as its audit/revision record.
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 import uuid
 
@@ -202,7 +203,7 @@ def _members(cfg, profiles):
         native = _email_for_profile(profile)
         output.append({
             **{key: profile.get(key) for key in ("id", "name", "username", "role", "teamId", "departmentId", "visibleCompanyIds")},
-            "email": native,
+            "email": profile.get("email", native if native and not native.endswith(('@bootstrap.invalid', '@accounts.invalid')) else None),
             "emailVerified": bool(frappe.db.get_value("User", native, "custom_tradept_email_verified")) if cfg.get("loginPolicy", {}).get("enabled") else None,
             "passwordChangeRequired": bool(frappe.db.get_value("User", native, "custom_tradept_password_change_required")) if cfg.get("loginPolicy", {}).get("enabled") else None,
             "enabled": bool(frappe.db.get_value("User", native, "enabled")) if native else False,
@@ -253,10 +254,12 @@ def _roles(cfg):
 
 
 def state(work, cfg, actor, rules, profiles):
+    from . import enterprise_login, login_setup
     _manage(cfg, actor, rules)
     onboarding = _onboarding(cfg, profiles)
     configured_profiles = _configured_profiles()
-    departments = list((cfg.get("departments") or cfg.get("teams") or {}).values())
+    # The mapping key is the stable identity, including legacy teams without an id.
+    departments = [{**department, "id": key} for key, department in (cfg.get("departments") or cfg.get("teams") or {}).items()]
     return {
         "meta": repo.meta(work),
         "enterprise": {
@@ -269,7 +272,11 @@ def state(work, cfg, actor, rules, profiles):
         "members": _members(cfg, configured_profiles),
         "roles": _roles(cfg),
         "emailAccounts": _mailboxes(cfg),
-        "loginPolicy": {**copy.deepcopy(cfg.get("loginPolicy", {})), "setupRequired": bool(cfg.get("loginSetup")), "administratorEmail": cfg.get("loginSetup", {}).get("administratorEmail", "")},
+        "loginPolicy": {**copy.deepcopy(cfg.get("loginPolicy", {})), "mode": cfg.get("loginPolicy", {}).get("mode", "accounts"),
+                        "setupRequired": login_setup.pending(cfg), "loginPolicyReady": login_setup.policy_ready(cfg),
+                        "emailVerificationRequired": bool(cfg.get("loginPolicy", {}).get("enabled") and enterprise_login.verification_required(cfg.get("loginPolicy", {}))),
+                        "smtpReady": enterprise_login.smtp_ready(),
+                        "administratorEmail": cfg.get("loginSetup", {}).get("administratorEmail", cfg.get("loginPolicy", {}).get("administratorEmail", ""))},
         "onboarding": onboarding,
         "options": {
             "permissions": sorted(ROLE_PERMISSIONS), "pages": sorted(ROLE_PAGES),
@@ -556,14 +563,21 @@ def _member(cfg, actor, value):
     if not safe_record_id(uid):
         raise APIError(400, "INVALID_MEMBER_ID", "成员编号格式无效")
     existing = profiles.get(uid)
-    if cfg.get('loginPolicy', {}).get('enabled'):
+    account_mode = cfg.get('loginPolicy', {}).get('mode') == 'accounts' or bool(existing and cfg.get('loginPolicy', {}).get('accountAdministratorId') == uid)
+    if cfg.get('loginPolicy', {}).get('enabled') and not account_mode:
         from .enterprise_login import prepare_member
         value = prepare_member(cfg, value, existing)
     _creating(value, existing, "成员编号")
     role = _text(value.get("role", (existing or {}).get("role", "salesperson")), "角色", 80).lower()
     if role not in cfg.get("roles", {}):
         raise APIError(400, "UNKNOWN_ROLE", "请选择有效角色")
-    email = _text(value.get("email", _email_for_profile(existing or {})), "登录邮箱", 200).lower()
+    contact_email = _text(value.get("email", (existing or {}).get("email", "")), "联系邮箱", 200, required=False).lower() if account_mode else None
+    if account_mode and contact_email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", contact_email):
+        raise APIError(400, "INVALID_MEMBER_EMAIL", "请填写有效的联系邮箱或留空")
+    if account_mode:
+        email = _email_for_profile(existing) if existing else 'account-' + hashlib.sha256((cfg['id'] + ':' + uid).encode()).hexdigest()[:24] + '@accounts.invalid'
+    else:
+        email = _text(value.get("email", _email_for_profile(existing or {})), "登录邮箱", 200).lower()
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
         raise APIError(400, "INVALID_MEMBER_EMAIL", "请填写有效的登录邮箱")
     username = _text(value.get("username", (existing or {}).get("username", email)), "登录名", 200)
@@ -616,6 +630,9 @@ def _member(cfg, actor, value):
         "role": role, "teamId": department or None, "departmentId": department or None,
         "visibleCompanyIds": grants,
     }
+    if account_mode:
+        # Optional contact mail does not replace the native login principal.
+        profile['email'] = contact_email or None
     name = frappe.db.get_value("Trade User Profile", {"user": email}, "name")
     metadata = frappe.get_doc("Trade User Profile", name) if name else frappe.new_doc("Trade User Profile")
     metadata.update({"user": email, "record_id": uid, "profile": dumps(profile), "role_key": role, "team_id": department or None})
@@ -635,7 +652,7 @@ def _member(cfg, actor, value):
     if cfg.get("loginPolicy", {}).get("enabled"):
         from .enterprise_login import member_saved
         delivery = member_saved(cfg, email, is_new, value)
-    return {**profile, "email": email, "enabled": not disabled, **delivery}
+    return {**profile, "email": contact_email if account_mode else email, "enabled": not disabled, **delivery}
 
 
 def _email_account(cfg, value):
