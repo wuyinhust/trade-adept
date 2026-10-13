@@ -49,6 +49,16 @@ def profiles():
     return result
 
 
+def ownership_profiles():
+    """Read configured historical owners without granting an active account."""
+    rows = frappe.get_all("Trade User Profile", fields=["user", "profile"])
+    result = {}
+    for row in rows:
+        value = loads(row.profile, {})
+        result[value["id"]] = {**value, "nativeUser": row.user, "enabled": bool(frappe.db.get_value("User", row.user, "enabled"))}
+    return result
+
+
 def native_company(company_id):
     return frappe.db.get_value("Company", {"custom_tradept_record_id": company_id}, "name")
 

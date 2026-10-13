@@ -158,3 +158,42 @@ export const validate = {
         return errors;
     }
 };
+
+// Business-only modal hooks; administrator/login/payment forms are never registered.
+export function installBusinessModalHooks(app, drafts) {
+    if (app._businessDraftHooks) return;
+    app._businessDraftHooks = true;
+    const form = () =>
+        document.querySelector(
+            'form#customerForm, form#factoryForm, form#shipmentForm, form#statusForm, form#orderForm'
+        );
+    for (const method of ['showModal', 'showConfirm']) {
+        if (typeof app[method] !== 'function') continue;
+        app[method] = new Proxy(app[method], {
+            apply(target, receiver, args) {
+                const current = form();
+                if (current && !drafts.leave(current)) return false;
+                const result = Reflect.apply(target, receiver, args);
+                drafts.watch(form());
+                return result;
+            }
+        });
+    }
+    app.closeModal = new Proxy(app.closeModal, {
+        apply(target, receiver, args) {
+            const current = form();
+            if (current && !drafts.leave(current, { discard: args[0]?.discardDraft === true })) return false;
+            return Reflect.apply(target, receiver, args);
+        }
+    });
+}
+
+export function businessDraftScope(db, auth) {
+    return {
+        origin: window.location.origin,
+        instance: db._BACKUP_KEY,
+        tenantId: auth.currentUser?.tenantId,
+        userId: auth.currentUser?.id,
+        companyId: db.currentCompanyId
+    };
+}

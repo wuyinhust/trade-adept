@@ -14,16 +14,22 @@ import frappe
 from .domain import APIError, Rules, safe_record_id, sensitive, now, FINANCIAL_INPUT, NESTED_COST
 from .schema import COLLECTIONS, DOCTYPES, dumps, loads
 from .validation import validate_order, validate_shipment, _date
+from .masterdata_validation import validate_masterdata
+from .operation_numbers import allocate as allocate_operation_number
+from .order_contacts import validate as validate_order_contact
 from . import repository as repo
 from . import native
 from . import administrator
 from .events import managed
 from .permissions import delegated_operation
 
-READ_ACTIONS = {"session", "data", "meta", "snapshots", "backend_status", "context", "admin_state"}
-WRITE_ACTIONS = {"changes", "restore", "convert_order", "submit_order", "receive_payment", "cancel_order", "admin_update"}
+READ_ACTIONS = {"session", "data", "meta", "snapshots", "backend_status", "context", "admin_state", "finance_state", "finance_document", "finance_report", "catalog_state"}
+WRITE_ACTIONS = {"changes", "restore", "convert_order", "submit_order", "receive_payment", "cancel_order", "admin_update", "finance_operation", "catalog_operation"}
 NATIVE_FIELDS = {"companyId", "customerId", "customerName", "customerOrderNo", "orderDate", "expectedShipDate", "actualShipDate", "shippingStatus", "factoryId", "factoryIds", "factoryName", "orderAmountUSD", "orderAmountRMB", "factoryCostRMB", "factoryCostUSD", "paidAmountUSD", "paymentStatus", "factoryPaidRMB", "factoryPaidStatus", "costPaidUSD", "costPaymentStatus", "erpItems"}
 RECEIPT_FIELDS = {"paidAmountUSD", "paymentStatus", "factoryPaidRMB", "factoryPaidStatus", "costPaidUSD", "costPaymentStatus"}
+PROJECTED_ORDER_FIELDS = {"nativeSettlementProjection", "nativeHasPostedSalesInvoices", "nativeSettlementCurrency", "salesAdvanceAmountUSD", "salesInvoiceSettledAmountUSD", "salesInvoiceOutstandingAmountUSD", "salesInvoiceNames", "factoryAdvanceAmount", "factoryInvoiceSettledAmount", "factoryInvoiceOutstandingAmount", "factoryInvoiceNames", "nativeReceiptSummary"}
+PROJECTED_FACTORY_FIELDS = {"advanceAmount", "invoiceSettledAmount", "invoiceOutstandingAmount", "invoiceNames"}
+NATIVE_FIELDS.update(PROJECTED_ORDER_FIELDS)
 GATEWAY_ASSERTION = "gatewayAssertion"
 GATEWAY_RESERVED_FIELDS = {GATEWAY_ASSERTION, "liveExchangeRate", "liveExchangeRateMeta"}
 GATEWAY_ASSERTION_FIELDS = {
@@ -122,24 +128,114 @@ def _identity(lock=False):
     actor["visibleCompanyIds"] = sorted({frappe.db.get_value("Company", row.for_value, "custom_tradept_record_id") for row in permissions} - {None, ""})
     if work.frozen and lock:
         raise APIError(503, "WORKSPACE_FROZEN", "This workspace is read-only during migration")
-    return work, cfg, actor, Rules(cfg, users), users
+    return work, cfg, actor, Rules(cfg, users, ownership_profiles=repo.ownership_profiles()), users
 
 
 def _session(cfg, actor, rules, users):
+    from . import login_setup
+    setup_required = login_setup.is_bootstrap(cfg, actor.get("nativeUser"))
     company_ids = rules.company_ids(cfg, actor)
     policy = rules._policy(cfg, actor)
     pages = list(policy.get("pages", []))
     can_manage = rules.permitted(cfg, actor, administrator.MANAGE_CAPABILITY) and policy.get("scope") == "tenant"
     if can_manage:
         pages.extend(("admin", "onboarding"))
+    if any(rules.permitted(cfg, actor, capability) for capability in (
+        "finance.sales_invoice.read", "finance.purchase_invoice.read", "finance.payment_entry.read",
+        "finance.receivables.read", "finance.payables.read", "finance.reconciliation.read", "finance.ledger.read",
+        "finance.bank_transaction.read", "finance.bank_reconciliation.read",
+    )):
+        pages.append("finance")
+    if setup_required:
+        pages = ["onboarding", "admin"]
     user = {key: value for key, value in actor.items() if key != "nativeUser"}
     user.update(visibleCompanyIds=sorted(company_ids), permissions=policy.get("permissions", []), pages=list(dict.fromkeys(pages)), scope=policy.get("scope", "self"), readScopes=policy.get("readScopes", {}), baseRole=policy.get("baseRole", actor["role"]))
+    user["financePolicy"] = copy.deepcopy(policy.get("financePolicy", {}))
+    # Selectable banks come from the company-scoped finance endpoint. Role
+    # allowlists can include companies outside this particular user's grants.
+    user["financePolicy"].pop("allowedBankAccounts", None)
+    session_roles = copy.deepcopy(cfg["roles"])
+    if not can_manage:
+        for role in session_roles.values():
+            role.get("financePolicy", {}).pop("allowedBankAccounts", None)
     displayed = [{key: profile.get(key) for key in ("id", "name", "username", "role", "teamId", "visibleCompanyIds")} for profile in users.values()]
     teams = copy.deepcopy(cfg.get("teams", {}))
+    historical_owners = {key: {"teamId": profile.get("teamId"), **({"name": profile["name"]} if isinstance(profile.get("name"), str) else {})} for key, profile in rules.ownership_profiles.items()
+                         if policy.get("scope") == "tenant" or actor.get("teamId") and profile.get("teamId") == actor.get("teamId")}
     if policy.get("scope") != "tenant":
         teams = {key: value for key, value in teams.items() if key == actor.get("teamId")}
         displayed = [value for value in displayed if value["id"] == actor["id"] or (actor.get("teamId") and value.get("teamId") == actor.get("teamId"))]
-    return {"user": user, "users": displayed, "teams": teams, "companies": [company for company in cfg["companies"] if company["id"] in company_ids], "roles": cfg["roles"], "tenant": {"id": cfg["id"], "name": cfg.get("name", cfg["id"]), "branding": cfg.get("branding", {})}, "onboarding": administrator.onboarding_state(cfg, users), "backend": "erpnext", "singleSystem": True}
+    return {"user": user, "users": displayed, "historicalOwners": historical_owners, "teams": teams, "companies": [company for company in cfg["companies"] if company["id"] in company_ids], "roles": session_roles, "tenant": {"id": cfg["id"], "name": cfg.get("name", cfg["id"]), "branding": cfg.get("branding", {})}, "onboarding": administrator.onboarding_state(cfg, users), "backend": "erpnext", "singleSystem": True, "emailLoginEnabled": bool(cfg.get("loginPolicy", {}).get("enabled")), "loginSetupRequired": setup_required}
+
+
+def _visible_native_refs(cfg, actor, rules, references):
+    from .finance_permissions import Policy, DOCUMENT_RESOURCES
+    policy = Policy(cfg, actor, rules)
+    visible = []
+    for reference in references:
+        doctype = reference.get("doctype")
+        if doctype in DOCUMENT_RESOURCES:
+            if not policy.allowed(DOCUMENT_RESOURCES[doctype], "read"):
+                continue
+            if not policy.document_allowed(repo.get_doc(doctype, reference["name"]), "read"):
+                continue
+        visible.append(reference)
+    return visible
+
+
+def _visible_order_projection(cfg, actor, rules, record):
+    """Business totals do not grant access to invoice or bank metadata."""
+    from .finance_permissions import Policy
+    policy = Policy(cfg, actor, rules)
+
+    def invoice_scope(resource, doctype, names):
+        if not policy.allowed(resource, "read"):
+            return [], False
+        visible = [name for name in names if policy.document_allowed(repo.get_doc(doctype, name), "read")]
+        return visible, len(visible) == len(names)
+
+    sales, sales_complete = invoice_scope("sales_invoice", "Sales Invoice", record.get("salesInvoiceNames", []))
+    purchase, purchase_complete = invoice_scope("purchase_invoice", "Purchase Invoice", record.get("factoryInvoiceNames", []))
+    if sales_complete:
+        if "salesInvoiceNames" in record:
+            record["salesInvoiceNames"] = sales
+    else:
+        for key in ("salesInvoiceNames", "salesInvoiceSettledAmountUSD", "salesInvoiceOutstandingAmountUSD"):
+            record.pop(key, None)
+    if purchase_complete:
+        if "factoryInvoiceNames" in record:
+            record["factoryInvoiceNames"] = purchase
+    else:
+        for key in ("factoryInvoiceNames", "factoryInvoiceSettledAmount", "factoryInvoiceOutstandingAmount"):
+            record.pop(key, None)
+    for row in record.get("factories", []):
+        names, complete = invoice_scope("purchase_invoice", "Purchase Invoice", row.get("invoiceNames", []))
+        if complete:
+            if "invoiceNames" in row:
+                row["invoiceNames"] = names
+        else:
+            for key in ("invoiceNames", "invoiceSettledAmount", "invoiceOutstandingAmount"):
+                row.pop(key, None)
+    if not (policy.allowed("payment_entry", "read") and policy.allowed("bank_accounts", "read")):
+        record.pop("nativeReceiptSummary", None)
+    elif "nativeReceiptSummary" in record:
+        record["nativeReceiptSummary"] = [row for row in record["nativeReceiptSummary"] if
+            policy.document_allowed(repo.get_doc("Payment Entry", row["name"]), "read")]
+    return record
+
+
+def _check_projection_patch(old, patch):
+    if not isinstance(patch, dict):
+        return
+    if any(key in patch and patch[key] != (old or {}).get(key) for key in PROJECTED_ORDER_FIELDS):
+        raise APIError(409, "NATIVE_PROJECTION_READ_ONLY", "Invoice settlement and bank summaries are read from native accounting documents")
+    prior = {str(row.get("id") or row.get("factoryId") or row.get("factory_id")): row for row in (old or {}).get("factories", [])}
+    for row in patch.get("factories", []):
+        if not isinstance(row, dict):
+            continue
+        previous = prior.get(str(row.get("id") or row.get("factoryId") or row.get("factory_id")), {})
+        if any(key in row and row[key] != previous.get(key) for key in PROJECTED_FACTORY_FIELDS):
+            raise APIError(409, "NATIVE_PROJECTION_READ_ONLY", "Supplier invoice settlement is read from native accounting documents")
 
 
 def _data(work, cfg, actor, rules):
@@ -161,6 +257,10 @@ def _data(work, cfg, actor, rules):
                 # Native references themselves are finance metadata.
                 if not rules.permitted(cfg, actor, "finance.read"):
                     visible.pop("nativeDocuments", None)
+                elif visible.get("nativeDocuments"):
+                    visible["nativeDocuments"] = _visible_native_refs(cfg, actor, rules, visible["nativeDocuments"])
+                if visible.get("nativeSettlementProjection"):
+                    visible = _visible_order_projection(cfg, actor, rules, visible)
                 visible_orders.add(str(record["id"]))
             result[collection].append(visible)
     ids = rules.company_ids(cfg, actor)
@@ -184,10 +284,11 @@ def _backend(cfg, actor, rules):
         if value.get("deleted") or not rules.record_allowed(None, cfg, actor, value, collection="orders", payload=data):
             continue
         doc = repo.find("orders", value["id"])
-        refs = native.documents(value["id"]) if doc.sales_order else []
+        refs = _visible_native_refs(cfg, actor, rules, native.documents(value["id"])) if doc.sales_order else []
         orders.append({"orderId": value["id"], "stage": native.stage(doc), "historicalReference": doc.doctype == "Trade Legacy Order" and not bool(doc.sales_order), "salesOrder": doc.sales_order, "documents": refs})
         documents.extend(refs)
-    return {"enabled": True, "backend": "erpnext", "singleSystem": True, "site": frappe.local.site, "jobs": [], "orders": orders, "documents": documents, "capabilities": {"convertOrder": True, "submitOrder": True, "receivePayment": True, "cancelOrder": True}}
+    can_receive = rules.permitted(cfg, actor, "finance.payment_entry.create") and rules.permitted(cfg, actor, "finance.payment_entry.submit")
+    return {"enabled": True, "backend": "erpnext", "singleSystem": True, "site": frappe.local.site, "jobs": [], "orders": orders, "documents": documents, "capabilities": {"convertOrder": True, "submitOrder": True, "receivePayment": can_receive, "cancelOrder": True}}
 
 
 def _native_factory_patch(old, patch):
@@ -256,6 +357,7 @@ def _changes(work, cfg, actor, rules, supplied):
             repo.save_rate(key, rates[key], metas.get(key), key in metas)
     writes = []
     live_rate = None
+    allocated_numbers = False
     for change in changes:
         if not isinstance(change, dict) or change.get("collection") not in COLLECTIONS:
             raise APIError(400, "INVALID_COLLECTION", "Unknown change collection")
@@ -265,6 +367,8 @@ def _changes(work, cfg, actor, rules, supplied):
             raise APIError(400, "INVALID_RECORD_ID", "Invalid record identifier")
         old = next((value for value in data[collection] if str(value["id"]) == rid), None)
         deleting = change.get("deleted") is True
+        if collection == "orders" and not deleting:
+            _check_projection_patch(old, change.get("value"))
         action = "delete" if deleting else "edit" if old else "create"
         if old:
             if not rules.record_allowed(None, cfg, actor, old, action, collection, data):
@@ -307,7 +411,12 @@ def _changes(work, cfg, actor, rules, supplied):
                             child.update(deleted=True, deletedAt=value["deletedAt"], updatedBy=actor["id"])
                             writes.append((related, child))
         else:
-            patch = change.get("value")
+            patch = copy.deepcopy(change.get("value"))
+            if collection == "orders" and not historical and old is None and isinstance(patch, dict):
+                try:
+                    allocated_numbers = allocate_operation_number(cfg, patch, rules.profiles, data["orders"], str(frappe.utils.today())[:4]) or allocated_numbers
+                except ValueError as error:
+                    raise APIError(400, "BUSINESS_VALIDATION", str(error)) from None
             if historical and old and isinstance(patch, dict):
                 # Excel commonly repeats company/customer columns. An equal
                 # field is not a legal-entity migration and must not turn a
@@ -321,6 +430,13 @@ def _changes(work, cfg, actor, rules, supplied):
             value["id"] = rid
             for metadata in ("stage", "historicalReference", "nativeDocuments", "nativeDeliveryNote", "exchangeRateUsed"):
                 value.pop(metadata, None)
+            if collection == "orders":
+                value.pop("companyOperationNoAuto", None)
+                for metadata in PROJECTED_ORDER_FIELDS:
+                    value.pop(metadata, None)
+                for row in value.get("factories", []):
+                    for metadata in PROJECTED_FACTORY_FIELDS:
+                        row.pop(metadata, None)
             if collection == "orders" and old and value.get("companyId") != old.get("companyId") and any(str(child.get("orderId")) == rid for related in ("shipments", "invoices") for child in data[related]):
                 raise APIError(409, "LEGAL_ENTITY_MIGRATION_REQUIRED", "Orders with document history require explicit legal entity migration")
             if not rules.record_allowed(None, cfg, actor, value, "read", collection, data):
@@ -338,6 +454,8 @@ def _changes(work, cfg, actor, rules, supplied):
                     value["actualShipDate"] = parent.get("actualShipDate")
             try:
                 if collection == "orders":
+                    customer = next((row for row in data["customers"] if str(row.get("id")) == str(value.get("customerId"))), None)
+                    validate_order_contact(value, customer, old)
                     if historical:
                         if type(value.get("orderAmountUSD")) not in (int, float) or not math.isfinite(value["orderAmountUSD"]) or value["orderAmountUSD"] <= 0:
                             raise ValueError("Historical reference requires a positive USD order amount")
@@ -358,6 +476,8 @@ def _changes(work, cfg, actor, rules, supplied):
                         validate_order(value, change.get("value", {}), old is None, company)
                 elif collection == "shipments":
                     validate_shipment(value, change.get("value", {}), old is None, company)
+                elif collection in ("customers", "factories"):
+                    validate_masterdata(collection, value, old)
             except ValueError as error:
                 raise APIError(400, "BUSINESS_VALIDATION", str(error)) from None
             if not historical and collection == "orders" and rules._financial_changed(old, value) and not (doc and doc.sales_order):
@@ -398,6 +518,9 @@ def _changes(work, cfg, actor, rules, supplied):
                 value.pop("deliveryProgressPct", None)
                 value.pop("nativeDeliveryNote", None)
         repo.save_record(collection, value, legacy=historical and collection == "orders")
+    if allocated_numbers:
+        work.configuration = dumps(cfg)
+        frappe.db.set_value("Trade Workspace", work.name, "configuration", work.configuration, update_modified=False)
     changed = [{"collection": value["collection"], "id": str(value.get("id", "new")), "deleted": value.get("deleted") is True} for value in changes]
     summary = {"changes": changed, "exchangeRate": live_rate} if live_rate is not None else changed
     return repo.finish(work, actor, "historical-import" if historical else "changes", summary)
@@ -456,7 +579,8 @@ def _native_operation(action, work, cfg, actor, rules, supplied):
     if action == "receive_payment" and frappe.db.exists("Payment Entry", {"custom_tradept_operation_key": operation}):
         # Recheck receipt fingerprint and current authorization before allowing
         # a lost-response retry to acknowledge an already posted operation.
-        refs = native.receive_payment(doc, value, supplied)
+        with delegated_operation(action, cfg, actor, rules, value, data, doc):
+            refs = native.receive_payment(doc, value, supplied)
         already_applied = True
     elif action == "convert_order" and doc.sales_order and frappe.db.get_value("Sales Order", doc.sales_order, "custom_tradept_operation_key") == operation:
         refs, already_applied = native.documents(order_id), True
@@ -491,6 +615,8 @@ def _native_operation(action, work, cfg, actor, rules, supplied):
 
 def _run_action(action, supplied):
     work, cfg, actor, rules, users = _identity(action in WRITE_ACTIONS)
+    from . import login_setup
+    login_setup.guard(cfg, actor, action, supplied)
     if action in ("session", "context"):
         result = _session(cfg, actor, rules, users)
         result["backendIdentity"] = frappe.local.site + ":" + work.instance_id
@@ -498,6 +624,10 @@ def _run_action(action, supplied):
         if action == "context":
             result["meta"] = repo.meta(work)
         return result
+    if action == "data" and login_setup.pending(cfg):
+        return {"data": {name: [] for name in COLLECTIONS}, "exchangeRates": {}, "rateMetas": {}, "meta": repo.meta(work)}
+    if action == "backend_status" and login_setup.pending(cfg):
+        return {"enabled": True, "backend": "erpnext", "singleSystem": True, "jobs": [], "orders": [], "documents": [], "capabilities": {}}
     if action == "data":
         return _data(work, cfg, actor, rules)
     if action == "meta":
@@ -513,6 +643,14 @@ def _run_action(action, supplied):
         return administrator.state(work, cfg, actor, rules, users)
     if action == "admin_update":
         return administrator.update(work, cfg, actor, rules, supplied)
+    if action in ("catalog_state", "catalog_operation"):
+        from . import catalog
+        return (catalog.state if action == "catalog_state" else catalog.perform)(work, cfg, actor, rules, supplied)
+    if action.startswith("finance_"):
+        from . import finance
+        handler = {"finance_state": finance.state, "finance_document": finance.document,
+                   "finance_report": finance.report, "finance_operation": finance.operation}[action]
+        return handler(work, cfg, actor, rules, supplied)
     if action == "changes":
         return _changes(work, cfg, actor, rules, supplied)
     if action == "restore":

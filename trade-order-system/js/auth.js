@@ -15,6 +15,7 @@ const Auth = {
 
     // Directory and roles are supplied by the authenticated business API.
     users: [],
+    historicalOwners: {},
     teams: {},
     roles: {},
     onboarding: null,
@@ -94,6 +95,8 @@ const Auth = {
     },
 
     async logout() {
+        globalThis.Finance?.clear();
+        globalThis.ItemCatalog?.clear?.();
         if (this._provider) await this._provider.logout();
         this.currentUser = null;
         this.onboarding = null;
@@ -153,6 +156,19 @@ const Auth = {
     canManageEnterprise() {
         return this.hasCapability('accounts.configure') === true && this.currentUser?.scope === 'tenant';
     },
+    canUseFinance() {
+        return [
+            'sales_invoice',
+            'purchase_invoice',
+            'payment_entry',
+            'receivables',
+            'payables',
+            'reconciliation',
+            'ledger',
+            'bank_transaction',
+            'bank_reconciliation'
+        ].some(resource => this.hasCapability(`finance.${resource}.read`) === true);
+    },
 
     /** 是否能修改订单 */
     canEdit() {
@@ -173,22 +189,59 @@ const Auth = {
         );
     },
 
-    /** 是否能删除某笔具体订单：admin/manager 可删任意可见订单，salesperson 仅可删自己创建/归属自己的订单 */
+    /** 历史归属供记录权限和姓名展示使用；当前员工优先，分配仍只使用 users。 */
+    getRecordOwner(id) {
+        if (id == null) return null;
+        const ownerId = String(id);
+        const active = this.users.find(user => String(user.id) === ownerId);
+        if (active) return active;
+        if (!this.historicalOwners || !Object.hasOwn(this.historicalOwners, ownerId)) return null;
+        const historic = this.historicalOwners[ownerId];
+        if (!historic || typeof historic !== 'object') return null;
+        return {
+            id: ownerId,
+            teamId: historic.teamId,
+            ...(typeof historic.name === 'string' ? { name: historic.name } : {})
+        };
+    },
+
+    /** 删除按钮使用写入范围判断；可共享读取的资料不因此获得删除权限。 */
+    canDeleteRecord(record, collection = 'orders') {
+        const actor = this.currentUser;
+        if (!actor || !record || record.deleted) return false;
+        if (!this._serverDataAuthorized && collection === 'orders') return this.canDeleteOrder(record);
+        const permitted = this.hasCapability('delete');
+        if (this._serverDataAuthorized ? permitted !== true : permitted === false || !this.canDelete()) return false;
+        if (record.tenantId != null && String(record.tenantId) !== String(actor.tenantId)) return false;
+        const grants = this.getVisibleCompanyIds();
+        if (
+            record.companyId == null ||
+            (grants !== null && (!Array.isArray(grants) || !grants.some(id => String(id) === String(record.companyId))))
+        ) {
+            return false;
+        }
+        const collections = this.roles[actor.role]?.collections;
+        if (Array.isArray(collections) && !collections.includes(collection)) return false;
+        const scope = this._serverDataAuthorized
+            ? actor.scope
+            : actor.scope || { admin: 'tenant', manager: 'team', salesperson: 'self' }[this.roleType()];
+        if (scope === 'tenant') return true;
+        const owners = ['createdBy', 'salespersonId', 'ownerId']
+            .filter(key => record[key] != null)
+            .map(key => String(record[key]));
+        if (scope === 'self') return owners.includes(String(actor.id));
+        if (scope !== 'team' || actor.teamId == null) return false;
+        return owners.some(ownerId => {
+            const owner = this.getRecordOwner(ownerId) || (ownerId === String(actor.id) ? actor : null);
+            return owner?.teamId != null && String(owner.teamId) === String(actor.teamId);
+        });
+    },
+
+    /** 旧预览保留原角色判断；真实会话与所有业务记录使用同一删除范围。 */
     canDeleteOrder(order) {
+        if (this._serverDataAuthorized) return this.canDeleteRecord(order, 'orders');
         if (!this.currentUser || !order) return false;
         if (this.hasCapability('delete') === false) return false;
-        if (this._serverDataAuthorized) {
-            if (this.currentUser.scope === 'tenant') return true;
-            const actors =
-                this.currentUser.scope === 'team'
-                    ? [
-                          this.currentUser.id,
-                          ...(this.teams[this.currentUser.teamId]?.memberIds || []),
-                          this.teams[this.currentUser.teamId]?.managerId
-                      ]
-                    : [this.currentUser.id];
-            return actors.includes(order.createdBy) || actors.includes(order.salespersonId);
-        }
         if (this.currentUser.role === 'admin' || this.currentUser.role === 'manager') return true;
         if (this.currentUser.role === 'salesperson') {
             return Boolean(
@@ -325,8 +378,12 @@ const Auth = {
         if (!Array.isArray(this.currentUser.pages) && this.canSeeProfit()) pages.push('profit');
         if (!Array.isArray(this.currentUser.pages) && this.canSeeSettings()) pages.push('settings');
         pages = pages.filter(
-            page => (page !== 'profit' || this.canSeeProfit()) && (page !== 'settings' || this.canSeeSettings())
+            page =>
+                (page !== 'profit' || this.canSeeProfit()) &&
+                (page !== 'settings' || this.canSeeSettings()) &&
+                (page !== 'finance' || this.canUseFinance())
         );
+        if (this.canUseFinance()) pages.push('finance');
         if (this.canManageEnterprise()) pages.push('admin', 'onboarding');
         else pages = pages.filter(page => !['admin', 'onboarding'].includes(page));
         return [...new Set(pages)];

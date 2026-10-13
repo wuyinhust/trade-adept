@@ -2,14 +2,16 @@ import { DB } from './data.js';
 import { Auth } from './auth.js';
 import { App } from './app.js';
 import { escapeHtml, toast } from './utils.js';
+import { ItemCatalog } from './item-catalog.js';
 
 const stages = { legacy: '历史参考', brief: '待完善订单', native: '正式订单' };
 const documentTypes = {
     'Sales Order': '销售订单',
     'Purchase Order': '采购订单',
-    'Payment Entry': '收款记录',
+    'Payment Entry': '收付款凭证',
     'Delivery Note': '发货单',
-    'Sales Invoice': '销售发票'
+    'Sales Invoice': '销售发票',
+    'Purchase Invoice': '采购发票'
 };
 const documentState = status => (Number(status) === 1 ? '已提交' : Number(status) === 2 ? '已取消' : '草稿');
 const api = () => window.Workspace.api;
@@ -56,7 +58,8 @@ const BusinessBackendPanel = {
             const result = await api().backendStatus();
             const states = new Map((result.orders || []).map(order => [String(order.orderId), order]));
             const canWrite = Auth.hasCapability('finance.write') === true;
-            element.innerHTML = `<div class="card"><div class="card-header"><span class="card-title">业务数据</span></div><div class="card-body">
+            const canCatalog = ['catalog.read', 'catalog.create', 'catalog.write', 'catalog.disable'].some(cap => Auth.hasCapability(cap) === true);
+            element.innerHTML = `<div class="card"><div class="card-header"><span class="card-title">业务数据</span>${canCatalog ? '<button type="button" class="btn btn-secondary btn-sm" data-business-catalog>商品目录</button>' : ''}</div><div class="card-body">
                 <p>订单、采购和收款保存在当前企业的业务数据库。</p>
                 <p class="text-sm text-gray">可先建订单，后补商品明细。正式订单的金额和收款由业务单据计算；历史参考保留原始 Excel 数据，不生成收款记录。</p>
                 <div class="table-responsive"><table class="table"><thead><tr><th>业务单号</th><th>记录类型</th><th>业务单据</th><th>操作</th></tr></thead><tbody>${
@@ -96,11 +99,15 @@ const BusinessBackendPanel = {
                                 canWrite &&
                                 stage === 'native' &&
                                 Number(sales?.docstatus) === 1 &&
-                                result.capabilities?.receivePayment
+                                result.capabilities?.receivePayment &&
+                                !order.nativeHasPostedSalesInvoices
                             ) {
                                 actions.push(
-                                    `<button type="button" class="btn btn-secondary btn-sm" data-business-payment="${escapeHtml(order.id)}">登记收款</button>`
+                                    `<button type="button" class="btn btn-secondary btn-sm" data-business-payment="${escapeHtml(order.id)}">登记订单预收款</button>`
                                 );
+                            }
+                            if (canWrite && order.nativeHasPostedSalesInvoices) {
+                                actions.push('<a class="btn btn-secondary btn-sm" href="#/finance">到账单登记收付款</a>');
                             }
                             if (
                                 canWrite &&
@@ -112,7 +119,7 @@ const BusinessBackendPanel = {
                                     `<button type="button" class="btn btn-secondary btn-sm" data-business-cancel="${escapeHtml(order.id)}">撤销正式订单</button>`
                                 );
                             }
-                            return `<tr><td>${escapeHtml(order.companyOperationNo || order.id)}</td><td>${escapeHtml(stages[stage] || '读取中')}</td><td>${detail || (stage === 'legacy' ? '原始数据与余额参考' : '完善明细后建立业务单据')}</td><td>${actions.join(' ') || '—'}</td></tr>`;
+                            return `<tr><td>${escapeHtml(order.companyOperationNo || order.id)}</td><td>${escapeHtml(stages[stage] || '读取中')}</td><td>${detail || (stage === 'legacy' ? '原始数据与余额参考' : '完善明细后建立业务单据')}${this.settlementHtml(order)}</td><td>${actions.join(' ') || '—'}</td></tr>`;
                         })
                         .join('') || '<tr><td colspan="4">暂无订单</td></tr>'
                 }</tbody></table></div><button class="btn btn-secondary btn-sm" type="button" data-business-refresh>刷新业务数据</button></div></div>`;
@@ -127,6 +134,12 @@ const BusinessBackendPanel = {
             for (const button of element.querySelectorAll('[data-business-items]')) {
                 button.addEventListener('click', () => this.editItems(button.dataset.businessItems, element));
             }
+            element.querySelector('[data-business-catalog]')?.addEventListener('click', () =>
+                ItemCatalog.open(DB.currentCompanyId, async () => {
+                    await DB._initFromBusinessAPI();
+                    await this.render(element);
+                })
+            );
             for (const button of element.querySelectorAll(
                 '[data-business-convert], [data-business-submit], [data-business-cancel]'
             )) {
@@ -159,6 +172,22 @@ const BusinessBackendPanel = {
     handleFailure(error) {
         if (error.code === 'CONFLICT') DB._handleSaveFailure(error);
         else toast(error.message || '业务操作失败', 'error');
+    },
+
+    settlementHtml(order) {
+        if (!order.nativeSettlementProjection || Auth.hasCapability('finance.read') !== true) return '';
+        const money = (value, currency) => value == null ? '—' : `${currency || '—'} ${Number(value).toFixed(2)}`;
+        const currency = order.nativeSettlementCurrency || companyFor(order)?.settlementCurrency;
+        const parts = [
+            ['订单预收', order.salesAdvanceAmountUSD, 'USD'],
+            ['销售账单已核销（含抵账）', order.salesInvoiceSettledAmountUSD, 'USD'],
+            ['销售账单未结清', order.salesInvoiceOutstandingAmountUSD, 'USD'],
+            ['采购预付', order.factoryAdvanceAmount, currency],
+            ['采购账单已核销（含抵账）', order.factoryInvoiceSettledAmount, currency],
+            ['采购账单未结清', order.factoryInvoiceOutstandingAmount, currency]
+        ].filter(([, value]) => value != null);
+        const receipts = order.nativeReceiptSummary || [];
+        return `<details class="text-sm"><summary>结算与银行凭证</summary>${parts.map(([label, value, unit]) => `<div>${escapeHtml(label)}：${escapeHtml(money(value, unit))}</div>`).join('')}${receipts.map(row => `<div>${escapeHtml(row.name)} · ${escapeHtml(row.paymentType === 'Receive' ? '银行净收' : row.paymentType === 'Pay' ? '银行净付' : '账户划转')} ${escapeHtml(money(row.bankAmount, row.bankCurrency))} · 未分配 ${escapeHtml(money(row.unallocatedAmount, row.unallocatedCurrency))}</div>`).join('')}${receipts.length ? '<p class="text-gray">凭证金额可能关联多个订单；此处仅供核对，不按订单重复汇总。解除发票核销后，银行款仍保留。</p>' : ''}</details>`;
     },
 
     async refreshAfterAction(parent) {
@@ -325,9 +354,17 @@ const BusinessBackendPanel = {
 
     receivePayment(orderId, parent) {
         if (Auth.hasCapability('finance.write') !== true) return;
+        if (Auth.hasCapability('finance.payment_entry.create') !== true ||
+            Auth.hasCapability('finance.payment_entry.submit') !== true) {
+            toast('登记订单预收款需要收付款单创建和提交权限，请由管理员配置。', 'info');
+            return;
+        }
         const order = DB.data.orders.find(item => String(item.id) === String(orderId) && !item.deleted);
         if (!order || order.stage !== 'native' || Number(nativeSales(order)?.docstatus) !== 1) {
             return toast('请先提交正式订单，再登记实际收款', 'warning');
+        }
+        if (order.nativeHasPostedSalesInvoices) {
+            return toast('此订单已开票，请在应收与应付账单中登记款项，避免重复登记订单预收。', 'info');
         }
         const remaining = Number(order.orderAmountUSD || 0) - Number(order.paidAmountUSD || 0);
         if (remaining <= 0) return toast('此订单已无待收余额', 'info');

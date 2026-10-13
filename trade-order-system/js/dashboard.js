@@ -136,7 +136,7 @@ const Dashboard = {
             : metric(
                   isDocument ? '待出运订单' : '客户数量',
                   String(isDocument ? stats.pendingShipmentCount : stats.customerCount),
-                  isDocument ? '持续跟进每一笔交付' : '维护中的业务关系'
+                  isDocument ? '持续跟进每一笔交付' : '当前公司 · ' + company
               );
         const factoryUnpaid =
             Object.keys(totals)
@@ -223,6 +223,10 @@ const Dashboard = {
             ) +
             metric('订单营收 · USD', App.formatMoney(quotedRevenueUSD, 'USD'), '按当前可见订单报价汇总') +
             thirdMetric +
+            (showFinance || isDocument
+                ? metric('客户数量', String(stats.customerCount), '当前公司 · ' + company)
+                : '') +
+            metric('工厂数量', String(stats.factoryCount ?? '—'), '当前公司 · ' + company) +
             '</section>' +
             (unknownHistoryCount
                 ? '<p class="text-sm text-gray">部分历史金额或余额未知；汇总只使用已知值，不按当前汇率补算历史。</p>'

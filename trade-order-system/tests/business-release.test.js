@@ -140,10 +140,12 @@ function event(target) {
 
 test('salesperson creation has public production controls and no financial controls or hidden values', () => {
     for (const canRead of [false, true]) {
+        document.getElementById('modal').replaceChildren();
         auth.canSeeFinancials.mockReturnValue(canRead);
         auth.hasCapability.mockReturnValue(false);
         Orders.showAddForm();
         const editor = document.getElementById('orderForm');
+        expect(editor).not.toBeNull();
         for (const key of [
             'paidAmountUSD',
             'paymentStatus',

@@ -4,15 +4,46 @@
 import { App } from './app.js';
 import { DB } from './data.js';
 import { Auth } from './auth.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, installBusinessModalHooks, businessDraftScope } from './utils.js';
+import { FormDrafts } from './form-drafts.js';
 
 const Factories = {
     selectedFactories: new Set(),
+
+    attachDraft(recordId = 'new') {
+        const form = document.getElementById('factoryForm');
+        const pendingId = FormDrafts.pendingFor('factoryForm', { scope: businessDraftScope(DB, Auth), recordId });
+        const sourceId = recordId === 'new' ? pendingId : recordId;
+        FormDrafts.attach(form, {
+            scope: businessDraftScope(DB, Auth),
+            getScope: () => businessDraftScope(DB, Auth),
+            allowField: input => input.name !== 'bankInfo' || Auth.hasCapability('finance.write') === true,
+            recordId,
+            pendingExists: id => Boolean(DB.getFactory(id)),
+            getRecord: () => {
+                const record = DB.getFactory(form.dataset.pendingRecordId || sourceId);
+                return record
+                    ? Object.fromEntries(
+                          ['name', 'contact', 'phone', 'mobilePhone', 'products', 'address', 'bankInfo']
+                              .filter(key => form?.elements.namedItem(key))
+                              .map(key => [key, record[key]])
+                      )
+                    : null;
+            }
+        });
+    },
 
     canMutate(action, factory = null) {
         const actor = Auth.currentUser;
         if (!actor || Auth.hasCapability(action) !== true) return false;
         if (!factory && action !== 'create') return false;
+        if (
+            action === 'delete' &&
+            typeof Auth.canDeleteRecord === 'function' &&
+            !Auth.canDeleteRecord(factory, 'factories')
+        ) {
+            return false;
+        }
         const scope = actor.scope;
         if (!['self', 'team', 'tenant'].includes(scope)) return false;
         if (factory?.tenantId != null && String(factory.tenantId) !== String(actor.tenantId)) return false;
@@ -29,9 +60,15 @@ const Factories = {
             .filter(key => factory[key] != null)
             .map(key => String(factory[key]));
         if (scope === 'self') return owners.includes(String(actor.id));
-        return [...(Auth.users || []), actor].some(
-            user => owners.includes(String(user.id)) && user.teamId === actor.teamId
-        );
+        return owners.some(id => {
+            const owner =
+                String(actor.id) === id
+                    ? actor
+                    : typeof Auth.getRecordOwner === 'function'
+                      ? Auth.getRecordOwner(id)
+                      : (Auth.users || []).find(user => String(user.id) === id);
+            return owner && String(owner.teamId) === String(actor.teamId);
+        });
     },
 
     denyMutation() {
@@ -52,7 +89,8 @@ const Factories = {
             <div class="filter-bar">
                 <input type="text" id="factorySearchInput" class="filter-input" placeholder="搜索工厂名称/联系人/产品..." style="width:300px" oninput="Factories.filter()">
                 <span class="filter-info">🏢 当前公司：${escapeHtml(DB.getCurrentCompany().name)}</span>
-                <div style="margin-left:auto">
+                <div style="margin-left:auto;display:flex;gap:8px">
+                    <button class="btn btn-secondary" onclick="Factories.exportExcel()">📤 导出</button>
                     ${this.canMutate('create') ? '<button class="btn btn-primary" onclick="Factories.showAddForm()">➕ 新建工厂</button>' : ''}
                 </div>
             </div>
@@ -240,6 +278,14 @@ const Factories = {
             this.denyMutation();
             return;
         }
+        const pendingId = FormDrafts.pendingFor('factoryForm', {
+            scope: businessDraftScope(DB, Auth),
+            recordId: 'new'
+        });
+        if (pendingId && DB.getFactory(pendingId)) {
+            this.showEditForm(pendingId, { draftRecordId: 'new' });
+            return;
+        }
         const bodyHtml = `
             <form id="factoryForm" onsubmit="Factories.saveFactory(event); return false;">
                 <div class="form-group">
@@ -279,19 +325,20 @@ const Factories = {
             </form>
         `;
         App.showModal('新建工厂', bodyHtml, {
-            footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('factoryForm').requestSubmit()">💾 保存</button>`
+            footer: `<button class="btn btn-secondary" onclick="App.closeModal({discardDraft:true})">取消</button><button class="btn btn-primary" onclick="document.getElementById('factoryForm').requestSubmit()">💾 保存</button>`
         });
+        this.attachDraft();
     },
 
-    showEditForm(factoryId) {
+    showEditForm(factoryId, { draftRecordId = factoryId } = {}) {
         const f = DB.getFactory(factoryId);
         if (!f) return;
-        if (!this.canMutate('edit', f)) {
+        if (!this.canMutate(draftRecordId === 'new' ? 'create' : 'edit', f)) {
             this.denyMutation();
             return;
         }
         const bodyHtml = `
-            <form id="factoryForm" onsubmit="Factories.saveFactory(event, ${this.inlineArgument(factoryId)}); return false;">
+            <form id="factoryForm" onsubmit="Factories.saveFactory(event${draftRecordId === 'new' ? '' : ', ' + this.inlineArgument(factoryId)}); return false;">
                 <div class="form-group">
                     <label class="form-label">工厂名称 <span class="required">*</span></label>
                     <input type="text" class="form-input" name="name" required value="${escapeHtml(f.name)}">
@@ -329,19 +376,22 @@ const Factories = {
             </form>
         `;
         App.showModal('编辑工厂 - ' + escapeHtml(f.name), bodyHtml, {
-            footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('factoryForm').requestSubmit()">💾 保存修改</button>`
+            footer: `<button class="btn btn-secondary" onclick="App.closeModal({discardDraft:true})">取消</button><button class="btn btn-primary" onclick="document.getElementById('factoryForm').requestSubmit()">💾 保存修改</button>`
         });
+        this.attachDraft(draftRecordId);
     },
 
     async saveFactory(event, factoryId = null) {
         event.preventDefault();
+        const form = event.target;
+        if (form.dataset.saving === 'true') return;
+        if (!FormDrafts.canSubmit(event.target)) return;
 
         if (!DB._cloudReady) {
             App.toast('⚠️ 云端未连接，请检查网络后刷新重试', 'error');
             return;
         }
 
-        const form = event.target;
         const pendingId = factoryId || form.dataset.pendingRecordId || null;
         const pendingFactory = pendingId ? DB.getFactory(pendingId) : null;
         if (pendingId && !pendingFactory) {
@@ -377,12 +427,25 @@ const Factories = {
             form.dataset.pendingRecordId = newFactory.id;
         }
 
-        const ok = await DB.flush();
+        FormDrafts.stageRecord(form);
+        form.dataset.saving = 'true';
+        let ok = false;
+        try {
+            ok = await DB.flush();
+        } catch {
+            /* Keep the staged record and all form input for retry. */
+        } finally {
+            form.dataset.saving = 'false';
+        }
         if (!ok) {
             App.toast('⚠️ 保存到云端失败，请稍后重试', 'error');
             return;
         }
 
+        if (!FormDrafts.acknowledgeStaged(form)) {
+            App.toast('上一版已保存，当前新输入尚未保存，请再次保存', 'warning');
+            return;
+        }
         App.toast(factoryId ? '工厂信息已更新' : '工厂创建成功');
         App.closeModal();
         if (factoryId) {
@@ -478,33 +541,74 @@ const Factories = {
         this.renderTable(document.getElementById('factorySearchInput')?.value || '');
     },
 
+    exportExcel() {
+        const factories = DB.getFactories(document.getElementById('factorySearchInput')?.value || '');
+        if (!factories.length) {
+            App.toast('没有可导出的工厂数据', 'warning');
+            return;
+        }
+        const financial = Auth.canSeeFinancials?.() === true;
+        const headers = ['id', 'companyId', 'name', 'contact', 'phone', 'mobilePhone', 'products', 'address'];
+        if (financial) headers.push('bankInfo');
+        const labels = {
+            id: '工厂编号',
+            companyId: '所属公司编号',
+            name: '工厂名称',
+            contact: '联系人',
+            phone: '电话',
+            mobilePhone: '手机号码',
+            products: '产品类型',
+            address: '工厂地址',
+            bankInfo: '银行信息'
+        };
+        // Export only authorized fields, even if a stale local draft still holds bank data.
+        const rows = factories.map(factory =>
+            Object.fromEntries(
+                headers.map(key => [
+                    key,
+                    ['phone', 'mobilePhone', 'id', 'companyId'].includes(key)
+                        ? String(factory[key] ?? '')
+                        : (factory[key] ?? '')
+                ])
+            )
+        );
+        App.exportExcel(rows, `工厂列表_${new Date().toISOString().slice(0, 10)}.xlsx`, headers, labels);
+    },
+
     batchDelete() {
         if (this.selectedFactories.size === 0) return;
         const ids = [...this.selectedFactories];
-        if (ids.some(id => !this.canMutate('delete', DB.getFactory(id)))) {
-            this.denyMutation();
+        const allowed = ids.filter(id => this.canMutate('delete', DB.getFactory(id)));
+        if (!allowed.length) {
+            App.toast('所选工厂均无删除权限', 'warning');
             return;
         }
-        const totalOrders = ids.reduce((sum, id) => sum + DB.getFactoryOrders(id).length, 0);
+        const totalOrders = allowed.reduce((sum, id) => sum + DB.getFactoryOrders(id).length, 0);
         const warnMsg =
             totalOrders > 0
-                ? `确定要批量删除 ${ids.length} 个工厂吗？这些工厂共关联了 ${totalOrders} 笔订单，删除后订单仍会保留，但工厂信息将无法查看。此操作不可恢复。`
-                : `确定要批量删除 ${ids.length} 个工厂吗？此操作不可恢复。`;
+                ? `确定要批量删除 ${allowed.length} 个工厂吗？这些工厂共关联了 ${totalOrders} 笔订单，删除后订单仍会保留，但工厂信息将无法查看。此操作不可恢复。`
+                : `确定要批量删除 ${allowed.length} 个工厂吗？无权限的工厂将跳过。此操作不可恢复。`;
 
         App.showConfirm(warnMsg, async () => {
-            if (ids.some(id => !this.canMutate('delete', DB.getFactory(id)))) {
-                this.denyMutation();
+            let skipped = 0;
+            const deleted = ids.filter(id => {
+                if (!this.canMutate('delete', DB.getFactory(id))) {
+                    skipped++;
+                    return false;
+                }
+                return DB.deleteFactory(id) === true;
+            });
+            if (!deleted.length) {
+                App.toast('没有工厂被删除，请检查权限或刷新数据', 'warning');
                 return;
             }
-            App.toast('正在批量删除...', 'info');
-            ids.forEach(id => DB.deleteFactory(id));
             const ok = await DB.flush();
             if (!ok) {
                 App.toast('⚠️ 批量删除保存失败，请刷新页面重试', 'error');
                 return;
             }
-            this.selectedFactories.clear();
-            App.toast(`已删除 ${ids.length} 个工厂`);
+            deleted.forEach(id => this.selectedFactories.delete(id));
+            App.toast(`已删除 ${deleted.length} 个工厂${skipped ? `，跳过 ${skipped} 个无权限工厂` : ''}`);
             App.closeModal();
             const search = document.getElementById('factorySearchInput')?.value || '';
             this.renderTable(search);
@@ -512,4 +616,5 @@ const Factories = {
     }
 };
 
+installBusinessModalHooks(App, FormDrafts);
 window.Factories = Factories;

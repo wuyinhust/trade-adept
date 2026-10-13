@@ -6,6 +6,17 @@ import math
 import re
 from datetime import datetime, timezone
 from .schema import COLLECTIONS, dumps
+NATIVE_ROLE_PREFIX = "Tradept "
+CATALOG_CAPABILITIES = {"catalog.read", "catalog.create", "catalog.write", "catalog.disable"}
+FINANCE_CAPABILITIES = {
+    *(f"finance.{resource}.{action}" for resource in ("sales_invoice", "purchase_invoice", "payment_entry") for action in ("read", "create", "write", "submit", "cancel", "amend", "return", "print", "export") if resource != "payment_entry" or action != "return"),
+    *(f"finance.{resource}.{action}" for resource in ("receivables", "payables", "ledger") for action in ("read", "print", "export")),
+    "finance.reconciliation.read", "finance.reconciliation.write", "finance.reconciliation.unreconcile", "finance.bank_accounts.read",
+    "finance.payment_entry.deductions",
+    "finance.bank_reconciliation.read", "finance.bank_reconciliation.write",
+    "finance.bank_reconciliation.print", "finance.bank_reconciliation.export",
+    *(f"finance.bank_transaction.{action}" for action in ("read", "create", "write", "submit", "cancel", "print", "export")),
+}
 DEFAULT_ROLES = {
     "admin": {"scope": "tenant", "permissions": ["read", "create", "edit", "delete", "assign", "finance.read", "finance.write", "rates.write", "snapshots.read", "snapshots.restore", "accounts.configure"], "pages": ["dashboard", "orders", "customers", "factories", "shipping", "profit", "settings", "admin"]},
     "finance": {"scope": "tenant", "permissions": ["read", "create", "edit", "assign", "finance.read", "finance.write", "rates.write"], "pages": ["dashboard", "orders", "customers", "factories", "shipping", "profit", "settings"]},
@@ -14,10 +25,19 @@ DEFAULT_ROLES = {
     "document": {"scope": "self", "permissions": ["read", "create", "edit"], "pages": ["dashboard", "orders", "customers", "factories", "shipping"]},
 }
 DEFAULT_ROLES = {name: {**policy, "readScopes": {"factories": "entities"}} for name, policy in DEFAULT_ROLES.items()}
+# Defaults apply only when provisioning a new workspace. Existing tenant role
+# JSON is never merged with these grants during migrations or permission checks.
+for _role in ("admin", "finance"):
+    DEFAULT_ROLES[_role]["permissions"] += sorted(FINANCE_CAPABILITIES)
+    DEFAULT_ROLES[_role]["pages"].append("finance")
+    DEFAULT_ROLES[_role]["financePolicy"] = {"scope": "tenant", "paymentLimit": None, "allowedBankAccounts": None}
+DEFAULT_ROLES["admin"]["permissions"] += sorted(CATALOG_CAPABILITIES)
 HIDDEN_FIELDS = {"factoryCostRMB", "factoryCostUSD", "freightCostUSD", "freightCostRMB", "insuranceCostUSD", "otherCostUSD", "otherCostRMB", "orderAmountRMB", "profitRMB", "profitUSD", "profitRate", "margin", "paidAmountUSD", "paymentStatus", "costPaidUSD", "costPaymentStatus", "bankInfo", "bankAccount", "paidCostRMB", "paidCostUSD", "factoryCostPaid", "factoryPaidRMB", "erpItems", "purchaseRate"}
+HIDDEN_FIELDS.update({"salesAdvanceAmountUSD", "salesInvoiceSettledAmountUSD", "salesInvoiceOutstandingAmountUSD", "factoryAdvanceAmount", "factoryInvoiceSettledAmount", "factoryInvoiceOutstandingAmount", "nativeReceiptSummary", "salesInvoiceNames", "factoryInvoiceNames", "nativeSettlementCurrency"})
 NESTED_COST = {"totalAmount", "prepayment", "paidAmount", "cost", "costUSD", "costRMB", "paidCostRMB", "paidCostUSD", "costPaidUSD", "paymentStatus", "costPaymentStatus", "purchaseRate"}
+NESTED_COST.update({"advanceAmount", "invoiceSettledAmount", "invoiceOutstandingAmount"})
 DERIVED = {"profitRMB", "profitUSD", "profitRate", "orderAmountRMB"}
-FINANCIAL_INPUT = {"orderAmountUSD", "factoryCostRMB", "freightCostUSD", "insuranceCostUSD", "otherCostUSD", "factories", "companyId"}
+FINANCIAL_INPUT = {"orderAmountUSD", "factoryCostRMB", "factoryCostUSD", "freightCostUSD", "freightCostRMB", "insuranceCostUSD", "otherCostUSD", "otherCostRMB", "factories", "companyId"}
 
 def sensitive(key, nested=False):
     if key == "profitPolicy":
@@ -52,8 +72,11 @@ class APIError(Exception):
         return {"error": str(self), "code": self.code, **self.details}
 
 class Rules:
-    def __init__(self, configuration, profiles):
+    def __init__(self, configuration, profiles, ownership_profiles=None):
         self.configuration, self.profiles = configuration, profiles
+        # Historical ownership is not an account grant. Authentication and new
+        # assignments continue to use the separate active profile collection.
+        self.ownership_profiles = {**(ownership_profiles or {}), **profiles}
 
     def _policy(self, cfg, actor):
         return cfg.get("roles", {}).get(actor.get("role"), {"scope": "self", "permissions": []})
@@ -88,10 +111,10 @@ class Rules:
         scope = policy.get("readScopes", {}).get(collection, policy.get("scope")) if action == "read" else policy.get("scope")
         if scope in ("tenant", "entities"):
             return True
-        owners = {str(record[k]) for k in ("createdBy", "salespersonId", "ownerId") if record.get(k) is not None}.intersection(self.profiles)
+        owners = {str(record[k]) for k in ("createdBy", "salespersonId", "ownerId") if record.get(k) is not None}.intersection(self.ownership_profiles)
         if scope == "self":
             return actor["id"] in owners
-        return bool(actor.get("teamId") and any(self.profiles[uid].get("teamId") == actor["teamId"] for uid in owners))
+        return bool(actor.get("teamId") and any(self.ownership_profiles[uid].get("teamId") == actor["teamId"] for uid in owners))
 
     def visible_record(self, cfg, actor, record):
         value = copy.deepcopy(record)
@@ -126,6 +149,10 @@ class Rules:
             for key in ("salespersonId", "ownerId", "createdBy"):
                 if key in patch and patch[key] not in (actor["id"], (old or {}).get(key), None):
                     raise APIError(403, "ASSIGNMENT_DENIED", "Cannot assign another user's records")
+        if not historical:
+            for key in ("createdBy", "salespersonId", "ownerId"):
+                if key in patch and patch[key] not in (None, "") and patch[key] != (old or {}).get(key) and str(patch[key]) not in self.profiles:
+                    raise APIError(403, "ASSIGNMENT_DENIED", "New assignments require an active configured account")
         can_finance = self.permitted(cfg, actor, "finance.write")
         for key in list(patch):
             if sensitive(key):
@@ -194,6 +221,8 @@ class Rules:
                 value["companyOperationNo"] = number.strip()
             else:
                 self._validate_order(value)
+                if not native_order:
+                    self._prepare_quote_aliases(cfg, old, value, patch)
             raw_changed = self._financial_changed(old, value)
             # A public nested-array edit that preserves all costs does not
             # rewrite historical derived amounts under a different formula.
@@ -246,11 +275,59 @@ class Rules:
         if not isinstance(number, str) or not number.strip():
             raise APIError(400, "ORDER_NUMBER_REQUIRED", "Company operation number is required")
         order["companyOperationNo"] = number.strip()
-        for key in ("orderAmountUSD", "factoryCostRMB", "freightCostUSD", "insuranceCostUSD", "otherCostUSD", "paidAmountUSD", "costPaidUSD"):
+        for key in ("orderAmountUSD", "factoryCostRMB", "factoryCostUSD", "freightCostUSD", "freightCostRMB", "insuranceCostUSD", "otherCostUSD", "otherCostRMB", "paidAmountUSD", "costPaidUSD"):
             if key in order:
                 value = order[key]
                 if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                     raise APIError(400, "INVALID_AMOUNT", "Amounts must be finite, nonnegative numbers")
+
+    @staticmethod
+    def _quote_alias_pairs(company):
+        """Return aliases for the existing policy's input units, not a new formula."""
+        currency = company.get("settlementCurrency", "CNY" if company.get("profitPolicy") == "grandware-v40" else "USD")
+        if currency == "USD":
+            # Grandware's old factoryCostRMB column holds USD for HK entities.
+            return (("factoryCostUSD", "factoryCostRMB"),)
+        if currency == "CNY":
+            return (("freightCostRMB", "freightCostUSD"), ("otherCostRMB", "otherCostUSD"))
+        return ()
+
+    @staticmethod
+    def _prepare_quote_aliases(cfg, old, value, patch):
+        company = next(c for c in cfg["companies"] if c["id"] == value["companyId"])
+        pairs = Rules._quote_alias_pairs(company)
+        applicable = {alias for alias, _ in pairs}
+        for alias in {"factoryCostUSD", "freightCostRMB", "otherCostRMB"} - applicable:
+            if alias in patch and (old is None or patch[alias] != old.get(alias)):
+                raise APIError(400, "UNSUPPORTED_AMOUNT_CURRENCY", "This amount field does not apply to the company's quote currency", field=alias)
+        for alias, legacy in pairs:
+            # A full form may repeat the untouched partner. Only actual changes
+            # choose authority; an old stored alias must never shadow an edit.
+            changed = {key for key in (alias, legacy) if key in patch and (old is None or patch[key] != old.get(key))}
+            if changed == {alias}:
+                value.pop(legacy, None)
+            elif changed == {legacy}:
+                value.pop(alias, None)
+
+    @staticmethod
+    def _quote_alias_values(company, order, conversion=1):
+        """Normalize aliases with the conversion already used by the quote."""
+        result = {}
+        for alias, legacy in Rules._quote_alias_pairs(company):
+            if alias not in order and legacy not in order:
+                continue
+            # Generic CNY fees use USD in the legacy columns; Grandware v40
+            # domestic fees already use RMB despite their USD column suffix.
+            multiplier = conversion if company.get("profitPolicy") == "generic-native" and company.get("settlementCurrency") == "CNY" else 1
+            if alias in order:
+                amount = order[alias] / multiplier
+                if legacy in order and not math.isclose(amount, order[legacy], rel_tol=1e-9, abs_tol=1e-9):
+                    raise APIError(400, "FINANCIAL_ALIAS_CONFLICT", "Equivalent amount fields contain different values", fields=[alias, legacy])
+            else:
+                amount = order[legacy]
+            result[legacy] = amount
+            result[alias] = amount * multiplier
+        return result
 
     def _validate_links(self, db, cfg, actor, payload, collection, value, patch, creating, prior=None):
         if collection != "orders":
@@ -298,14 +375,26 @@ class Rules:
             if currency not in ("CNY", "USD"):
                 raise APIError(400, "UNSUPPORTED_CURRENCY", "Quote currency requires an explicit conversion policy")
             conversion = rate if currency == "CNY" else 1
-            revenue = order.get("orderAmountUSD", 0) * conversion
-            cost = order.get("factoryCostRMB", 0)
-            expenses = sum(order.get(key, 0) or 0 for key in ("freightCostUSD", "insuranceCostUSD", "otherCostUSD")) * conversion
+            aliases = Rules._quote_alias_values(company, order, conversion)
+            inputs = {**order, **aliases}
+            if currency == "CNY":
+                # Keep one authoritative currency for generic fees. Persisting
+                # a converted shadow would conflict at a later quote rate or
+                # silently revalue a fixed RMB expense.
+                for alias, legacy in Rules._quote_alias_pairs(company):
+                    if alias in order:
+                        order.pop(legacy, None)
+            else:
+                order.update(aliases)
+            revenue = inputs.get("orderAmountUSD", 0) * conversion
+            cost = inputs.get("factoryCostRMB", 0)
+            expenses = sum(inputs.get(key, 0) or 0 for key in ("freightCostUSD", "insuranceCostUSD", "otherCostUSD")) * conversion
             profit = revenue - cost - expenses
             order.update(orderAmountRMB=round(revenue, 2), profitRMB=round(profit, 2), profitRate=round(profit / revenue * 100, 2) if revenue else 0, profitPolicy=policy, settlementCurrency=currency)
             return
         if policy != "grandware-v40":
             raise APIError(400, "UNKNOWN_PROFIT_POLICY", "Configure a supported company profit policy before editing financial inputs")
+        order.update(Rules._quote_alias_values(company, order))
         amount = order.get("orderAmountUSD", 0)
         cost = order.get("factoryCostRMB", 0)
         rate = (rates or {}).get(company["id"], company.get("exchangeRate", 7.25))

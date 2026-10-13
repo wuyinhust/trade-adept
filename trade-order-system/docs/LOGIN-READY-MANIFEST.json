@@ -1,0 +1,66 @@
+{
+  "status": "LOGIN_READY",
+  "date": "2026-10-13",
+  "ownedFiles": {
+    "js/enterprise-login.js": "f77505904341ac0bf289c57f313af5647e09526b006447313b42d8fc9fee7450",
+    "js/login-policy-admin.js": "08a78669036ba42191da378bea0d0023f05fd476bb0808124e63843470a45b17",
+    "integrations/frappe_app/tradept_core/enterprise_login.py": "10cabc94127e1736a0b1e838ad5605d712fa158306a3f03e5aa00b7a3d3f3248",
+    "integrations/frappe_app/tradept_core/login_policy.py": "d9ebced547a7c43b583da78d0ee85d9f71d8ac56b0214d97a843377e6f3d6a16",
+    "integrations/frappe_app/tradept_core/branding.py": "4c95781aa96c7d7853f42b894351969f48cfde2e8b693ed3c9decdaff58a7f6a",
+    "integrations/frappe_app/tradept_core/public/js/desk-brand.js": "28f72565f39fd64c0d5d44634c7311e3dd9a58fa3cb89187b14af3cad844ba80",
+    "integrations/frappe_app/tradept_core/public/css/desk-brand.css": "f0d7c822e8b1c754f059aa652e893c275fa1498094aed87da20b4a1f8a2d447f",
+    "integrations/frappe_app/tradept_core/www/tradept-licenses.html": "d1398cc82aeb904e638f746519cf5e586a7a53a965c68485654af4d763c77cfb",
+    "integrations/frappe_app/tradept_core/public/licenses/ERPNext-GPL-3.0.txt": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "integrations/frappe_app/tradept_core/public/licenses/Frappe-MIT.txt": "bc6001a54ffcc4ab520424d7dbb85b293578efcdcb7d8f8055e00dddf942e5d7",
+    "integrations/frappe_app/tradept_core/login_setup.py": "8e72a2f2ba9c2abae345dbb74646e59a98f89af3a296fc31eb9e6f5d400c39c2",
+    "js/backend-bootstrap.js": "235021f262db16c0fcfebe927e21b32347cb5b40d7e69df2ab31713d5ba0632d",
+    "tests/enterprise-login.test.js": "02b45c889785957f923ab80ad8d6297d599088f59afd84992726748a4d2c8f17",
+    "tests/backend-bootstrap.test.js": "f0fd0af2a559e1e0e8dcf5606af453b3cd2e1e052eb55b2840e72ac029c03003",
+    "tests/login-policy-admin.test.js": "ca2fbe48c05354bbba8d11fbce7fd9a8fb9e9fbd753623a1868ae23228786ee0",
+    "integrations/erpnext/native_login_acceptance.py": "6671d07514a3c35338449630d3ed75ef26ea19efea7582929b32d5e1da6a818c",
+    "integrations/erpnext/browser_login_activation.cjs": "115aceef05dbe37703fb08498bfdc70d8174f6a68d89f24761a5e5b988d67bc5",
+    "server/tests/test_demo_login.py": "66cccd61830c435039268f3e10350c4fb555d3128274cda98949780e3b981d8c",
+    "integrations/erpnext/browser_demo_login.cjs": "ba22040c3ed033fb0ccd6c0d723ca37dc047a821ca61873fb1683b34c9520242",
+    "integrations/frappe_app/tradept_core/session_security.py": "7b105dfdf2622189f0f196d133fc6fe55a531f0ca2ea4f6bb3b30947d7dc31a1"
+  },
+  "sharedDependencyFiles": {
+    "integrations/frappe_app/tradept_core/permissions.py": "e706beeec6364699f096fef75892c05a68246ed5c876d15b344cb9a5ccc98d85",
+    "integrations/frappe_app/tradept_core/domain.py": "b725c763f8ff626b3f87fc77e856b34331f3e79d9a8b6fecb9e3f5df2220fe9a",
+    "integrations/frappe_app/tradept_core/request_guard.py": "9576a6928a312f2725eb5159ffec66462301d52eab9e24b5e460a3345a43465b",
+    "integrations/frappe_app/tradept_core/install.py": "f546532b2118b17741ca17c41d4effdf6b7fb93302c94a103a4de57fe0292ffb",
+    "integrations/frappe_app/tradept_core/administrator.py": "24e8c20fc6f518f72d23c0d911a64ad817ec647889860ebde1a42ecfb6297a1a"
+  },
+  "validation": {
+    "nativeAuthentication": 94,
+    "nativePythonUnitSuite": 265,
+    "javascriptTests": 701,
+    "javascriptSuites": 22,
+    "browserChecks": 5,
+    "realBrowserAuthentication": true,
+    "resetSubmitted": false,
+    "externalMailSent": false,
+    "gatewayTests": 65,
+    "demoUiChecks": 5,
+    "demoUiAuthenticationStubbed": true,
+    "demoNativeAuthentication": "protocol fixtures only; real two-site deployed acceptance remains with coordinator",
+    "historicalOwnershipBootstrap": {
+      "passed": 9,
+      "suites": 1,
+      "sourceSha256": "557d8e05a543d59cf063d281d99adc5ff9c43c6ee44f02e271cbf9d9f89961ff",
+      "note": "targeted rerun after historicalOwners wiring; previous full 701 suite precedes these three new tests"
+    },
+    "nativeSessionTransactions": "real SQL Sessions and Redis: no implicit commit during activation/provision; failure/savepoint/full rollback; actual after_commit eviction",
+    "nativeDeploymentScope": "auth-only site with empty company list; canonical four-company grants and immutable-image HTTP retirement await coordinator clones",
+    "migrationSignupPolicy": "actual install entrypoint access settings on native site; schema/asset/branding writes mocked; pending, active and retired configurations keep signup off",
+    "memberTransactions": "real LoginManager.logout execution with native User/Profile/Auth/roles and SQL SID/Redis; disable, System-to-Website role, password post-profile failure rollback; explicit successful commit eviction; manager constructed without initiating a new HTTP login",
+    "catalogBootstrap": "deployment explicitly applies catalog template only to existing standard admin role; finance/custom roles unchanged; bootstrap allows permission configuration but denies catalog_state/catalog_operation; no Item business operations on auth-only site"
+  },
+  "releaseGate": "Final combined immutable image and isolated Grandware/Example clone acceptance remain with release coordinator; module source ready, no production switch performed here",
+  "ownedManifestSHA256": "732b036eac289be97967210c437d041f3cce5978c0c8f3a491ea302190d3da5a",
+  "integrationFiles": {
+    "server/frappe_client.py": "8c4f1246a6624928420a440e9ecdd7f6b05649c2640acf00c9a904c9048e2bbf",
+    "server/cli.py": "887aa3ff819fee9ef289f489f2af63a2d2e9296cf395110e849389586b5b133e",
+    "server/tests/test_gateway.py": "7afaf04f299ff37898d2c225bdd4ee56a2f4c5c66d75bf1af46c20489deba58d"
+  },
+  "deploymentMode": "Grandware fixed private entry; new generated initial administrator; retire demo identities; real email/domain/SMTP configured in onboarding"
+}

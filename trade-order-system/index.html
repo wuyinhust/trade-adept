@@ -16,9 +16,10 @@
         <link rel="icon" type="image/png" sizes="1254x1254" href="assets/brand/tradept-icon.png" />
         <link rel="apple-touch-icon" href="assets/brand/tradept-icon.png" />
         <title>Tradept</title>
-        <link rel="stylesheet" href="css/style.css?v=0.3.0" />
-        <link rel="stylesheet" href="css/design-v1.css?v=0.3.0&logo=dark-1&live-rate=1" />
-        <link rel="stylesheet" href="css/administrator.css?v=0.3.0&admin=1" />
+        <link rel="stylesheet" href="css/style.css?v=0.4.0" />
+        <link rel="stylesheet" href="css/design-v1.css?v=0.4.0&logo=dark-1&live-rate=1" />
+        <link rel="stylesheet" href="css/administrator.css?v=0.4.0&admin=1" />
+        <link rel="stylesheet" href="css/finance.css?v=0.4.0&finance=1" />
         <script src="/vendor/chart.umd.min.js"></script>
         <script src="/vendor/xlsx.full.min.js"></script>
         <!-- CloudBase JS SDK（本地，避免 CDN 加载失败） -->
@@ -154,6 +155,10 @@
                         <span class="nav-icon" data-icon="shipping"></span>
                         <span class="nav-label">物流单证</span>
                     </a>
+                    <a href="#/finance" class="nav-item" data-page="finance" id="nav-finance">
+                        <span class="nav-icon" data-icon="chart"></span>
+                        <span class="nav-label">应收与应付</span>
+                    </a>
                     <a href="#/settings" class="nav-item" data-page="settings" id="nav-settings">
                         <span class="nav-icon" data-icon="settings"></span>
                         <span class="nav-label">系统设置</span>
@@ -278,29 +283,41 @@
         <!-- Import Map: 强制所有模块加载最新版本（防止浏览器缓存旧代码） -->
         <script type="importmap">
             {
-                "imports": {
-                    "./js/app.js": "./js/app.js?v=0.3.0",
-                    "./js/data.js": "./js/data.js?v=0.3.0",
-                    "./js/exchange.js": "./js/exchange.js?v=0.3.0",
-                    "./js/profit.js": "./js/profit.js?v=0.3.0",
-                    "./js/dashboard.js": "./js/dashboard.js?v=0.3.0",
-                    "./js/orders.js": "./js/orders.js?v=0.3.0",
-                    "./js/workspace-settings.js": "./js/workspace-settings.js?v=0.3.0&live-rate=1",
-                    "./js/administrator.js": "./js/administrator.js?v=0.3.0&admin=1",
-                    "./js/auth.js": "./js/auth.js?v=0.3.0",
-                    "./js/utils.js": "./js/utils.js?v=0.3.0",
-                    "./js/constants.js": "./js/constants.js?v=0.3.0",
-                    "./js/cloud.js": "./js/cloud.js?v=0.3.0",
-                    "./js/factories.js": "./js/factories.js?v=0.3.0",
-                    "./js/order-import.js": "./js/order-import.js?v=0.3.0",
-                    "./js/ui.js": "./js/ui.js?v=0.3.0",
-                    "./js/customers.js": "./js/customers.js?v=0.3.0",
-                    "./js/shipping.js": "./js/shipping.js?v=0.3.0"
-                }
-            }
+    "imports": {
+        "./js/app.js": "./js/app.js?v=0.4.0",
+        "./js/data.js": "./js/data.js?v=0.4.0",
+        "./js/exchange.js": "./js/exchange.js?v=0.4.0",
+        "./js/profit.js": "./js/profit.js?v=0.4.0",
+        "./js/dashboard.js": "./js/dashboard.js?v=0.4.0",
+        "./js/orders.js": "./js/orders.js?v=0.4.0",
+        "./js/workspace-settings.js": "./js/workspace-settings.js?v=0.4.0&live-rate=1",
+        "./js/administrator.js": "./js/administrator.js?v=0.4.0&admin=1",
+        "./js/auth.js": "./js/auth.js?v=0.4.0",
+        "./js/utils.js": "./js/utils.js?v=0.4.0",
+        "./js/constants.js": "./js/constants.js?v=0.4.0",
+        "./js/cloud.js": "./js/cloud.js?v=0.4.0",
+        "./js/factories.js": "./js/factories.js?v=0.4.0",
+        "./js/order-import.js": "./js/order-import.js?v=0.4.0",
+        "./js/ui.js": "./js/ui.js?v=0.4.0",
+        "./js/customers.js": "./js/customers.js?v=0.4.0",
+        "./js/shipping.js": "./js/shipping.js?v=0.4.0",
+        "./js/api-client.js": "./js/api-client.js?v=0.4.0",
+        "./js/backend-bootstrap.js": "./js/backend-bootstrap.js?v=0.4.0",
+        "./js/contact-conflicts.js": "./js/contact-conflicts.js?v=0.4.0",
+        "./js/contact-merge.js": "./js/contact-merge.js?v=0.4.0",
+        "./js/demo-profile.js": "./js/demo-profile.js?v=0.4.0",
+        "./js/enterprise-login.js": "./js/enterprise-login.js?v=0.4.0",
+        "./js/erpnext-panel.js": "./js/erpnext-panel.js?v=0.4.0",
+        "./js/finance.js": "./js/finance.js?v=0.4.0",
+        "./js/form-drafts.js": "./js/form-drafts.js?v=0.4.0",
+        "./js/invoices.js": "./js/invoices.js?v=0.4.0",
+        "./js/login-policy-admin.js": "./js/login-policy-admin.js?v=0.4.0",
+        "./js/item-catalog.js": "./js/item-catalog.js?v=0.4.0"
+    }
+}
         </script>
 
         <!-- ES Modules 入口 (v41 动态 import 懒加载) -->
-        <script type="module" src="js/backend-bootstrap.js?v=0.3.0"></script>
+        <script type="module" src="js/backend-bootstrap.js?v=0.4.0"></script>
     </body>
 </html>

@@ -31,12 +31,82 @@ const Exchange = {
         return rmb / DB.getExchangeRate(companyId);
     },
 
+    /** 金额存在的键是权威值；字段后缀不改变 Grandware 旧费用的实际币种。 */
+    getOrderMoneyFields(order) {
+        const domestic = this.isDomestic(order.companyId);
+        const policy =
+            order.profitPolicy ||
+            order.formulaVersion ||
+            DB.companies?.find(company => String(company.id) === String(order.companyId))?.profitPolicy;
+        const descriptor = (legacy, canonical, currency, canonicalCurrency) => {
+            const key = canonical && Object.hasOwn(order, canonical) ? canonical : legacy;
+            return { key, value: order[key], currency: key === canonical ? canonicalCurrency : currency };
+        };
+        return {
+            factoryCost: descriptor(
+                'factoryCostRMB',
+                domestic ? null : 'factoryCostUSD',
+                domestic ? 'CNY' : 'USD',
+                'USD'
+            ),
+            freightCost: descriptor(
+                'freightCostUSD',
+                domestic ? 'freightCostRMB' : null,
+                domestic && policy === 'grandware-v40' ? 'CNY' : 'USD',
+                'CNY'
+            ),
+            otherCost: descriptor(
+                'otherCostUSD',
+                domestic ? 'otherCostRMB' : null,
+                domestic && policy === 'grandware-v40' ? 'CNY' : 'USD',
+                'CNY'
+            )
+        };
+    },
+
+    /** 只在计算副本中换算旧公式输入，不向订单持久化影子金额。 */
+    calcOrderProfitForOrder(order, rateOverride) {
+        const rate =
+            rateOverride ??
+            (order.stage === 'native' && Number.isFinite(order.exchangeRateUsed) && order.exchangeRateUsed > 0
+                ? order.exchangeRateUsed
+                : DB.getExchangeRate(order.companyId));
+        const fields = this.getOrderMoneyFields(order);
+        const policy =
+            order.profitPolicy ||
+            order.formulaVersion ||
+            DB.companies?.find(company => String(company.id) === String(order.companyId))?.profitPolicy;
+        const expense = field =>
+            this.isDomestic(order.companyId) && policy !== 'grandware-v40' && field.currency === 'CNY'
+                ? (Number(field.value) || 0) / rate
+                : Number(field.value) || 0;
+        return this.calcOrderProfit(
+            order.orderAmountUSD,
+            Number(fields.factoryCost.value) || 0,
+            expense(fields.freightCost),
+            order.insuranceCostUSD,
+            expense(fields.otherCost),
+            order.companyId,
+            policy,
+            rate
+        );
+    },
+
     /** 计算单笔订单利润(RMB)
      *  国内公司：含退税 = (收入 - 工厂成本) + 退税 - 货代费 - 其他
      *  HK 公司：美金结算，不含退税 = 订单金额 - 工厂成本 - 其他
      */
-    calcOrderProfit(orderAmountUSD, factoryCostRMB, freightCostUSD, insuranceCostUSD, otherCostUSD, companyId, policy) {
-        const rate = DB.getExchangeRate(companyId);
+    calcOrderProfit(
+        orderAmountUSD,
+        factoryCostRMB,
+        freightCostUSD,
+        insuranceCostUSD,
+        otherCostUSD,
+        companyId,
+        policy,
+        rateOverride
+    ) {
+        const rate = rateOverride ?? DB.getExchangeRate(companyId);
         const formula = policy || DB.companies?.find(c => c.id === companyId)?.profitPolicy;
         if (formula === 'generic-native') {
             const conversion = this.isDomestic(companyId) ? rate : 1;
@@ -76,22 +146,24 @@ const Exchange = {
             'legacy-usd-v56';
         const n = value => Number(value) || 0;
         const currency = domestic ? 'CNY' : 'USD';
+        const money = this.getOrderMoneyFields(order);
         if (order.stage === 'legacy' || (order.historicalReference && order.stage !== 'native')) {
             const known = value => (Number.isFinite(value) ? value : null);
             const storedRevenue = known(domestic ? order.orderAmountRMB : order.orderAmountUSD);
-            const factoryCost = known(order.factoryCostRMB);
+            const factoryCost = known(money.factoryCost.value);
             const legacy = policy === 'grandware-v40';
             const historicRate =
                 Number.isFinite(order.exchangeRateUsed) && order.exchangeRateUsed > 0 ? order.exchangeRateUsed : null;
-            const convertedExpense = value => {
+            const convertedExpense = (value, expenseCurrency = 'USD') => {
                 const amount = known(value);
                 if (amount === null) return null;
-                if (!domestic || legacy || amount === 0) return amount;
+                if (!domestic || expenseCurrency === 'CNY' || amount === 0) return amount;
                 return historicRate === null ? null : amount * historicRate;
             };
-            const freightCost = !domestic && legacy ? 0 : convertedExpense(order.freightCostUSD);
+            const freightCost =
+                !domestic && legacy ? 0 : convertedExpense(money.freightCost.value, money.freightCost.currency);
             const insuranceCost = legacy ? 0 : convertedExpense(order.insuranceCostUSD);
-            const otherCost = convertedExpense(order.otherCostUSD);
+            const otherCost = convertedExpense(money.otherCost.value, money.otherCost.currency);
             const taxRebate =
                 domestic && legacy
                     ? factoryCost !== null && known(order.insuranceCostUSD) !== null
@@ -126,16 +198,16 @@ const Exchange = {
             domestic && Number.isFinite(order.orderAmountRMB)
                 ? order.orderAmountRMB
                 : n(order.orderAmountUSD) * (domestic ? rate : 1);
-        const factoryCost = n(order.factoryCostRMB);
+        const factoryCost = n(money.factoryCost.value);
         const legacy = policy === 'grandware-v40';
         const generic = policy === 'generic-native';
         const freightCost = domestic
-            ? n(order.freightCostUSD) * (legacy ? 1 : rate)
+            ? n(money.freightCost.value) * (money.freightCost.currency === 'CNY' ? 1 : rate)
             : generic
-              ? n(order.freightCostUSD)
+              ? n(money.freightCost.value)
               : 0;
         const insuranceCost = !legacy ? n(order.insuranceCostUSD) * (domestic ? rate : generic ? 1 : 0) : 0;
-        const otherCost = n(order.otherCostUSD) * (domestic && !legacy ? rate : 1);
+        const otherCost = n(money.otherCost.value) * (domestic && money.otherCost.currency === 'USD' ? rate : 1);
         const taxRebate =
             domestic && !generic ? (factoryCost / 1.13) * (legacy ? n(order.insuranceCostUSD) / 100 : 0.13) : 0;
         const totalCost = factoryCost + freightCost + insuranceCost + otherCost;
@@ -175,14 +247,7 @@ const Exchange = {
             if (frozen) return;
             const rate = DB.getExchangeRate(o.companyId);
             const isHK = !this.isDomestic(o.companyId);
-            const profit = this.calcOrderProfit(
-                o.orderAmountUSD,
-                o.factoryCostRMB,
-                o.freightCostUSD,
-                o.insuranceCostUSD,
-                o.otherCostUSD,
-                o.companyId
-            );
+            const profit = this.calcOrderProfitForOrder(o, rate);
             // HK 公司全部美金交易，不乘汇率
             o.orderAmountRMB = isHK
                 ? Math.round(o.orderAmountUSD * 100) / 100

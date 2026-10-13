@@ -16,7 +16,7 @@ _guarded = (
     "User", "User Permission", "Role", "Role Profile", "Custom DocPerm", "Department", "Email Account",
     "Sales Order", "Purchase Order", "Sales Invoice", "Purchase Invoice",
     "Delivery Note", "Purchase Receipt", "Payment Entry", "Journal Entry",
-    "GL Entry", "Payment Ledger Entry", "Advance Payment Ledger Entry", "Stock Ledger Entry", "Account",
+    "GL Entry", "Payment Ledger Entry", "Advance Payment Ledger Entry", "Stock Ledger Entry", "Account", "Unreconcile Payment",
     "Warehouse", "Item", "Item Price", "Bank Account", "Bank Transaction",
     "Quotation", "Supplier Quotation", "Material Request", "Stock Entry",
     "Trade Workspace", "Trade User Profile", "Trade Order Brief", "Trade Legacy Order",
@@ -26,7 +26,7 @@ _guarded = (
 has_permission = {name: "tradept_core.permissions.native_permission" for name in _guarded}
 permission_query_conditions = {name: "tradept_core.permissions.native_query" for name in _guarded}
 
-_business_documents = ("Company", "User", "Email Account", "Customer", "Supplier", "Contact", "Currency Exchange", "Sales Order", "Purchase Order", "Delivery Note", "Sales Invoice", "Purchase Invoice", "Purchase Receipt", "Payment Entry", "Trade Order Brief", "Trade Legacy Order", "Trade Shipment", "Trade Document")
+_business_documents = ("Company", "User", "Email Account", "Customer", "Supplier", "Contact", "Currency Exchange", "Item", "Sales Order", "Purchase Order", "Delivery Note", "Sales Invoice", "Purchase Invoice", "Purchase Receipt", "Payment Entry", "Bank Transaction", "Journal Entry", "Unreconcile Payment", "Trade Order Brief", "Trade Legacy Order", "Trade Shipment", "Trade Document")
 doc_events = {name: {
     "before_insert": "tradept_core.events.before_native_write",
     "before_save": "tradept_core.events.before_native_write",
@@ -39,3 +39,12 @@ doc_events = {name: {
     "on_change": "tradept_core.events.after_native_write",
     "after_delete": "tradept_core.events.after_native_write",
 } for name in _business_documents}
+doc_events["*"] = {event: "tradept_core.events.before_catalog_write" for event in ("before_insert", "before_save", "before_submit", "before_cancel", "on_trash")}
+
+# Enterprise login and branding are independent of financial workflows.
+before_login = "tradept_core.enterprise_login.before_login"
+on_login = "tradept_core.enterprise_login.on_login"
+app_include_js = ["/assets/tradept_core/js/desk-brand.js"]
+app_include_css = ["/assets/tradept_core/css/desk-brand.css"]
+website_context = {"app_name": "Tradept", "favicon": "/assets/tradept_core/images/tradept-icon.png"}
+boot_session = "tradept_core.branding.boot_session"

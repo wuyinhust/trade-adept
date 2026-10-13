@@ -19,7 +19,7 @@ AUTH_METHODS = {
     "frappe.integrations.oauth2_logins.login_via_github",
     "frappe.integrations.oauth2_logins.login_via_microsoft",
 }
-ALLOWED_METHODS = AUTH_METHODS | {"tradept_core.api.dispatch"}
+ALLOWED_METHODS = AUTH_METHODS | {"tradept_core.api.dispatch", "tradept_core.enterprise_login.login_config", "tradept_core.enterprise_login.forgot_password", "tradept_core.enterprise_login.complete_password"}
 
 
 def _rpc(path):
@@ -40,6 +40,8 @@ def check_request():
     if authorization:
         from frappe.auth import validate_auth
         validate_auth()
+    from .enterprise_login import check_session
+    check_session()
     if not restricted_user(frappe.session.user):
         return
     path = unquote(request.path)

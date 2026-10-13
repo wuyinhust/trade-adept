@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "checks": [
+    "explicit-demo-options-only",
+    "no-default-tenant",
+    "browser-requires-tenant-choice",
+    "both-original-account-names-and-tenants-preserved",
+    "unconfigured-email-recovery-hidden"
+  ],
+  "mode": "UI config and login responses stubbed; native routing separately unit-tested",
+  "realAuthenticationAttempted": false
+}

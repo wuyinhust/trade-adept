@@ -6,9 +6,31 @@ import { DB } from './data.js';
 import { Auth } from './auth.js';
 import { requiresOverseasPort } from './order-import.js';
 import { Exchange } from './exchange.js';
-import { escapeHtml, toast, validate } from './utils.js';
+import { escapeHtml, toast, validate, installBusinessModalHooks, businessDraftScope } from './utils.js';
+import { FormDrafts } from './form-drafts.js';
 
 const Shipping = {
+    attachDraft(formId, recordId) {
+        const form = document.getElementById(formId);
+        const pendingId = FormDrafts.pendingFor(formId, { scope: businessDraftScope(DB, Auth), recordId });
+        FormDrafts.attach(form, {
+            scope: businessDraftScope(DB, Auth),
+            getScope: () => businessDraftScope(DB, Auth),
+            recordId,
+            pendingExists: id => Boolean(DB.getShipment(id)),
+            getRecord: () => {
+                const id = formId === 'statusForm' ? recordId : form.dataset.pendingRecordId || pendingId;
+                const record = DB.getShipment(id);
+                return record
+                    ? Object.fromEntries(
+                          [...form.elements]
+                              .filter(input => input.name && !input.disabled)
+                              .map(input => [input.name, record[input.name]])
+                      )
+                    : null;
+            }
+        });
+    },
     render(container, param) {
         if (param) {
             this.renderDetail(container, param);
@@ -239,21 +261,34 @@ const Shipping = {
 
     showAddForm(orderId = '') {
         if (!Auth.canEdit()) return;
-        const orders = DB.getOrders().filter(order => !DB.getShipmentByOrder(order.id));
+        const orders = DB.getOrders().filter(order => {
+            const existing = DB.getShipmentByOrder(order.id);
+            const pendingId = FormDrafts.pendingFor('shipmentForm', {
+                scope: businessDraftScope(DB, Auth),
+                recordId: 'new:' + order.id
+            });
+            // Reopening a failed creation must update its pending ID, not create a second shipment.
+            return !existing || String(existing.id) === String(pendingId);
+        });
         const selected = orderId || orders[0]?.id || '';
         if (!orders.some(order => String(order.id) === String(selected))) {
             App.toast('当前法人没有可建立出运记录的订单', 'info');
             return;
         }
         const order = DB.getOrder(selected);
+        const pendingId = FormDrafts.pendingFor('shipmentForm', {
+            scope: businessDraftScope(DB, Auth),
+            recordId: 'new:' + selected
+        });
+        const pending = pendingId ? DB.getShipment(pendingId) : null;
         const body = `<form id="shipmentForm" onsubmit="Shipping.saveShipment(event); return false;">
             <div class="form-group"><label class="form-label">关联操作单 *</label><select name="orderId" class="form-select" required onchange="Shipping.onOrderChange(this)">
             ${orders.map(item => `<option value="${App.escapeHtml(item.id)}" ${item.id === selected ? 'selected' : ''}>${App.escapeHtml(item.companyOperationNo || item.id)} · ${App.escapeHtml(item.customerName)}</option>`).join('')}</select></div>
-            <div class="form-group"><label class="form-label">发票号码</label><input name="invoiceNo" class="form-input"></div>
-            <div class="form-row"><div class="form-group"><label class="form-label">起运港 *</label><input name="loadingPort" class="form-input" value="${App.escapeHtml(order.loadingPort || '')}" required></div>
-            <div class="form-group"><label class="form-label">海外港口</label><input name="overseasPort" class="form-input" value="${App.escapeHtml(order.overseasPort || '')}" ${requiresOverseasPort(DB.getCurrentCompany()) ? 'required' : ''}></div></div>
-            <div class="form-group"><label class="form-label">货物描述</label><input name="cargoDesc" class="form-input" value="${App.escapeHtml(order.productName || '')}"></div>
-            ${this.statusFields({ status: '待出运', customsStatus: '未报关', etd: order.expectedShipDate || '' })}
+            <div class="form-group"><label class="form-label">发票号码</label><input name="invoiceNo" class="form-input" value="${App.escapeHtml(pending?.invoiceNo || '')}"></div>
+            <div class="form-row"><div class="form-group"><label class="form-label">起运港 *</label><input name="loadingPort" class="form-input" value="${App.escapeHtml(pending ? pending.loadingPort : order.loadingPort || '')}" required></div>
+            <div class="form-group"><label class="form-label">海外港口</label><input name="overseasPort" class="form-input" value="${App.escapeHtml(pending ? pending.overseasPort : order.overseasPort || '')}" ${requiresOverseasPort(DB.getCurrentCompany()) ? 'required' : ''}></div></div>
+            <div class="form-group"><label class="form-label">货物描述</label><input name="cargoDesc" class="form-input" value="${App.escapeHtml(pending ? pending.cargoDesc : order.productName || '')}"></div>
+            ${this.statusFields(pending || { status: '待出运', customsStatus: '未报关', etd: order.expectedShipDate || '' })}
             <div class="form-row-3">${[
                 ['grossWeight', '毛重 (KG)'],
                 ['netWeight', '净重 (KG)'],
@@ -261,13 +296,14 @@ const Shipping = {
             ]
                 .map(
                     ([key, label]) =>
-                        `<div class="form-group"><label class="form-label">${label}</label><input type="number" min="0" step="0.01" name="${key}" class="form-input" value="0"></div>`
+                        `<div class="form-group"><label class="form-label">${label}</label><input type="number" min="0" step="0.01" name="${key}" class="form-input" value="${App.escapeHtml(pending?.[key] ?? 0)}"></div>`
                 )
                 .join('')}</div>
         </form>`;
         App.showModal('建立出运记录', body, {
-            footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('shipmentForm').requestSubmit()">保存</button>`
+            footer: `<button class="btn btn-secondary" onclick="App.closeModal({discardDraft:true})">取消</button><button class="btn btn-primary" onclick="document.getElementById('shipmentForm').requestSubmit()">保存</button>`
         });
+        this.attachDraft('shipmentForm', 'new:' + selected);
     },
 
     onOrderChange(select) {
@@ -333,6 +369,7 @@ const Shipping = {
 
     async saveShipment(event) {
         event.preventDefault();
+        if (!FormDrafts.canSubmit(event.target)) return;
         if (!Auth.canEdit() || !DB._cloudReady) {
             App.toast('当前账号无编辑权限或数据库未连接', 'error');
             return;
@@ -372,6 +409,7 @@ const Shipping = {
             : DB.addShipment(value);
         if (!saved) return;
         form.dataset.pendingRecordId = saved.id;
+        FormDrafts.stageRecord(form);
         DB.updateOrder(order.id, {
             shippingStatus: saved.status,
             ...(saved.actualShipDate ? { actualShipDate: saved.actualShipDate } : {})
@@ -389,6 +427,10 @@ const Shipping = {
             App.toast('出运记录保存失败，草稿已保留，请重试', 'error');
             return;
         }
+        if (!FormDrafts.acknowledgeStaged(form)) {
+            App.toast('上一版已保存，当前新输入尚未保存，请再次保存', 'warning');
+            return;
+        }
         App.toast('出运记录已建立');
         App.closeModal();
         window.location.hash = '#/shipping/' + encodeURIComponent(saved.id);
@@ -401,13 +443,17 @@ const Shipping = {
             '更新出运状态',
             `<form id="statusForm" onsubmit="Shipping.saveStatus(event, '${App.escapeHtml(shipmentId)}'); return false;">${this.statusFields(shipment)}</form>`,
             {
-                footer: `<button class="btn btn-secondary" onclick="App.closeModal()">取消</button><button class="btn btn-primary" onclick="document.getElementById('statusForm').requestSubmit()">保存</button>`
+                footer: `<button class="btn btn-secondary" onclick="App.closeModal({discardDraft:true})">取消</button><button class="btn btn-primary" onclick="document.getElementById('statusForm').requestSubmit()">保存</button>`
             }
         );
+        this.attachDraft('statusForm', shipmentId);
     },
 
     async saveStatus(event, shipmentId) {
         event.preventDefault();
+        const form = event.target;
+        if (form.dataset.saving === 'true') return;
+        if (!FormDrafts.canSubmit(event.target)) return;
         if (!DB._cloudReady || !Auth.canEdit()) {
             App.toast('当前账号无编辑权限或数据库未连接', 'error');
             return;
@@ -440,9 +486,22 @@ const Shipping = {
                 ...(updates.actualShipDate ? { actualShipDate: updates.actualShipDate } : {})
             });
         }
-        const ok = await DB.flush();
+        FormDrafts.stageRecord(event.target);
+        form.dataset.saving = 'true';
+        let ok = false;
+        try {
+            ok = await DB.flush();
+        } catch {
+            /* Keep the current input for retry. */
+        } finally {
+            form.dataset.saving = 'false';
+        }
         if (!ok) {
             App.toast('保存失败，草稿已保留，请重试', 'error');
+            return;
+        }
+        if (!FormDrafts.acknowledgeStaged(form)) {
+            App.toast('上一版已保存，当前新输入尚未保存，请再次保存', 'warning');
             return;
         }
         App.toast('出运状态已更新');
@@ -492,5 +551,6 @@ const Shipping = {
     }
 };
 
+installBusinessModalHooks(App, FormDrafts);
 window.Shipping = Shipping;
 export { Shipping };

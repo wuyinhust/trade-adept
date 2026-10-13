@@ -151,6 +151,9 @@ def convert(doc, value, cfg, key, rate_snapshot=None):
         seen.add(line["id"])
         if not line.get("itemCode") or not frappe.db.exists("Item", line["itemCode"]):
             raise APIError(400, "NATIVE_ITEM_UNAVAILABLE", "Select an existing ERPNext Item; conversion never invents product SKUs")
+        from .catalog import require_usable_item
+        product = require_usable_item(line["itemCode"], company_name, sales=True)
+        require_usable_item(product, company_name, sales=False)
         supplier = repo.find("factories", line.get("factoryId"))
         if not supplier or supplier.get("custom_tradept_is_deleted") or supplier.get("custom_tradept_company_id") != value.get("companyId"):
             raise APIError(403, "RELATED_RECORD_DENIED", "Select an active supplier belonging to this legal entity")
@@ -239,11 +242,22 @@ def cancel(doc, value, key):
 
 
 def receive_payment(doc, value, payload):
+    from .permissions import delegated_finance_grant
+    grant = delegated_finance_grant()
+    if not grant or grant.get("resource") != "payment_entry" or grant.get("action") != "submit":
+        raise APIError(403, "FINANCE_DELEGATION_DENIED", "登记收款需要已授权的原生财务流程")
+    policy = grant["policy"]
+    company_name = policy.require("payment_entry", "create", value.get("companyId"))
+    policy.require("payment_entry", "submit", value.get("companyId"))
+    if not policy._legacy_scope_allowed(value):
+        raise APIError(403, "FINANCE_RECORD_DENIED", "登记收款超出当前财务数据范围")
     from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
     from erpnext.accounts.party import get_party_account
     if not doc.sales_order:
         raise APIError(409, "NATIVE_ORDER_REQUIRED", "Receipts require a submitted native sales order")
     sale = frappe.get_doc("Sales Order", doc.sales_order)
+    if sale.company != company_name or grant["company"] != company_name:
+        raise APIError(403, "FINANCE_COMPANY_DENIED", "登记收款与获准公司不一致")
     key = operation_key("payment", value["id"], payload.get("idempotencyKey"))
     existing = frappe.db.get_value("Payment Entry", {"custom_tradept_operation_key": key}, "name")
     if existing:
@@ -254,11 +268,15 @@ def receive_payment(doc, value, payload):
         same_supplied_details = all(payload.get(key) is None or str(payload[key]) == str(entry.get(field)) for key, field in (("bankAccount", "paid_to"), ("referenceNo", "reference_no"), ("referenceDate", "reference_date")))
         if entry.docstatus != 1 or entry.payment_type != "Receive" or entry.company != sale.company or entry.party != sale.customer or not exact_reference or not same_supplied_details or abs(decimal(paid_usd, "Allocated USD receipt") - decimal(payload.get("amountUSD"), "Receipt amount", True)) > Decimal("0.005"):
             raise APIError(409, "IDEMPOTENCY_CONFLICT", "This receipt operation key has different posted details")
+        policy.validate_document(entry, "submit")
         return documents(value["id"])
     if sale.docstatus != 1 or sale.currency != "USD":
         raise APIError(409, "SUBMITTED_USD_ORDER_REQUIRED", "Submit the USD sales order before recording its receipt")
     amount = float(decimal(payload.get("amountUSD"), "Receipt amount", True))
-    outstanding = float(sale.grand_total) - float(sale.advance_paid or 0)
+    finance = order_finance(sale)
+    if finance["invoiceNames"]:
+        raise APIError(409, "FINANCE_INVOICE_PAYMENT_REQUIRED", "该订单已开票，请从应收账单登记收款或核销已有款项；订单预收入口不会重复收款")
+    outstanding = float(sale.grand_total) - finance["advanceBase"] / float(sale.conversion_rate or 1)
     if amount - outstanding > 0.005:
         raise APIError(400, "RECEIPT_EXCEEDS_OUTSTANDING", "Receipt exceeds the native order's unpaid amount")
     company = frappe.get_doc("Company", sale.company)
@@ -283,11 +301,108 @@ def receive_payment(doc, value, payload):
     entry.reference_date = payload.get("referenceDate") or frappe.utils.today()
     entry.source_exchange_rate = 1 if party_currency == company.default_currency else frozen_rate
     entry.target_exchange_rate = 1 if bank_currency == company.default_currency else frozen_rate
+    entry.owner = grant["user"]
     entry.set_amounts()
+    policy.validate_document(entry, "create")
     entry.flags.ignore_permissions = True
     entry.insert(ignore_permissions=True)
+    policy.validate_document(entry, "submit")
     entry.submit()
+    # Controllers remain the amount authority. Recheck their final values in
+    # the same transaction; any unexpected expansion rolls back atomically.
+    policy.validate_document(entry, "submit")
     return documents(value["id"])
+
+
+def _invoice_order(invoice, line, sales):
+    field, detail, source, source_field = ("sales_order", "dn_detail", "Delivery Note Item", "against_sales_order") if sales else ("purchase_order", "pr_detail", "Purchase Receipt Item", "purchase_order")
+    return line.get(field) or (repo.get_value(source, line.get(detail), source_field) if line.get(detail) else None)
+
+
+def invoice_order_share(invoice, order):
+    """Allocate a shared native invoice using its real source item net values.
+
+    Tax, discount and rounding follow the native invoice total, pro rata to
+    source item net amounts. Unlinked item amounts remain unassigned. The
+    ratio is a read projection; it never alters a native balance or ledger.
+    """
+    rows = invoice.get("items") or []
+    total = sum(abs(float(row.get("base_net_amount") or 0)) for row in rows)
+    if not total:
+        return 0.0
+    linked = sum(abs(float(row.get("base_net_amount") or 0)) for row in rows if _invoice_order(invoice, row, order.doctype == "Sales Order") == order.name)
+    return linked / total
+
+
+def _posted_order_invoices(order):
+    sales = order.doctype == "Sales Order"
+    invoice_type, source_type, field, detail, source_field = ("Sales Invoice", "Delivery Note", "sales_order", "dn_detail", "against_sales_order") if sales else ("Purchase Invoice", "Purchase Receipt", "purchase_order", "pr_detail", "purchase_order")
+    suffix = " FOR UPDATE" if repo.current_reads() else ""
+    names = frappe.db.sql(f"SELECT DISTINCT i.parent FROM `tab{invoice_type} Item` i LEFT JOIN `tab{source_type} Item` d ON d.name=i.{detail} WHERE i.{field}=%s OR d.{source_field}=%s" + suffix, (order.name, order.name), as_dict=True)
+    return [invoice for row in names if (invoice := repo.get_doc(invoice_type, row.parent)).docstatus == 1 and invoice.company == order.company]
+
+
+def _party_amount_base(doc, amount, currency, company_currency):
+    if currency == company_currency:
+        return float(amount or 0)
+    if currency == doc.currency:
+        return float(amount or 0) * float(doc.conversion_rate or 1)
+    raise APIError(409, "NATIVE_SETTLEMENT_CURRENCY_UNSUPPORTED", "原生往来账户币种需要与单据币种或公司本位币一致")
+
+
+def _order_receipts(order, invoices):
+    """List actual native vouchers, including retained unallocated receipts.
+
+    A submitted Unreconcile Payment preserves original invoice provenance
+    after the controller removes PE references. It is evidence of linkage,
+    not another balance. Shared vouchers are explicitly not additive by order.
+    """
+    invoice_type = "Sales Invoice" if order.doctype == "Sales Order" else "Purchase Invoice"
+    invoice_names = {row.name for row in invoices}
+    suffix = " FOR UPDATE" if repo.current_reads() else ""
+    names = {row.parent for row in frappe.db.sql("SELECT parent FROM `tabPayment Entry Reference` WHERE reference_doctype=%s AND reference_name=%s" + suffix, (order.doctype, order.name), as_dict=True)}
+    for name in invoice_names:
+        names.update(row.parent for row in frappe.db.sql("SELECT parent FROM `tabPayment Entry Reference` WHERE reference_doctype=%s AND reference_name=%s" + suffix, (invoice_type, name), as_dict=True))
+        rows = frappe.db.sql("SELECT u.voucher_no FROM `tabUnreconcile Payment` u INNER JOIN `tabUnreconcile Payment Entries` a ON a.parent=u.name WHERE u.docstatus=1 AND u.company=%s AND u.voucher_type='Payment Entry' AND a.reference_doctype=%s AND a.reference_name=%s" + suffix, (order.company, invoice_type, name), as_dict=True)
+        names.update(row.voucher_no for row in rows)
+    output = []
+    for name in sorted(names):
+        payment = repo.get_doc("Payment Entry", name)
+        expected_party = order.customer if order.doctype == "Sales Order" else order.supplier
+        if payment.docstatus != 1 or payment.company != order.company or payment.party != expected_party or payment.payment_type not in ("Receive", "Pay"):
+            continue
+        receive = payment.payment_type == "Receive"
+        bank_currency = payment.paid_to_account_currency if receive else payment.paid_from_account_currency
+        bank_amount = float(payment.received_amount if receive else payment.paid_amount)
+        party_currency = payment.paid_from_account_currency if receive else payment.paid_to_account_currency
+        # A voucher can settle several invoices, including invoices that each
+        # contain several orders. Always mark its full native cash amount as
+        # nonadditive in this order projection.
+        output.append({"name": payment.name, "postingDate": str(payment.posting_date), "paymentType": payment.payment_type, "partyType": payment.party_type, "bankAmount": bank_amount, "bankCurrency": bank_currency, "paidAmount": float(payment.paid_amount), "receivedAmount": float(payment.received_amount), "paidFromCurrency": payment.paid_from_account_currency, "paidToCurrency": payment.paid_to_account_currency, "unallocatedAmount": float(payment.unallocated_amount or 0), "unallocatedCurrency": party_currency, "sharedReceipt": True, "additiveByOrder": False})
+    return output
+
+
+def order_finance(order):
+    """Read native advances and invoice settlement without a second ledger."""
+    from erpnext.accounts.doctype.payment_entry.payment_entry import set_grand_total_and_outstanding_amount
+    company_currency = repo.get_value("Company", order.company, "default_currency")
+    advance_currency = order.get("party_account_currency") or order.currency
+    result = {"advanceBase": _party_amount_base(order, order.advance_paid, advance_currency, company_currency), "invoiceSettledBase": 0.0, "invoiceOutstandingBase": 0.0, "invoiceBilledBase": 0.0, "invoiceNames": [], "receipts": []}
+    invoices = _posted_order_invoices(order)
+    for invoice in invoices:
+        result["invoiceNames"].append(invoice.name)
+        share = invoice_order_share(invoice, order)
+        if not share:
+            continue
+        party_currency = invoice.party_account_currency or invoice.currency
+        total, outstanding = set_grand_total_and_outstanding_amount(None, invoice.doctype, party_currency, invoice)
+        total_base = _party_amount_base(invoice, total, party_currency, company_currency)
+        outstanding_base = _party_amount_base(invoice, outstanding, party_currency, company_currency)
+        result["invoiceBilledBase"] += total_base * share
+        result["invoiceSettledBase"] += (total_base - outstanding_base) * share
+        result["invoiceOutstandingBase"] += outstanding_base * share
+    result["receipts"] = _order_receipts(order, invoices)
+    return result
 
 
 def project_order(doc, value):
@@ -296,10 +411,18 @@ def project_order(doc, value):
     value.update(companyId=company.custom_tradept_record_id, customerId=repo.get_value("Customer", sale.customer, "custom_tradept_record_id"), customerName=sale.customer_name, customerOrderNo=sale.po_no, orderDate=str(sale.transaction_date) if sale.transaction_date else None, expectedShipDate=str(sale.delivery_date) if sale.delivery_date else None)
     purchase = [repo.get_doc("Purchase Order", row["name"]) for row in documents(value["id"]) if row["doctype"] == "Purchase Order" and row["docstatus"] != 2]
     amount = float(sale.grand_total)
-    paid = float(sale.advance_paid or 0)
+    sales_finance = order_finance(sale)
+    value["nativeHasPostedSalesInvoices"] = bool(sales_finance["invoiceNames"])
+    sale_rate = float(sale.conversion_rate or 1)
+    paid = (sales_finance["advanceBase"] + sales_finance["invoiceSettledBase"]) / sale_rate
     cost_base = sum(float(order.base_grand_total) for order in purchase)
-    factory_paid_base = sum(float(order.advance_paid or 0) * float(order.conversion_rate or 1) for order in purchase)
+    purchase_finance = {order.name: order_finance(order) for order in purchase}
+    factory_paid_base = sum(row["advanceBase"] + row["invoiceSettledBase"] for row in purchase_finance.values())
     value.update(orderAmountUSD=amount, paidAmountUSD=paid, paymentStatus="已收款" if paid >= amount - .005 else "部分收款" if paid > .005 else "未收款", factoryCostRMB=cost_base, factoryPaidRMB=factory_paid_base, factoryPaidStatus="已付清" if cost_base > 0 and factory_paid_base >= cost_base - .005 else "部分付款" if factory_paid_base > .005 else "未付款")
+    receipts = {row["name"]: row for row in sales_finance["receipts"]}
+    for projected in purchase_finance.values():
+        receipts.update({row["name"]: row for row in projected["receipts"]})
+    value.update(nativeSettlementProjection=True, salesAdvanceAmountUSD=sales_finance["advanceBase"] / sale_rate, salesInvoiceSettledAmountUSD=sales_finance["invoiceSettledBase"] / sale_rate, salesInvoiceOutstandingAmountUSD=sales_finance["invoiceOutstandingBase"] / sale_rate, factoryAdvanceAmount=sum(row["advanceBase"] for row in purchase_finance.values()), factoryInvoiceSettledAmount=sum(row["invoiceSettledBase"] for row in purchase_finance.values()), factoryInvoiceOutstandingAmount=sum(row["invoiceOutstandingBase"] for row in purchase_finance.values()), nativeReceiptSummary=list(receipts.values()), salesInvoiceNames=sales_finance["invoiceNames"], factoryInvoiceNames=list(dict.fromkeys(name for row in purchase_finance.values() for name in row["invoiceNames"])), nativeSettlementCurrency=company.default_currency)
     value["erpItems"] = []
     purchase_lines = {}
     for order in purchase:
@@ -313,7 +436,12 @@ def project_order(doc, value):
         factory = factory_lines.setdefault(supplier_id, {"factoryId": supplier_id, "factoryName": order.supplier_name, "totalQuantity": 0, "totalAmount": 0, "prepayment": 0, "costCurrency": company.default_currency})
         factory["totalQuantity"] += sum(float(row.qty) for row in order.items)
         factory["totalAmount"] += float(order.base_grand_total)
-        factory["prepayment"] += float(order.advance_paid or 0) * float(order.conversion_rate or 1)
+        projected = purchase_finance[order.name]
+        factory["prepayment"] += projected["advanceBase"] + projected["invoiceSettledBase"]
+        factory["advanceAmount"] = factory.get("advanceAmount", 0) + projected["advanceBase"]
+        factory["invoiceSettledAmount"] = factory.get("invoiceSettledAmount", 0) + projected["invoiceSettledBase"]
+        factory["invoiceOutstandingAmount"] = factory.get("invoiceOutstandingAmount", 0) + projected["invoiceOutstandingBase"]
+        factory["invoiceNames"] = list(dict.fromkeys(factory.get("invoiceNames", []) + projected["invoiceNames"]))
         plan = plans.get(supplier_id, {})
         factory["productType"] = plan.get("productType") if "productType" in plan else ", ".join(dict.fromkeys(str(row.get("item_name") or row.item_code) for row in order.items))
         factory["inspectionDate"] = plan.get("inspectionDate")
@@ -337,17 +465,18 @@ def project_order(doc, value):
         value["factoryCostUSD"] = cost_base
     revenue = float(sale.base_grand_total)
     policy = company.custom_tradept_profit_policy or "generic-native"
+    fees = {**value, **Rules._quote_alias_values({"profitPolicy": policy, "settlementCurrency": company.default_currency}, value, conversion=float(sale.conversion_rate or 1))}
     if policy == "grandware-v40":
         if company.default_currency == "CNY":
-            profit = revenue - cost_base - float(value.get("freightCostUSD") or 0) - float(value.get("otherCostUSD") or 0) + cost_base / 1.13 * float(value.get("insuranceCostUSD") or 0) / 100
+            profit = revenue - cost_base - float(fees.get("freightCostUSD") or 0) - float(fees.get("otherCostUSD") or 0) + cost_base / 1.13 * float(fees.get("insuranceCostUSD") or 0) / 100
         elif company.default_currency == "USD":
-            profit = revenue - cost_base - float(value.get("otherCostUSD") or 0)
+            profit = revenue - cost_base - float(fees.get("otherCostUSD") or 0)
         else:
             raise APIError(400, "UNSUPPORTED_PROFIT_CURRENCY", "Grandware's historical policy only supports its configured settlement currencies")
     elif policy == "generic-native":
         # Native documents freeze their conversion rates at creation. Changing
         # the current FX configuration cannot restate existing order profit.
-        profit = revenue - cost_base - sum(float(value.get(key) or 0) for key in ("freightCostUSD", "insuranceCostUSD", "otherCostUSD")) * float(sale.conversion_rate)
+        profit = revenue - cost_base - sum(float(fees.get(key) or 0) for key in ("freightCostUSD", "insuranceCostUSD", "otherCostUSD")) * float(sale.conversion_rate)
     else:
         raise APIError(400, "UNKNOWN_PROFIT_POLICY", "The native entity requires a configured profit policy")
     value.update(orderAmountRMB=revenue, profitRMB=round(profit, 2), profitRate=round(profit / revenue * 100, 2) if revenue else 0, profitPolicy=policy, settlementCurrency=company.default_currency, exchangeRateUsed=float(sale.conversion_rate or 1))

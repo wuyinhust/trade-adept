@@ -20,7 +20,7 @@ def main():
         runtime = secure_runtime(args.runtime)
         if args.command == "init":
             data = json.loads(args.sites.read_text(encoding="utf-8"))
-            if (not isinstance(data, dict) or set(data) != {"tenants"}
+            if (not isinstance(data, dict) or ("tenants" not in data or bool(set(data) - {"tenants", "privateTenant", "demoMode", "demoTenants"}))
                     or not isinstance(data["tenants"], dict)
                     or any(not isinstance(site, dict) or set(site) != {"origin", "site", "gatewayHmacKey"} for site in data["tenants"].values())):
                 raise ValueError("Routing accepts only tenants with origin, site and gatewayHmacKey; credentials belong to Frappe")

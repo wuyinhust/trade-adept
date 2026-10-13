@@ -32,7 +32,7 @@ def fake_frappe():
         pass
     class QueryDeadlockError(Exception):
         pass
-    return SimpleNamespace(whitelist=lambda **kwargs: lambda fn: fn, flags=Row(), session=Row(user="user@example.invalid", sid="native-session-id-for-tests"), local=Row(site="isolated.test", response={}, request=Row(method="POST")), conf=Row(tradept_gateway_hmac_key=TEST_GATEWAY_KEY), db=Mock(), get_doc=Mock(), get_all=Mock(), sessions=Row(get_csrf_token=lambda: "native-test-token"), ValidationError=ValidationError, QueryDeadlockError=QueryDeadlockError, PermissionError=PermissionError, utils=Row(strip_html=lambda s: s, today=lambda: "2026-10-12"))
+    return SimpleNamespace(whitelist=lambda **kwargs: lambda fn: fn, flags=Row(), session=Row(user="user@example.invalid", sid="native-session-id-for-tests"), local=Row(site="isolated.test", response={}, request=Row(method="POST")), conf=Row(tradept_gateway_hmac_key=TEST_GATEWAY_KEY), db=Mock(), get_doc=Mock(), get_all=Mock(), get_roles=Mock(return_value=[]), sessions=Row(get_csrf_token=lambda: "native-test-token"), ValidationError=ValidationError, QueryDeadlockError=QueryDeadlockError, PermissionError=PermissionError, utils=Row(strip_html=lambda s: s, today=lambda: "2026-10-12"))
 
 
 class RuleTests(unittest.TestCase):
@@ -56,6 +56,39 @@ class RuleTests(unittest.TestCase):
         manager = {"id": "U4", "tenantId": "a", "role": "manager", "teamId": "T"}
         self.assertTrue(self.rules.record_allowed(None, self.cfg, manager, {"companyId": "C1", "createdBy": "U2"}, collection="orders"))
         self.assertFalse(self.rules.record_allowed(None, self.cfg, manager, {"companyId": "C1", "createdBy": "U3"}, collection="orders"))
+
+    def test_disabled_historical_owner_remains_within_authorized_team_and_company(self):
+        history = {"Former": {"id": "Former", "teamId": "T", "tenantId": "a", "nativeUser": "former@example.invalid", "enabled": False}, "OtherFormer": {"id": "OtherFormer", "teamId": "Other", "tenantId": "a", "enabled": False}}
+        rules = Rules(self.cfg, self.rules.profiles, ownership_profiles=history)
+        manager = {"id": "Manager", "tenantId": "a", "role": "manager", "teamId": "T"}
+        original = {"companyId": "C1", "createdBy": "Former"}
+        self.assertTrue(rules.record_allowed(None, self.cfg, manager, original, collection="orders"))
+        self.assertFalse(rules.record_allowed(None, self.cfg, manager, {**original, "createdBy": "OtherFormer"}, collection="orders"))
+        self.assertFalse(rules.record_allowed(None, self.cfg, manager, {**original, "companyId": "C2"}, collection="orders"))
+        self.assertFalse(rules.record_allowed(None, self.cfg, self.sales, original, collection="orders"))
+        self.assertNotIn("Former", rules.profiles)
+        self.assertFalse(rules.ownership_profiles["Former"]["enabled"])
+        self.assertEqual(original["createdBy"], "Former")
+
+    def test_history_cannot_override_active_profile_or_grant_new_assignment(self):
+        history = {"Former": {"id": "Former", "teamId": "T", "enabled": False}, "U2": {"id": "U2", "teamId": "Other", "role": "admin", "enabled": False}}
+        rules = Rules(self.cfg, self.rules.profiles, ownership_profiles=history)
+        self.assertEqual(rules.ownership_profiles["U2"], self.sales)
+        old = {"companyId": "C1", "companyOperationNo": "HISTORY", "orderAmountUSD": 1000, "createdBy": "Former", "salespersonId": "Former", "profitRMB": 123}
+        for key in ("ownerId", "salespersonId"):
+            with self.subTest(field=key):
+                current = {**old, "salespersonId": "U2"}
+                with self.assertRaises(APIError) as caught:
+                    rules._prepare_patch(None, self.cfg, self.admin, "orders", current, {key: "Former"})
+                self.assertEqual(caught.exception.code, "ASSIGNMENT_DENIED")
+        retained = rules._prepare_patch(None, self.cfg, self.admin, "orders", old, {"salespersonId": "Former", "remarks": "Historical record"})
+        self.assertEqual(retained["createdBy"], "Former")
+        self.assertEqual(retained["salespersonId"], "Former")
+        assigned = rules._prepare_patch(None, self.cfg, self.admin, "orders", old, {"salespersonId": "U2"})
+        self.assertEqual(assigned["salespersonId"], "U2")
+        historical = rules._prepare_patch(None, self.cfg, self.admin, "orders", None, old, historical=True)
+        self.assertEqual(historical["createdBy"], "Former")
+        self.assertEqual(historical["profitRMB"], 123)
 
     def test_tenant_and_quarantine_boundary(self):
         self.assertFalse(self.rules.record_allowed(None, self.cfg, self.admin, {"tenantId": "other", "companyId": "C1"}, collection="orders"))
@@ -98,6 +131,128 @@ class RuleTests(unittest.TestCase):
         with self.assertRaises(APIError) as caught:
             Rules._derive_order(self.cfg, {"companyId": "C2", "orderAmountUSD": 1000})
         self.assertEqual(caught.exception.code, "RATE_REQUIRED")
+
+    def test_canonical_amounts_match_legacy_profit_for_all_company_policies(self):
+        cases = [
+            ("CO-GR", "grandware-v40", "CNY", 6.69, {"factoryCostRMB": 4000, "freightCostUSD": 100, "insuranceCostUSD": 13, "otherCostUSD": 20}, {"factoryCostRMB": 4000, "freightCostRMB": 100, "insuranceCostUSD": 13, "otherCostRMB": 20}, round(6690 - 4000 - 100 - 20 + 4000 / 1.13 * .13, 2)),
+            ("CO-WY", "grandware-v40", "CNY", 6.9, {"factoryCostRMB": 4000, "freightCostUSD": 100, "insuranceCostUSD": 13, "otherCostUSD": 20}, {"factoryCostRMB": 4000, "freightCostRMB": 100, "insuranceCostUSD": 13, "otherCostRMB": 20}, round(6900 - 4000 - 100 - 20 + 4000 / 1.13 * .13, 2)),
+            ("CO-GW", "grandware-v40", "USD", 999, {"factoryCostRMB": 700, "otherCostUSD": 20}, {"factoryCostUSD": 700, "otherCostUSD": 20}, 280),
+            ("CO-LK", "grandware-v40", "USD", 7.25, {"factoryCostRMB": 700, "otherCostUSD": 20}, {"factoryCostUSD": 700, "otherCostUSD": 20}, 280),
+            ("GEN-USD", "generic-native", "USD", 999, {"factoryCostRMB": 700, "freightCostUSD": 20, "insuranceCostUSD": 10, "otherCostUSD": 5}, {"factoryCostUSD": 700, "freightCostUSD": 20, "insuranceCostUSD": 10, "otherCostUSD": 5}, 265),
+            ("GEN-CNY", "generic-native", "CNY", 6.69, {"factoryCostRMB": 4000, "freightCostUSD": 20, "insuranceCostUSD": 10, "otherCostUSD": 5}, {"factoryCostRMB": 4000, "freightCostRMB": 133.8, "insuranceCostUSD": 10, "otherCostRMB": 33.45}, round(6690 - 4000 - 35 * 6.69, 2)),
+        ]
+        for company_id, policy, currency, rate, legacy, canonical, expected in cases:
+            with self.subTest(company=company_id):
+                cfg = {"companies": [{"id": company_id, "settlementCurrency": currency, "profitPolicy": policy, "exchangeRate": rate}]}
+                old = {"companyId": company_id, "orderAmountUSD": 1000, **legacy}
+                new = {"companyId": company_id, "orderAmountUSD": 1000, **canonical}
+                Rules._derive_order(cfg, old)
+                Rules._derive_order(cfg, new)
+                self.assertEqual(new["profitRMB"], expected)
+                self.assertEqual({key: new[key] for key in ("orderAmountRMB", "profitRMB", "profitRate")}, {key: old[key] for key in ("orderAmountRMB", "profitRMB", "profitRate")})
+
+    def test_quote_alias_edits_choose_this_change_and_cannot_leave_stale_partner(self):
+        cases = [
+            ("grandware-v40", "USD", "factoryCostUSD", "factoryCostRMB", 1),
+            ("generic-native", "USD", "factoryCostUSD", "factoryCostRMB", 1),
+            ("grandware-v40", "CNY", "freightCostRMB", "freightCostUSD", 1),
+            ("grandware-v40", "CNY", "otherCostRMB", "otherCostUSD", 1),
+            ("generic-native", "CNY", "freightCostRMB", "freightCostUSD", 7),
+            ("generic-native", "CNY", "otherCostRMB", "otherCostUSD", 7),
+        ]
+        for policy, currency, alias, legacy, multiplier in cases:
+            with self.subTest(policy=policy, currency=currency, alias=alias):
+                self.cfg["companies"][0].update(profitPolicy=policy, settlementCurrency=currency, exchangeRate=7)
+                old = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", None, {"companyId": "C1", "companyOperationNo": "QUOTE", "orderAmountUSD": 1000, legacy: 10})
+                # The full-form legacy partner may repeat its previous value.
+                patch = {alias: 20 * multiplier, legacy: old[legacy]}
+                canonical = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", old, patch)
+                self.assertEqual(canonical[alias], 20 * multiplier)
+                expected = 1000 * (7 if currency == "CNY" else 1) - (20 * multiplier if alias != "factoryCostUSD" else 20)
+                self.assertEqual(canonical["profitRMB"], expected)
+                legacy_edit = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", canonical, {legacy: 30, alias: canonical[alias]})
+                self.assertEqual(legacy_edit[legacy], 30)
+                expected = 1000 * (7 if currency == "CNY" else 1) - (30 * multiplier if alias != "factoryCostUSD" else 30)
+                self.assertEqual(legacy_edit["profitRMB"], expected)
+                if multiplier == 1:
+                    self.assertEqual(legacy_edit[alias], 30)
+                else:
+                    self.assertNotIn(alias, legacy_edit)
+                    self.assertNotIn(legacy, canonical)
+
+    def test_both_quote_alias_changes_must_have_equivalent_amounts(self):
+        for currency, policy, alias, legacy, multiplier in (("USD", "grandware-v40", "factoryCostUSD", "factoryCostRMB", 1), ("CNY", "generic-native", "freightCostRMB", "freightCostUSD", 7)):
+            with self.subTest(currency=currency):
+                self.cfg["companies"][0].update(settlementCurrency=currency, profitPolicy=policy, exchangeRate=7)
+                base = {"companyId": "C1", "companyOperationNo": "QUOTE", "orderAmountUSD": 1000, legacy: 10}
+                for old in (None, base):
+                    with self.assertRaises(APIError) as caught:
+                        self.rules._prepare_patch(None, self.cfg, self.admin, "orders", old, {**base, legacy: 20, alias: 25 * multiplier})
+                    self.assertEqual(caught.exception.code, "FINANCIAL_ALIAS_CONFLICT")
+                accepted = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", base, {legacy: 20, alias: 20 * multiplier})
+                self.assertEqual(accepted[alias], 20 * multiplier)
+
+    def test_generic_rmb_fee_remains_rmb_when_later_quote_rate_changes(self):
+        self.cfg["companies"][0].update(profitPolicy="generic-native", exchangeRate=7)
+        order = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", None, {"companyId": "C1", "companyOperationNo": "QUOTE", "orderAmountUSD": 1000, "freightCostRMB": 140, "otherCostRMB": 35})
+        self.assertNotIn("freightCostUSD", order)
+        self.assertNotIn("otherCostUSD", order)
+        merged = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", order, {"orderAmountUSD": 2000}, derive_order=False)
+        Rules._derive_order(self.cfg, merged, {"C1": 8})
+        self.assertEqual(merged["profitRMB"], 16000 - 140 - 35)
+        self.assertEqual(merged["freightCostRMB"], 140)
+        self.assertEqual(merged["otherCostRMB"], 35)
+        self.assertNotIn("freightCostUSD", merged)
+
+    def test_canonical_financial_fields_trigger_recalculation_but_require_permission(self):
+        old = {"companyId": "C1", "companyOperationNo": "QUOTE", "orderAmountUSD": 1000, "createdBy": "U2", "profitRMB": 123}
+        for alias in ("factoryCostUSD", "freightCostRMB", "otherCostRMB"):
+            with self.subTest(field=alias):
+                self.assertTrue(self.rules._financial_changed(old, {**old, alias: 10}))
+                with self.assertRaises(APIError) as caught:
+                    self.rules._prepare_patch(None, self.cfg, self.sales, "orders", old, {alias: 10})
+                self.assertEqual(caught.exception.status, 403)
+                self.assertEqual(caught.exception.code, "FIELD_DENIED")
+                for invalid in (float("nan"), float("inf"), -1, True, "10"):
+                    with self.assertRaises(APIError) as caught:
+                        self.rules._prepare_patch(None, self.cfg, self.admin, "orders", old, {alias: invalid})
+                    self.assertEqual(caught.exception.code, "INVALID_AMOUNT")
+        recalculated = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", old, {"freightCostRMB": 10})
+        self.assertEqual(recalculated["profitRMB"], 6690 - 10)
+
+    def test_aliases_for_another_quote_currency_are_rejected_on_live_edit(self):
+        base = {"companyId": "C1", "companyOperationNo": "QUOTE", "orderAmountUSD": 1000}
+        for currency, alias in (("CNY", "factoryCostUSD"), ("USD", "freightCostRMB"), ("USD", "otherCostRMB")):
+            with self.subTest(currency=currency, field=alias):
+                self.cfg["companies"][0]["settlementCurrency"] = currency
+                with self.assertRaises(APIError) as caught:
+                    self.rules._prepare_patch(None, self.cfg, self.admin, "orders", None, {**base, alias: 10})
+                self.assertEqual(caught.exception.code, "UNSUPPORTED_AMOUNT_CURRENCY")
+
+    def test_alias_normalization_does_not_rewrite_historical_or_native_records(self):
+        original = {"companyId": "C1", "companyOperationNo": "HISTORY", "orderAmountUSD": 1000, "factoryCostRMB": 4000, "freightCostRMB": 10, "freightCostUSD": 20, "factoryCostUSD": 700, "profitRMB": 123, "profitRate": 12.3}
+        for flags in ({}, {"historical": True}, {"native_order": True}):
+            with self.subTest(flags=flags):
+                with patch.object(self.rules, "_derive_order", side_effect=AssertionError("Must retain original profit")):
+                    result = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", original, {"remarks": "Checked"}, **flags)
+                for key in original:
+                    self.assertEqual(result[key], original[key])
+        historical = self.rules._prepare_patch(None, self.cfg, self.admin, "orders", None, original, historical=True)
+        self.assertEqual(historical["profitRMB"], 123)
+        self.assertEqual(historical["freightCostRMB"], 10)
+        self.assertEqual(historical["freightCostUSD"], 20)
+
+    def test_native_receipt_summaries_are_financial_including_nested_writes(self):
+        summaries = {"salesAdvanceAmountUSD": 100, "salesInvoiceSettledAmountUSD": 20, "salesInvoiceOutstandingAmountUSD": 80, "factoryAdvanceAmount": 70, "factoryInvoiceSettledAmount": 5, "factoryInvoiceOutstandingAmount": 65, "nativeReceiptSummary": [{"amount": 100, "currency": "USD"}], "salesInvoiceNames": ["SI-1"], "nativeSettlementCurrency": "CNY"}
+        original = {"companyId": "C1", "companyOperationNo": "QUOTE", "orderAmountUSD": 1000, "createdBy": "U2", "factories": [{"factoryId": "F", "productType": "Widgets", "advanceAmount": 70, "invoiceSettledAmount": 5, "invoiceOutstandingAmount": 65}], **summaries}
+        self.assertFalse(set(summaries).intersection(self.rules.visible_record(self.cfg, self.sales, original)))
+        self.assertEqual(self.rules.visible_record(self.cfg, self.sales, original)["factories"], [{"factoryId": "F", "productType": "Widgets"}])
+        self.assertEqual(self.rules.visible_record(self.cfg, self.admin, original)["nativeReceiptSummary"], summaries["nativeReceiptSummary"])
+        for key in summaries:
+            with self.subTest(field=key):
+                with self.assertRaises(APIError) as caught:
+                    self.rules._prepare_patch(None, self.cfg, self.sales, "orders", original, {"extra": {key: summaries[key]}})
+                self.assertEqual(caught.exception.code, "FIELD_DENIED")
 
     def test_order_numbers_unique_even_for_deleted_history(self):
         with self.assertRaises(APIError) as caught:
@@ -153,18 +308,25 @@ class NativeContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.frappe = fake_frappe()
-        cls.module_patch = patch.dict(sys.modules, {"frappe": cls.frappe})
+        cls.module_patch = patch.dict(sys.modules, {"frappe": cls.frappe, "frappe.rate_limiter": SimpleNamespace(rate_limit=lambda **kwargs: lambda fn: fn), "frappe.utils": SimpleNamespace(now_datetime=lambda: None, get_datetime=lambda value: value)})
         cls.module_patch.start()
         cls.api = importlib.import_module("tradept_core.api")
         cls.native = importlib.import_module("tradept_core.native")
         cls.permissions = importlib.import_module("tradept_core.permissions")
         cls.events = importlib.import_module("tradept_core.events")
         cls.guard = importlib.import_module("tradept_core.request_guard")
+        cls.login = importlib.import_module("tradept_core.enterprise_login")
+        cls.login_policy_patch = patch.object(cls.login, "active_policy", return_value=None)
+        cls.login_policy_patch.start()
+        cls.setup_patch = patch("tradept_core.login_setup.configuration", return_value={})
+        cls.setup_patch.start()
         cls.attribution = importlib.import_module("tradept_core.attribution")
         cls.administrator = importlib.import_module("tradept_core.administrator")
 
     @classmethod
     def tearDownClass(cls):
+        cls.setup_patch.stop()
+        cls.login_policy_patch.stop()
         cls.module_patch.stop()
 
     def setUp(self):
@@ -269,6 +431,16 @@ class NativeContractTests(unittest.TestCase):
         self.assertNotIn("admin", sales_session["user"]["pages"])
         self.assertNotIn("onboarding", sales_session["user"]["pages"])
 
+    def test_finance_session_keeps_bank_allowlists_in_admin_configuration_only(self):
+        cfg = {"id": "tenant", "companies": [], "roles": copy.deepcopy(DEFAULT_ROLES), "teams": {}}
+        cfg["roles"]["finance"]["financePolicy"]["allowedBankAccounts"] = ["Bank Company A", "Bank Company B"]
+        actor = {"id": "F", "tenantId": "tenant", "role": "finance", "visibleCompanyIds": []}
+        session = self.api._session(cfg, actor, Rules(cfg, {"F": actor}), {"F": actor})
+        self.assertIn("finance", session["user"]["pages"])
+        self.assertNotIn("allowedBankAccounts", session["user"]["financePolicy"])
+        self.assertNotIn("allowedBankAccounts", session["roles"]["finance"]["financePolicy"])
+        self.assertEqual(cfg["roles"]["finance"]["financePolicy"]["allowedBankAccounts"], ["Bank Company A", "Bank Company B"])
+
     def test_api_routes_administrator_state_and_update_through_locked_action(self):
         work = Row(revision=4)
         cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES), "companies": []}
@@ -348,6 +520,84 @@ class NativeContractTests(unittest.TestCase):
             members = self.administrator._members({"id": "tenant"}, configured)
         self.assertEqual(members[0]["id"], "U2")
         self.assertFalse(members[0]["enabled"])
+
+    def test_existing_member_native_save_cannot_commit_before_profile_failure(self):
+        cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES), "companies": []}
+        existing = {"id": "Member", "name": "Existing", "username": "member", "role": "finance", "tenantId": "tenant", "nativeUser": "member@example.invalid", "visibleCompanyIds": []}
+        for changes in ({"disabled": True}, {"role": "salesperson"}, {"temporaryPassword": "test-password-12345"}, {"name": "Renamed member"}):
+            with self.subTest(changes=changes):
+                calls = []
+                remaining_sids = ["actual-session-row-placeholder"]
+                native = Row(name=existing["nativeUser"], user_type="System User")
+                native.set = Mock(side_effect=lambda key, value: setattr(native, key, value))
+                # Models the independently inspected native lifecycle: if SID
+                # rows reach User.save, logout/type/password cleanup commits.
+                def native_save(**kwargs):
+                    calls.append("native-save")
+                    if remaining_sids:
+                        self.frappe.db.commit()
+                native.save = Mock(side_effect=native_save)
+                metadata = Row(update=Mock())
+                def fail_profile(**kwargs):
+                    calls.append("profile-failure")
+                    raise ValueError("Deliberate later profile failure")
+                metadata.save = Mock(side_effect=fail_profile)
+                def revoke(user):
+                    self.assertEqual(user, existing["nativeUser"])
+                    calls.append("revoke")
+                    remaining_sids.clear()
+                    return 1
+                self.frappe.db.commit.reset_mock()
+                with patch.object(self.administrator, "_configured_profiles", return_value={"Member": existing}), patch.object(self.frappe.db, "exists", return_value=True), patch.object(self.frappe.db, "get_value", return_value="PROFILE"), patch.object(self.frappe, "get_doc", side_effect=lambda kind, name: native if kind == "User" else metadata), patch("tradept_core.session_security.revoke_user_sessions", side_effect=revoke) as revoke_sessions:
+                    with self.assertRaises(ValueError):
+                        self.administrator._member(cfg, {"id": "Admin", "role": "admin"}, {"id": "Member", "email": existing["nativeUser"], "username": "member", "visibleCompanyIds": [], **changes})
+                self.assertEqual(calls, ["revoke", "native-save", "profile-failure"])
+                self.frappe.db.commit.assert_not_called()
+                revoke_sessions.assert_called_once_with(existing["nativeUser"])
+
+    def test_member_creation_does_not_revoke_unrelated_sessions(self):
+        cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES), "companies": []}
+        native = Row(name="new-member@example.invalid", set=Mock(), save=Mock())
+        metadata = Row(update=Mock(), save=Mock())
+        with patch.object(self.administrator, "_configured_profiles", return_value={}), patch.object(self.frappe.db, "exists", return_value=False), patch.object(self.frappe.db, "get_value", return_value=None), patch.object(self.frappe, "get_doc", return_value=native), patch.object(self.frappe, "new_doc", return_value=metadata, create=True), patch("tradept_core.session_security.revoke_user_sessions") as revoke_sessions:
+            result = self.administrator._member(cfg, {"id": "Admin", "role": "admin"}, {"id": "New", "email": native.name, "username": "new-member", "name": "New member", "role": "salesperson", "temporaryPassword": "test-password-12345", "visibleCompanyIds": []})
+        self.assertTrue(result["enabled"])
+        native.save.assert_called_once_with(ignore_permissions=True)
+        metadata.save.assert_called_once_with(ignore_permissions=True)
+        revoke_sessions.assert_not_called()
+
+    def test_current_administrator_disable_is_rejected_before_session_changes(self):
+        cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES), "companies": []}
+        current = {"id": "Admin", "role": "admin", "nativeUser": "admin@example.invalid"}
+        with patch.object(self.administrator, "_configured_profiles", return_value={"Admin": current}), patch("tradept_core.session_security.revoke_user_sessions") as revoke_sessions, patch.object(self.frappe, "get_doc") as get_doc:
+            with self.assertRaises(APIError) as caught:
+                self.administrator._member(cfg, current, {"id": "Admin", "email": current["nativeUser"], "username": "admin", "role": "admin", "disabled": True})
+        self.assertEqual(caught.exception.code, "CURRENT_ADMIN_REQUIRED")
+        revoke_sessions.assert_not_called()
+        get_doc.assert_not_called()
+
+    def test_ownership_profiles_preserve_disabled_owner_without_active_account(self):
+        rows = [Row(user="active@example.invalid", profile=dumps({"id": "Active", "tenantId": "a", "teamId": "T", "enabled": False})), Row(user="former@example.invalid", profile=dumps({"id": "Former", "tenantId": "a", "teamId": "T", "enabled": True}))]
+        with patch.object(self.frappe, "get_all", return_value=rows), patch.object(self.frappe.db, "get_value", side_effect=lambda dt, user, field: 1 if user == "active@example.invalid" else 0):
+            active = self.api.repo.profiles()
+            history = self.api.repo.ownership_profiles()
+        self.assertEqual(set(active), {"Active"})
+        self.assertEqual(set(history), {"Active", "Former"})
+        self.assertTrue(history["Active"]["enabled"])
+        self.assertFalse(history["Former"]["enabled"])
+        self.assertEqual(history["Former"]["nativeUser"], "former@example.invalid")
+        self.assertEqual(history["Former"]["teamId"], "T")
+
+    def test_disabled_historical_owner_cannot_obtain_workbench_session(self):
+        cfg = {"id": "a", "companies": [{"id": "C1"}], "roles": copy.deepcopy(DEFAULT_ROLES), "teams": {}}
+        former = {"id": "Former", "tenantId": "a", "teamId": "T", "role": "admin", "enabled": True}
+        row = Row(user=self.frappe.session.user, profile=dumps(former))
+        with patch.object(self.api.repo, "workspace", return_value=(Row(frozen=False), cfg)), patch.object(self.frappe, "get_all", return_value=[row]), patch.object(self.frappe.db, "get_value", return_value=0), patch.object(self.api.repo, "ownership_profiles") as history:
+            with self.assertRaises(APIError) as caught:
+                self.api._identity()
+        self.assertEqual(caught.exception.status, 403)
+        self.assertEqual(caught.exception.code, "WORKSPACE_ACCOUNT_REQUIRED")
+        history.assert_not_called()
 
     def test_editing_a_role_preserves_its_existing_collection_boundary(self):
         cfg = {"roles": {"limited": {
@@ -912,13 +1162,15 @@ class NativeContractTests(unittest.TestCase):
         rules = Rules(cfg, {"U": actor})
         data = {key: [] for key in ("customers", "factories", "orders", "shipments", "invoices")}
         data["customers"] = [{"id": "C", "companyId": "C1"}]
-        value = {"companyId": "C1", "customerId": "C", "companyOperationNo": "H1", "orderAmountUSD": 1000, "orderAmountRMB": None, "factoryCostRMB": 4000, "paidAmountUSD": 300, "profitRMB": 777.77, "profitRate": 11.5}
+        value = {"companyId": "C1", "customerId": "C", "companyOperationNo": "H1", "orderAmountUSD": 1000, "orderAmountRMB": None, "factoryCostRMB": 4000, "factoryCostUSD": 700, "freightCostRMB": 100, "freightCostUSD": 20, "otherCostRMB": 15, "otherCostUSD": 5, "paidAmountUSD": 300, "profitRMB": 777.77, "profitRate": 11.5}
         with patch.object(self.api.repo, "payload", return_value=data), patch.object(self.api.repo, "rates", return_value=({"C1": 9}, {})), patch.object(self.api.repo, "find", return_value=None), patch.object(self.api.repo, "save_record") as save, patch.object(self.api.repo, "finish", return_value={"ok": True}) as finish:
             self.api._changes(Row(revision=0), cfg, actor, rules, {"expectedVersion": 0, "importPurpose": "historical-reference", "changes": [{"collection": "orders", "id": "H1", "value": value}]})
         saved = save.call_args.args[1]
         self.assertTrue(save.call_args.kwargs["legacy"])
         self.assertEqual(saved["profitRMB"], 777.77)
         self.assertEqual(saved["paidAmountUSD"], 300)
+        for key in ("factoryCostRMB", "factoryCostUSD", "freightCostRMB", "freightCostUSD", "otherCostRMB", "otherCostUSD"):
+            self.assertEqual(saved[key], value[key])
         self.assertIsNone(saved["orderAmountRMB"])
         self.assertNotIn("orderDate", saved)
         self.assertNotIn("createdBy", saved)
@@ -979,10 +1231,28 @@ class NativeContractTests(unittest.TestCase):
         self.assertNotEqual(saved["orderAmountRMB"], 9000)
         self.assertEqual(finish.call_args.args[3]["exchangeRate"]["adjustedRate"], 7.23)
 
+    def test_hk_canonical_factory_cost_is_used_by_actual_order_save(self):
+        for policy in ("grandware-v40", "generic-native"):
+            with self.subTest(policy=policy):
+                cfg = {"id": "a", "companies": [{"id": "C1", "jurisdiction": "HK", "profitPolicy": policy, "settlementCurrency": "USD", "exchangeRate": 999}], "roles": copy.deepcopy(DEFAULT_ROLES), "teams": {}}
+                actor = {"id": "U", "role": "admin", "tenantId": "a", "visibleCompanyIds": ["C1"]}
+                rules = Rules(cfg, {"U": actor})
+                data = {key: [] for key in ("customers", "factories", "orders", "shipments", "invoices")}
+                data["customers"] = [{"id": "C", "companyId": "C1", "createdBy": "U"}]
+                value = {"companyId": "C1", "customerId": "C", "companyOperationNo": "HK-1", "customerOrderNo": "PO-1", "contactPerson": "Buyer", "loadingPort": "Shanghai", "overseasPort": "Los Angeles", "paymentTerms": "T/T", "orderDate": "2026-10-12", "orderAmountUSD": 1000, "factoryCostUSD": 700, "otherCostUSD": 20}
+                with patch.object(self.api.repo, "payload", return_value=data), patch.object(self.api.repo, "rates", return_value=({"C1": 999}, {})), patch.object(self.api.repo, "find", return_value=None), patch.object(self.api.repo, "save_record") as save, patch.object(self.api.repo, "finish", return_value={"ok": True}):
+                    self.api._changes(Row(revision=0), cfg, actor, rules, {"expectedVersion": 0, "changes": [{"collection": "orders", "id": "HK-1", "value": value}]})
+                saved = save.call_args.args[1]
+                self.assertEqual(saved["profitRMB"], 280)
+                self.assertEqual(saved["orderAmountRMB"], 1000)
+                self.assertEqual(saved["factoryCostRMB"], 700)
+                self.assertEqual(saved["factoryCostUSD"], 700)
+                self.assertEqual(decode(encode(saved, ORDER, "Trade Order Brief"), ORDER, "Trade Order Brief")["profitRMB"], 280)
+
     def test_native_role_and_company_permission_are_current_authority(self):
         cfg = {"id": "a", "roles": {"admin": copy.deepcopy(DEFAULT_ROLES["admin"]), "auditor": {**copy.deepcopy(DEFAULT_ROLES["finance"]), "baseRole": "finance"}}, "companies": [{"id": "C1"}], "teams": {}}
         actor = {"id": "U", "tenantId": "a", "nativeUser": self.frappe.session.user, "role": "admin", "visibleCompanyIds": ["C1", "C2"]}
-        with patch.object(self.api.repo, "workspace", return_value=(Row(frozen=False), cfg)), patch.object(self.api.repo, "profiles", return_value={"U": actor}), patch.object(self.frappe, "get_roles", return_value=["Tradept Auditor", "Sales Manager"], create=True), patch.object(self.frappe, "get_all", return_value=[Row(for_value="Company")]):
+        with patch.object(self.api.repo, "workspace", return_value=(Row(frozen=False), cfg)), patch.object(self.api.repo, "profiles", return_value={"U": actor}), patch.object(self.api.repo, "ownership_profiles", return_value={"U": actor}), patch.object(self.frappe, "get_roles", return_value=["Tradept Auditor", "Sales Manager"], create=True), patch.object(self.frappe, "get_all", return_value=[Row(for_value="Company")]):
             self.frappe.db.get_value.return_value = "C1"
             _work, current_cfg, current, rules, _users = self.api._identity()
         self.assertEqual(current["role"], "auditor")
@@ -1183,14 +1453,121 @@ class NativeContractTests(unittest.TestCase):
         self.assertTrue(sale.flags.ignore_permissions)
         self.assertTrue(purchase.flags.ignore_permissions)
 
+    def _legacy_receipt_policy(self):
+        cfg = {"id": "a", "companies": [{"id": "C"}], "roles": copy.deepcopy(DEFAULT_ROLES)}
+        actor = {"id": "U", "role": "finance", "tenantId": "a", "nativeUser": self.frappe.session.user, "visibleCompanyIds": ["C"]}
+        value = {"id": "O", "companyId": "C", "createdBy": "U"}
+        data = {"orders": [value]}
+        return cfg, actor, Rules(cfg, {"U": actor, "Other": {"id": "Other"}}), value, data
+
+    def test_legacy_receipt_requires_new_create_submit_and_financial_record_scope(self):
+        for case in ("old-grant-only", "submit-revoked", "narrow-scope"):
+            cfg, actor, rules, value, data = self._legacy_receipt_policy()
+            if case == "old-grant-only":
+                cfg["roles"]["finance"]["permissions"] = [cap for cap in cfg["roles"]["finance"]["permissions"] if not cap.startswith("finance.payment_entry.")]
+            elif case == "submit-revoked":
+                cfg["roles"]["finance"]["permissions"].remove("finance.payment_entry.submit")
+            else:
+                cfg["roles"]["finance"]["financePolicy"]["scope"] = "self"
+                value["createdBy"] = "Other"
+            with patch.object(self.native.repo, "native_company", return_value="Company"), \
+                    patch.object(self.native, "documents", return_value=[{"doctype": "Sales Order", "name": "SO"}]), \
+                    patch.object(self.native, "order_finance", return_value={"advanceBase": 0, "invoiceNames": []}), \
+                    patch.object(self.frappe.db, "exists", return_value=True), \
+                    patch.object(self.frappe.db, "get_value", return_value="Company"), \
+                    patch.object(self.frappe, "get_all", return_value=[Row(for_value="Company")]), \
+                    patch.object(self.frappe, "get_doc") as load:
+                with self.assertRaises(APIError) as caught:
+                    with self.permissions.delegated_operation("receive_payment", cfg, actor, rules, value, data, Row(sales_order="SO")):
+                        self.fail("An old receipt entry point bypassed financial grants")
+                self.assertEqual(caught.exception.code, "FINANCE_RECORD_DENIED" if case == "narrow-scope" else "FINANCE_PERMISSION_DENIED")
+                load.assert_not_called()
+            self.assertEqual(self.frappe.session.user, actor["nativeUser"])
+            self.assertIsNone(self.permissions.delegated_actor())
+
+    def test_legacy_receipt_native_helper_requires_authorized_financial_context(self):
+        with self.assertRaises(APIError) as caught:
+            self.native.receive_payment(Row(sales_order="SO"), {"id": "O", "companyId": "C"}, {"amountUSD": 20, "idempotencyKey": "key"})
+        self.assertEqual(caught.exception.code, "FINANCE_DELEGATION_DENIED")
+
+    def test_legacy_receipt_cannot_bypass_bank_allowlist_or_native_amount_cap(self):
+        for constraint, expected in (({"paymentLimit": {"amount": 10, "currency": "USD"}}, "FINANCE_PAYMENT_LIMIT_EXCEEDED"), ({"allowedBankAccounts": ["Allowed Bank"]}, "FINANCE_BANK_ACCOUNT_DENIED")):
+            cfg, actor, rules, value, data = self._legacy_receipt_policy()
+            cfg["roles"]["finance"]["financePolicy"].update(constraint)
+            sale = Row(doctype="Sales Order", name="SO", company="Company", currency="USD", customer="Customer", docstatus=1, grand_total=100, advance_paid=0, conversion_rate=1, custom_tradept_order_id="O", get_all_children=lambda: [])
+            company = Row(default_currency="USD", default_bank_account="Bank")
+            reference = Row(reference_doctype="Sales Order", reference_name="SO", allocated_amount=20)
+            entry = Row(doctype="Payment Entry", name=None, company="Company", owner="Administrator", payment_type="Receive", party_type="Customer", party="Customer", paid_from="Receivable", paid_to="Bank", paid_amount=20, received_amount=20, total_allocated_amount=20, references=[reference], flags=Row(), is_new=lambda: True, get_all_children=lambda: [reference], set_amounts=Mock(), insert=Mock(), submit=Mock())
+            def db_value(doctype, name, field, **kwargs):
+                if doctype == "Payment Entry":
+                    return None
+                if doctype == "Bank Account":
+                    return {"company": "Company", "is_company_account": 1, "account": "Allowed Bank GL"}
+                if doctype == "Account":
+                    return "USD" if field == "account_currency" else "Company" if field == "company" else None
+                if doctype == "Customer":
+                    return "Company" if field == "custom_tradept_company" else "Customer"
+                if doctype == "Company":
+                    return "USD"
+                return "Company"
+            modules = {"erpnext.accounts.doctype.payment_entry.payment_entry": Row(get_payment_entry=Mock(return_value=entry)), "erpnext.accounts.party": Row(get_party_account=lambda *args: "Receivable")}
+            with patch.dict(sys.modules, modules), \
+                    patch.object(self.native, "order_finance", return_value={"advanceBase": 0, "invoiceNames": []}), \
+                    patch.object(self.native.repo, "native_company", return_value="Company"), \
+                    patch.object(self.native, "documents", return_value=[{"doctype": "Sales Order", "name": "SO"}]), \
+                    patch.object(self.frappe.db, "exists", return_value=True), \
+                    patch.object(self.frappe.db, "get_value", side_effect=db_value), \
+                    patch.object(self.frappe, "get_all", return_value=[Row(for_value="Company")]), \
+                    patch.object(self.frappe, "get_doc", side_effect=lambda doctype, name, **kwargs: sale if doctype == "Sales Order" else company), \
+                    patch.object(self.attribution, "capture", return_value={}):
+                with self.assertRaises(APIError) as caught:
+                    with self.permissions.delegated_operation("receive_payment", cfg, actor, rules, value, data, Row(sales_order="SO")):
+                        self.native.receive_payment(Row(sales_order="SO"), value, {"amountUSD": 20, "idempotencyKey": "legacy-receipt"})
+                self.assertEqual(caught.exception.code, expected)
+                entry.set_amounts.assert_called_once()
+                entry.insert.assert_not_called()
+                entry.submit.assert_not_called()
+            self.assertEqual(self.frappe.session.user, actor["nativeUser"])
+            self.assertIsNone(self.permissions.delegated_actor())
+
     def test_successful_payment_retry_acknowledges_before_stale_cas(self):
         rules = Row(permitted=lambda *args: True, record_allowed=lambda *args: True)
         self.frappe.db.exists.return_value = True
-        with patch.object(self.api.repo, "payload", return_value={"orders": [{"id": "O", "companyId": "C"}]}), patch.object(self.api.repo, "find", return_value=Row(sales_order="SO")), patch.object(self.api.native, "receive_payment", return_value=[{"doctype": "Payment Entry", "name": "PE"}]), patch.object(self.api.repo, "finish") as finish:
+        with patch.object(self.api.repo, "payload", return_value={"orders": [{"id": "O", "companyId": "C"}]}), patch.object(self.api.repo, "find", return_value=Row(sales_order="SO")), patch.object(self.api, "delegated_operation", return_value=nullcontext()) as delegate, patch.object(self.api.native, "receive_payment", return_value=[{"doctype": "Payment Entry", "name": "PE"}]), patch.object(self.api.repo, "finish") as finish:
             result = self.api._native_operation("receive_payment", Row(revision=3, updated_at_source="now", updated_by_id="U"), {}, {"id": "U"}, rules, {"expectedVersion": 1, "orderId": "O", "idempotencyKey": "receipt", "amountUSD": 100})
         self.assertTrue(result["alreadyApplied"])
         self.assertEqual(result["meta"]["version"], 3)
         finish.assert_not_called()
+        self.assertEqual(delegate.call_args.args[0], "receive_payment")
+
+    def test_idempotent_legacy_receipt_retry_still_enforces_current_financial_grants(self):
+        rules = Row(permitted=lambda *args: True, record_allowed=lambda *args: True)
+        with patch.object(self.frappe.db, "exists", return_value=True), \
+                patch.object(self.api.repo, "payload", return_value={"orders": [{"id": "O", "companyId": "C"}]}), \
+                patch.object(self.api.repo, "find", return_value=Row(sales_order="SO")), \
+                patch.object(self.api, "delegated_operation", side_effect=APIError(403, "FINANCE_PERMISSION_DENIED", "Revoked financial permission")), \
+                patch.object(self.api.native, "receive_payment") as receive:
+            with self.assertRaises(APIError) as caught:
+                self.api._native_operation("receive_payment", Row(revision=3), {}, {"id": "U"}, rules, {"expectedVersion": 1, "orderId": "O", "idempotencyKey": "receipt", "amountUSD": 100})
+            self.assertEqual(caught.exception.code, "FINANCE_PERMISSION_DENIED")
+            receive.assert_not_called()
+
+    def test_administrator_finance_options_use_native_v16_bank_account_label(self):
+        cfg, actor, rules, _value, _data = self._legacy_receipt_policy()
+        def accounts(doctype, **kwargs):
+            if doctype == "User Permission":
+                return [Row(for_value="Company")]
+            self.assertEqual(doctype, "Bank Account")
+            self.assertIn("account_name", kwargs["fields"])
+            self.assertNotIn("bank_account_name", kwargs["fields"])
+            return [Row(name="BANK-ACCOUNT", account_name="Test corporate USD bank", company="Company", account="Bank")]
+        with patch.object(self.native.repo, "native_company", return_value="Company"), \
+                patch.object(self.frappe, "get_all", side_effect=accounts), \
+                patch.object(self.frappe.db, "exists", return_value=True), \
+                patch.object(self.frappe.db, "get_value", return_value="USD"):
+            options = self.administrator._finance_options(cfg, actor, rules)
+        self.assertEqual(options["bankAccounts"], [{"name": "BANK-ACCOUNT", "label": "Test corporate USD bank", "currency": "USD", "companyId": "C"}])
+        self.assertIn("finance.payment_entry.submit", options["capabilities"])
 
     def test_native_projection_freezes_conversion_and_reads_live_paid_balance(self):
         sale = Row(name="SO", company="Company", customer="Customer", customer_name="Native customer", po_no="Native-PO", transaction_date="2026-10-01", delivery_date="2026-10-13", currency="USD", grand_total=1000, base_grand_total=6690, conversion_rate=6.69, advance_paid=250, docstatus=1, per_delivered=0, items=[Row(name="SO-L", custom_tradept_line_id="L", custom_tradept_supplier_id="F", item_code="ITEM", uom="Box", qty=10, rate=100)])
@@ -1199,9 +1576,10 @@ class NativeContractTests(unittest.TestCase):
         lookup = {("Sales Order", "SO"): sale, ("Purchase Order", "PO"): po, ("Company", "Company"): company}
         with patch.object(self.frappe, "get_doc", side_effect=lambda dt, name: lookup[(dt, name)]), patch.object(self.frappe, "get_all", return_value=[]), patch.object(self.frappe.db, "get_value", side_effect=lambda dt, name, field: "C" if dt == "Customer" else "F"), patch.object(self.native, "documents", return_value=[{"doctype": "Sales Order", "name": "SO", "docstatus": 1}, {"doctype": "Purchase Order", "name": "PO", "docstatus": 1}]), patch.object(self.native.repo, "rates", side_effect=AssertionError("Current FX must not restate native order")):
             plan = child_encode({"factoryId": "F", "productType": "Production category", "inspectionDate": "2026-10-12", "estimatedShipDate": "2026-10-14"}, FACTORY_LINE)
-            projected = self.native.project_order(Row(sales_order="SO", factory_lines=[plan]), {"id": "O", "customerName": "stale quote", "customerOrderNo": "stale quote", "orderDate": "2000-01-01", "freightCostUSD": 100, "insuranceCostUSD": 10, "otherCostUSD": 0})
+            with patch.object(self.native, "order_finance", side_effect=lambda order: {"advanceBase": float(order.advance_paid or 0) * float(order.conversion_rate), "invoiceSettledBase": 0, "invoiceOutstandingBase": 0, "invoiceBilledBase": 0, "invoiceNames": [], "receipts": []}):
+                projected = self.native.project_order(Row(sales_order="SO", factory_lines=[plan]), {"id": "O", "customerName": "stale quote", "customerOrderNo": "stale quote", "orderDate": "2000-01-01", "freightCostUSD": 100, "insuranceCostUSD": 10, "otherCostUSD": 0})
         self.assertEqual(projected["erpItems"][0]["uom"], "Box")
-        self.assertEqual(projected["paidAmountUSD"], 250)
+        self.assertAlmostEqual(projected["paidAmountUSD"], 250)
         self.assertEqual(projected["paymentStatus"], "部分收款")
         self.assertEqual(projected["exchangeRateUsed"], 6.69)
         self.assertEqual(projected["profitRMB"], round(6690 - 4000 - 110 * 6.69, 2))
@@ -1218,7 +1596,8 @@ class NativeContractTests(unittest.TestCase):
         company = Row(default_currency="CNY", custom_tradept_profit_policy="generic-native", custom_tradept_record_id="C1")
         lookup = {("Sales Order", "SO"): sale, ("Company", "Company"): company, ("Purchase Order", "PO1"): po1, ("Purchase Order", "PO2"): po2}
         with patch.object(self.frappe, "get_doc", side_effect=lambda dt, name: lookup[(dt, name)]), patch.object(self.frappe, "get_all", return_value=[]), patch.object(self.frappe.db, "get_value", side_effect=lambda dt, name, field: "C" if dt == "Customer" else "F"), patch.object(self.native, "documents", return_value=[{"doctype": "Purchase Order", "name": "PO1", "docstatus": 1}, {"doctype": "Purchase Order", "name": "PO2", "docstatus": 1}]):
-            projected = self.native.project_order(Row(sales_order="SO", factory_lines=[]), {"id": "O"})
+            with patch.object(self.native, "order_finance", side_effect=lambda order: {"advanceBase": float(order.advance_paid or 0) * float(order.conversion_rate), "invoiceSettledBase": 0, "invoiceOutstandingBase": 0, "invoiceBilledBase": 0, "invoiceNames": [], "receipts": []}):
+                projected = self.native.project_order(Row(sales_order="SO", factory_lines=[]), {"id": "O"})
         self.assertEqual(len(projected["factories"]), 1)
         self.assertEqual(projected["factories"][0]["totalQuantity"], 15)
         self.assertAlmostEqual(projected["factories"][0]["totalAmount"], 1001.4)

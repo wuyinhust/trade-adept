@@ -10,7 +10,7 @@ def _state(row):
     return {key: row.get(key) for key in ("modified", "modified_by", "owner")}
 
 
-def _rows(references, brief):
+def _rows(references, brief=None):
     result = {}
     parents = {(row["doctype"], row["name"]) for row in references}
     if getattr(brief, "doctype", None) and getattr(brief, "name", None):
@@ -35,7 +35,7 @@ def _rows(references, brief):
     return result
 
 
-def capture(references, brief):
+def capture(references, brief=None):
     return _rows(references, brief)
 
 
