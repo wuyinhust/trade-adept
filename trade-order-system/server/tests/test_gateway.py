@@ -52,7 +52,7 @@ class GatewayTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.runtime = Path(self.directory.name)
         self.config = self.runtime / 'frappe-sites.json'
-        self.write_config({'tenants': {
+        self.write_config({'demoMode': True, 'demoTenants': ['grandware', 'example-company'], 'tenants': {
             'grandware': {'origin': 'http://127.0.0.1:3088', 'site': 'grandware.test', 'gatewayHmacKey': KEY_A},
             'example-company': {'origin': 'http://127.0.0.1:3088', 'site': 'frontend', 'gatewayHmacKey': KEY_B},
         }})
@@ -332,6 +332,22 @@ class GatewayTest(unittest.TestCase):
         self.assertNotIn('private network', str(error.exception))
         self.assertFalse((self.runtime / 'workspace.sqlite3').exists())
 
+    def test_finance_report_uses_native_csrf_and_keeps_scoped_payload(self):
+        payload = {'companyId': 'CO-1', 'report': 'receivables', 'filters': {'report_date': '2026-10-13'}}
+        replies = [Response({'message': {'result': {'user': {'tenantId': 'grandware'}}, 'csrfToken': 'c' * 64}}),
+                   Response({'message': {'result': {'columns': [], 'data': [], 'currency': 'USD'}}})]
+        opener = SequenceOpener(replies)
+        self.gateway.opener = opener
+        result = self.gateway.read(self.gateway.actor(self.token), 'finance_report', payload)
+        self.assertEqual(result['currency'], 'USD')
+        first, second = [entry[0] for entry in opener.requests]
+        self.assertEqual(first.get_method(), 'GET')
+        self.assertEqual(second.get_header('X-frappe-csrf-token'), 'c' * 64)
+        self.assertEqual(second.get_header('X-frappe-site-name'), 'grandware.test')
+        fields = json.loads(second.data)
+        self.assertEqual(fields['action'], 'finance_report')
+        self.assertEqual(json.loads(fields['payload']), payload)
+
     def test_upstream_traces_and_html_are_not_forwarded(self):
         with patch.object(self.gateway.opener, 'open', return_value=Response({'exc': 'private stack and SQL password', '_server_messages': 'secret'}, 500)):
             with self.assertRaises(APIError) as error:
@@ -507,7 +523,7 @@ class HTTPBoundaryTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.gateway = type('Stub', (), {})()
         self.gateway.actor = lambda token: {'tenant': 'grandware'}
-        self.gateway.read = lambda actor, action: {'ok': True, 'action': action}
+        self.gateway.read = lambda actor, action, payload=None: {'ok': True, 'action': action, 'payload': payload}
         self.gateway.write = lambda actor, action, payload: {'ok': True, 'action': action, 'expectedVersion': payload.get('expectedVersion')}
         self.rate_calls = 0
 
@@ -550,6 +566,43 @@ class HTTPBoundaryTest(unittest.TestCase):
     def test_cross_origin_write_rejected_before_native_action(self):
         status, value = self.request('/api/changes', {'expectedVersion': 1}, origin=False)
         self.assertEqual((status, value['code']), (403, 'ORIGIN_DENIED'))
+
+    def test_finance_routes_are_scoped_and_do_not_accept_native_method_names(self):
+        status, value = self.request('/api/finance/state?companyId=CO-1&resource=sales_invoice&offset=5')
+        self.assertEqual((status, value['action']), (200, 'finance_state'))
+        self.assertEqual(value['payload'], {'companyId': 'CO-1', 'resource': 'sales_invoice', 'offset': 5})
+        for query in ('companyId=CO-1&companyId=CO-2', 'method=frappe.get_doc', 'doctype=User', 'limit=Infinity', 'offset=-1'):
+            with self.subTest(query=query):
+                status, value = self.request('/api/finance/document?' + query)
+                self.assertEqual((status, value['code']), (400, 'INVALID_QUERY'))
+        report = {'companyId': 'CO-1', 'report': 'payables', 'filters': {'report_date': '2026-10-13'}}
+        status, value = self.request('/api/finance/report', report)
+        self.assertEqual((status, value['action'], value['payload']), (200, 'finance_report', report))
+        status, value = self.request('/api/finance/operation', {'expectedVersion': 3})
+        self.assertEqual((status, value['action']), (200, 'finance_operation'))
+
+    def test_finance_post_reads_and_writes_require_same_origin(self):
+        for path in ('/api/finance/report', '/api/finance/operation'):
+            status, value = self.request(path, {'companyId': 'CO-1'}, origin=False)
+            self.assertEqual((status, value['code']), (403, 'ORIGIN_DENIED'))
+
+    def test_catalog_route_preserves_scoped_values_and_rejects_native_parameters(self):
+        status, value = self.request('/api/catalog/state?companyId=CO-1&includeDisabled=1&offset=4&name=A%26B')
+        self.assertEqual((status, value['action']), (200, 'catalog_state'))
+        self.assertEqual(value['payload'], {'companyId': 'CO-1', 'includeDisabled': True, 'offset': 4, 'name': 'A&B'})
+        for query in ('companyId=CO-1&companyId=CO-2', 'doctype=User', 'method=frappe.client.insert', 'limit=Infinity', 'offset=-1', 'includeDisabled=yes'):
+            with self.subTest(query=query):
+                status, value = self.request('/api/catalog/state?' + query)
+                self.assertEqual((status, value['code']), (400, 'INVALID_QUERY'))
+        request = {'companyId': 'CO-1', 'operation': 'create', 'expectedVersion': 4, 'idempotencyKey': 'stable-item'}
+        forwarded = []
+        self.gateway.write = lambda actor, action, payload: forwarded.append((action, payload)) or {'ok': True, 'action': action}
+        status, value = self.request('/api/catalog/operation', request)
+        self.assertEqual((status, value['action']), (200, 'catalog_operation'))
+        self.assertEqual(forwarded, [('catalog_operation', request)])
+        status, value = self.request('/api/catalog/operation', request, origin=False)
+        self.assertEqual((status, value['code']), (403, 'ORIGIN_DENIED'))
+        self.assertEqual(len(forwarded), 1)
 
     def test_version_readback_has_no_tenant_data_or_login_dependency(self):
         self.gateway.actor = lambda token: (_ for _ in ()).throw(AssertionError('release read must not open a session'))

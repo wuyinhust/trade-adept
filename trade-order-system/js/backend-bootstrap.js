@@ -1,3 +1,4 @@
+import { mountEnterpriseLogin, passwordSetupOpen } from './enterprise-login.js';
 import { App } from './app.js';
 import { Auth } from './auth.js';
 import { Cloud } from './cloud.js';
@@ -5,16 +6,19 @@ import { DB } from './data.js';
 import { Exchange } from './exchange.js';
 import { BusinessAPIClient, workspaceDraftKey } from './api-client.js';
 import { escapeHtml, toast } from './utils.js';
+import { FormDrafts } from './form-drafts.js';
+import { showContactConflicts } from './contact-conflicts.js';
 
 const api = new BusinessAPIClient({
     canReplaceData: () => !document.querySelector('#modalContainer .modal-overlay'),
     persistExchangeRates: false
 });
-const tenantInput = document.createElement('div');
-tenantInput.className = 'form-group';
-tenantInput.innerHTML =
-    '<label class="form-label" for="loginTenant">企业工作区</label><input id="loginTenant" class="form-input" required autocomplete="organization" placeholder="管理员提供的工作区 ID">';
-document.getElementById('loginForm').prepend(tenantInput);
+mountEnterpriseLogin({
+    onPasswordSetup: () => {
+        Exchange.stopAutoRefresh();
+        DB._stopPolling?.();
+    }
+});
 const teamImage = document.querySelector('.login-footer-image');
 if (teamImage) teamImage.hidden = true;
 
@@ -27,6 +31,7 @@ function applySession(session, { resetRuntime = true } = {}) {
     }
     Auth._serverDataAuthorized = true;
     Auth.users = session.users || [];
+    Auth.historicalOwners = session.historicalOwners || {};
     Auth.teams = session.teams || {};
     Auth.roles = session.roles || {};
     Auth.currentUser = session.user;
@@ -70,15 +75,25 @@ async function refreshSession() {
 
 Auth.configureProvider({
     restoreSession: async () => {
+        // Email proof has priority over an existing administrator/member SID.
+        // Keep the token in the form closure, never in session/local storage.
+        if (passwordSetupOpen()) return null;
         try {
-            return applySession(await api.session());
+            const session = await api.session();
+            if (passwordSetupOpen()) return null;
+            return applySession(session);
         } catch (e) {
             if (e.status === 401) return null;
             throw e;
         }
     },
     login: async (username, password) => {
-        await api.login({ tenantId: document.getElementById('loginTenant').value.trim(), username, password });
+        const demoTenant = document.getElementById('loginTenant');
+        await api.login(
+            demoTenant
+                ? { tenantId: demoTenant.value, username: username.trim(), password }
+                : { email: username.trim().toLowerCase(), password }
+        );
         return applySession(await api.session());
     },
     logout: async () => {
@@ -88,6 +103,7 @@ Auth.configureProvider({
         DB.liveRateMetas = {};
         DB._cloudReady = DB._cloudConnected = false;
         Auth._serverDataAuthorized = false;
+        Auth.historicalOwners = {};
         document.title = 'Tradept · 登录工作区';
         DB.data = { customers: [], orders: [], factories: [], shipments: [], invoices: [] };
     }
@@ -110,11 +126,21 @@ conflictBar.id = 'saveConflictBar';
 conflictBar.className = 'local-preview-toolbar';
 conflictBar.hidden = true;
 conflictBar.innerHTML =
-    '<strong>版本冲突 · 修改尚未保存</strong><button class="btn btn-secondary" id="downloadConflictDraft">下载草稿</button><button class="btn btn-secondary" id="discardConflictDraft">放弃草稿并重载</button>';
+    '<strong>版本冲突 · 修改尚未保存</strong><button class="btn btn-secondary" id="reviewContactConflicts">核对联系人合并</button><button class="btn btn-secondary" id="downloadConflictDraft">下载草稿</button><button class="btn btn-secondary" id="discardConflictDraft">放弃草稿并重载</button>';
 document.body.appendChild(conflictBar);
 DB.onSaveConflict = () => {
     conflictBar.hidden = false;
 };
+document.getElementById('reviewContactConflicts').onclick = () =>
+    showContactConflicts({
+        api,
+        DB,
+        App,
+        drafts: FormDrafts,
+        onSaved: () => {
+            conflictBar.hidden = true;
+        }
+    });
 
 document.getElementById('downloadConflictDraft').onclick = () => {
     const blob = new Blob(
@@ -122,7 +148,7 @@ document.getElementById('downloadConflictDraft').onclick = () => {
             JSON.stringify(
                 {
                     tenantId: Auth.currentUser?.tenantId,
-                    baseVersion: DB._cloudVersion,
+                    baseVersion: DB._draftBaseVersion ?? DB._cloudVersion,
                     data: DB.data,
                     exchangeRates: DB.exchangeRates,
                     rateMetas: DB.rateMetas

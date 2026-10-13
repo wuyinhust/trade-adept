@@ -23,6 +23,7 @@ const DB = {
         completedOrders: 0,
         pendingShipmentCount: orders.length,
         customerCount: 1,
+        factoryCount: 2,
         // Deliberately poisoned legacy aggregate: chart must ignore its mixed currency amount.
         monthlyStats: { '2026-10': { revenue: 999999, profit: 999999 } },
         statusStats: { 进行中: orders.length },
@@ -95,6 +96,12 @@ describe('Dashboard currencies, authorized financial reporting and history prese
 
     test('mixed company view produces one currency per chart and ignores mixed legacy aggregate', () => {
         Dashboard.render(container);
+        expect(container.querySelector('[aria-label="业务指标"]').textContent).toContain(
+            '客户数量1当前公司 · Demo domestic'
+        );
+        expect(container.querySelector('[aria-label="业务指标"]').textContent).toContain(
+            '工厂数量2当前公司 · Demo domestic'
+        );
         const cny = App.charts['monthly-CNY'].config;
         const usd = App.charts['monthly-USD'].config;
         expect(cny.data.datasets.map(dataset => dataset.label)).toEqual(['营收 · CNY', '利润 · CNY']);

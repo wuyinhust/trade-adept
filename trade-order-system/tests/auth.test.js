@@ -71,6 +71,127 @@ const { DemoProfile } = await import('../js/demo-profile.js');
 Auth.users = DemoProfile.users;
 Auth.teams = DemoProfile.teams;
 
+describe('server-authorized record deletion', () => {
+    beforeEach(() => {
+        Auth._serverDataAuthorized = true;
+        Auth.roles = { operations: { readScopes: { factories: 'entities' } } };
+        Auth.currentUser = {
+            id: 7,
+            tenantId: 'TENANT',
+            role: 'operations',
+            scope: 'self',
+            teamId: 'TEAM',
+            visibleCompanyIds: ['CO-A'],
+            permissions: ['read', 'delete']
+        };
+        Auth.users = [
+            { id: 'colleague', teamId: 'TEAM' },
+            { id: 'outsider', teamId: 'OTHER' }
+        ];
+        Auth.historicalOwners = {};
+    });
+    afterEach(() => {
+        Auth._serverDataAuthorized = false;
+        Auth.currentUser = null;
+        Auth.roles = {};
+        Auth.users = DemoProfile.users;
+        Auth.historicalOwners = {};
+        Auth.teams = DemoProfile.teams;
+    });
+
+    test('shared reads do not permit deleting another owner, while String IDs recognize owned records', () => {
+        const own = { tenantId: 'TENANT', companyId: 'CO-A', createdBy: '7' };
+        expect(Auth.canDeleteRecord(own, 'customers')).toBe(true);
+        expect(Auth.canDeleteRecord({ ...own, createdBy: 'colleague' }, 'factories')).toBe(false);
+        expect(Auth.canDeleteRecord({ ...own, createdBy: null, ownerId: 7 }, 'factories')).toBe(true);
+        expect(Auth.canDeleteOrder({ ...own, createdBy: null, salespersonId: '7' })).toBe(true);
+    });
+
+    test('tenant scope still needs delete, tenant identity and explicit company grants', () => {
+        Auth.currentUser.scope = 'tenant';
+        const visible = { tenantId: 'TENANT', companyId: 'CO-A', createdBy: 'outsider' };
+        expect(Auth.canDeleteRecord(visible)).toBe(true);
+        expect(Auth.canDeleteRecord({ ...visible, tenantId: 'OTHER' })).toBe(false);
+        expect(Auth.canDeleteRecord({ ...visible, companyId: 'CO-B' })).toBe(false);
+        expect(Auth.canDeleteRecord({ ...visible, companyId: null })).toBe(false);
+        expect(Auth.canDeleteRecord({ ...visible, deleted: true })).toBe(false);
+        Auth.currentUser.permissions = ['read'];
+        expect(Auth.canDeleteRecord(visible)).toBe(false);
+    });
+
+    test('team scope follows the supplied member directory and refuses missing or invalid teams', () => {
+        Auth.currentUser.scope = 'team';
+        const record = { tenantId: 'TENANT', companyId: 'CO-A', createdBy: 'colleague' };
+        expect(Auth.canDeleteRecord(record, 'customers')).toBe(true);
+        Auth.teams = { TEAM: { memberIds: ['outsider'] } };
+        expect(Auth.canDeleteRecord({ ...record, createdBy: 'outsider' }, 'customers')).toBe(false);
+        Auth.currentUser.teamId = null;
+        expect(Auth.canDeleteRecord(record)).toBe(false);
+        Auth.currentUser.scope = 'entities';
+        expect(Auth.canDeleteRecord(record)).toBe(false);
+    });
+
+    test('module restrictions are preserved even when the role has generic deletion permission', () => {
+        Auth.roles.operations.collections = ['orders'];
+        const own = { tenantId: 'TENANT', companyId: 'CO-A', createdBy: '7' };
+        expect(Auth.canDeleteRecord(own)).toBe(true);
+        expect(Auth.canDeleteRecord(own, 'customers')).toBe(false);
+        expect(Auth.canDeleteRecord(own, 'factories')).toBe(false);
+    });
+
+    test('team managers can delete records of a stopped owner in the same historical team', () => {
+        Auth.currentUser.scope = 'team';
+        Auth.historicalOwners = { stopped: { teamId: 'TEAM' } };
+        const record = { tenantId: 'TENANT', companyId: 'CO-A', createdBy: 'stopped' };
+        expect(Auth.getRecordOwner('stopped')).toEqual({ id: 'stopped', teamId: 'TEAM' });
+        expect(Auth.canDeleteRecord(record, 'customers')).toBe(true);
+        expect(Auth.canDeleteRecord(record, 'factories')).toBe(true);
+        expect(Auth.users.some(user => user.id === 'stopped')).toBe(false);
+        Auth.currentUser = null;
+        expect(Auth.canDeleteRecord(record)).toBe(false);
+    });
+
+    test('a historical display name never makes the stopped owner an active assignment candidate', () => {
+        Auth.historicalOwners = {
+            stopped: {
+                teamId: 'TEAM',
+                name: 'Historical colleague',
+                username: 'private-login',
+                email: 'private@example.invalid'
+            }
+        };
+        expect(Auth.getRecordOwner('stopped')).toEqual({ id: 'stopped', teamId: 'TEAM', name: 'Historical colleague' });
+        expect(Auth.users.some(user => user.id === 'stopped')).toBe(false);
+    });
+
+    test('historical owners in other teams and absent history cannot grant team deletion', () => {
+        Auth.currentUser.scope = 'team';
+        Auth.historicalOwners = { stopped: { teamId: 'OTHER' }, unassigned: {} };
+        const record = { tenantId: 'TENANT', companyId: 'CO-A' };
+        expect(Auth.canDeleteRecord({ ...record, createdBy: 'stopped' })).toBe(false);
+        expect(Auth.canDeleteRecord({ ...record, ownerId: 'unassigned' })).toBe(false);
+        expect(Auth.canDeleteRecord({ ...record, salespersonId: 'unknown' })).toBe(false);
+        Auth.historicalOwners = {};
+        expect(Auth.canDeleteRecord({ ...record, createdBy: 'stopped' })).toBe(false);
+        Auth.historicalOwners = null;
+        expect(Auth.canDeleteRecord({ ...record, createdBy: 'stopped' })).toBe(false);
+    });
+
+    test('active owners current teams take precedence over stale historical entries with String IDs', () => {
+        Auth.currentUser.scope = 'team';
+        Auth.users = [
+            { id: 42, teamId: 'OTHER' },
+            { id: '43', teamId: 'TEAM' }
+        ];
+        Auth.historicalOwners = { 42: { teamId: 'TEAM' }, 43: { teamId: 'OTHER' } };
+        const record = { tenantId: 'TENANT', companyId: 'CO-A' };
+        expect(Auth.getRecordOwner('42')).toBe(Auth.users[0]);
+        expect(Auth.canDeleteRecord({ ...record, createdBy: '42' })).toBe(false);
+        expect(Auth.canDeleteRecord({ ...record, createdBy: 43 })).toBe(true);
+        expect(Auth.getRecordOwner(null)).toBeNull();
+    });
+});
+
 // Pre-compute hashes for known test passwords
 const TEST_PASSWORD = 'test123';
 let TEST_HASH;
@@ -588,6 +709,29 @@ describe('Auth module', () => {
             await Auth.logout();
             expect(logout).toHaveBeenCalledTimes(1);
             expect(Auth.currentUser).toBeNull();
+        });
+        test('logout clears the catalog before waiting for the server', async () => {
+            let finish;
+            const originalCatalog = globalThis.ItemCatalog;
+            const clear = jest.fn();
+            globalThis.ItemCatalog = { clear };
+            Auth.configureProvider({
+                logout: () =>
+                    new Promise(resolve => {
+                        finish = resolve;
+                    })
+            });
+            Auth.currentUser = { id: 'server' };
+            try {
+                const pending = Auth.logout();
+                expect(clear).toHaveBeenCalledTimes(1);
+                expect(Auth.currentUser.id).toBe('server');
+                finish();
+                await pending;
+                expect(Auth.currentUser).toBeNull();
+            } finally {
+                globalThis.ItemCatalog = originalCatalog;
+            }
         });
         test('configured capabilities override template visibility', () => {
             Auth.currentUser = { role: 'analyst', permissions: ['finance.read'] };

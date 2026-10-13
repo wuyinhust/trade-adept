@@ -14,26 +14,47 @@ WHEELS = {
 }
 
 
+def application_sources(app):
+    """Shared selection for local verification and the final release packager."""
+    app = Path(app)
+    if app.is_symlink():
+        raise ValueError('Application root must be a regular directory')
+    core = app / 'tradept_core'
+    sources = {app / 'pyproject.toml', core / 'modules.txt'}
+    for extension in ('*.py', '*.json', '*.csv', '*.txt'):
+        sources.update(core.rglob(extension))
+    for directory in ('public', 'www'):
+        sources.update(path for path in (core / directory).rglob('*') if path.is_symlink() or not path.is_dir())
+    sources = sorted(path for path in sources if not any(part in ('tests', '__pycache__') for part in path.relative_to(app).parts))
+    for source in sources:
+        if source.is_symlink() or not source.is_file():
+            raise ValueError('Application build inputs must be regular source files')
+        if source.name.startswith('.') or source.name in ('site_config.json', 'frappe-sites.json', 'routing-secret'):
+            raise ValueError('Private configuration must not enter the application image')
+    return sources
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", required=True, type=Path)
     parser.add_argument("--wheels", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    if args.app.is_symlink():
+        parser.error('Application root must be a regular directory')
     app = args.app.resolve(strict=True)
     if args.output.exists():
         parser.error("Use a fresh output directory to avoid stale build files")
-    sources = [app / "pyproject.toml"] + sorted((app / "tradept_core").rglob("*.py")) + [app / "tradept_core/modules.txt"]
-    sources = [p for p in sources if not any(part in ("tests", "__pycache__") for part in p.relative_to(app).parts)]
-    for src in sources:
-        if src.is_symlink() or not src.is_file():
-            parser.error("Application build inputs must be regular source files")
+    try:
+        sources = application_sources(app)
+    except ValueError as error:
+        parser.error(str(error))
     for name, sha in WHEELS.items():
         src = args.wheels / name
         if src.is_symlink() or hashlib.sha256(src.read_bytes()).hexdigest() != sha:
             parser.error("Offline wheel SHA256 differs from the reviewed dependency")
     args.output.mkdir(mode=0o700, parents=True)
-    manifest = {"application": {}, "wheels": WHEELS, "baseImage": "frappe/erpnext@sha256:a9dea1cc498aa08010eb3567f1808c7bed98e4b9d17dcbd4265791c9ad00971e"}
+    manifest = {"application": {}, "wheels": WHEELS, "baseImage": "frappe/erpnext@sha256:8ef14960b8b4108e764e56e68b2451f200664197686537b74fe39b627e1f6b63"}
     for src in sources:
         rel = src.relative_to(app)
         dest = args.output / "app" / rel
@@ -44,6 +65,7 @@ def main():
     for name in WHEELS:
         shutil.copyfile(args.wheels / name, args.output / "wheels" / name)
     shutil.copyfile(Path(__file__).with_name("Unified.Containerfile"), args.output / "Unified.Containerfile")
+    manifest['containerfileSHA256'] = hashlib.sha256((args.output / 'Unified.Containerfile').read_bytes()).hexdigest()
     (args.output / "build-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({"ok": True, "sourceFiles": len(sources), "privateContext": str(args.output)}))
 

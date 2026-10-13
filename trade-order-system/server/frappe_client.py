@@ -146,7 +146,7 @@ class FrappeGateway:
         if path.stat().st_size > 1024 * 1024:
             raise ValueError("Site configuration is too large")
         config = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(config, dict) or set(config) != {"tenants"} or not isinstance(config["tenants"], dict):
+        if not isinstance(config, dict) or "tenants" not in config or set(config) - {"tenants", "privateTenant", "demoMode", "demoTenants"} or not isinstance(config["tenants"], dict):
             raise ValueError("Routing configuration accepts only a tenants object")
         self.sites = {}
         native_sites = set()
@@ -168,6 +168,23 @@ class FrappeGateway:
             self.sites[tenant] = {"origin": origin, "site": site["site"], "gatewayHmacKey": gateway_key}
         if not self.sites:
             raise ValueError("At least one Frappe site is required")
+        self.demo_mode = config.get("demoMode", False)
+        if type(self.demo_mode) is not bool:
+            raise ValueError("demoMode must be a boolean")
+        self.demo_tenants = config.get("demoTenants")
+        if self.demo_mode:
+            if ("privateTenant" in config or not isinstance(self.demo_tenants, list) or not self.demo_tenants
+                    or any(not isinstance(tenant, str) or tenant not in self.sites for tenant in self.demo_tenants)
+                    or len(set(self.demo_tenants)) != len(self.demo_tenants)):
+                raise ValueError("Demo mode requires explicit unique demoTenants and cannot set privateTenant")
+            self.sites = {tenant: self.sites[tenant] for tenant in self.demo_tenants}
+        elif "demoTenants" in config:
+            raise ValueError("demoTenants requires explicit demoMode true")
+        self.private_tenant = None if self.demo_mode else config.get("privateTenant") or (next(iter(self.sites)) if len(self.sites) == 1 else None)
+        if self.private_tenant is not None:
+            if self.private_tenant not in self.sites:
+                raise ValueError("privateTenant must name a configured site")
+            self.sites = {self.private_tenant: self.sites[self.private_tenant]}
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
         self.exchange_rates = exchange_rates if exchange_rates is not None else ExchangeRateService()
         secret_path = self.runtime / "routing-secret"
@@ -255,7 +272,47 @@ class FrappeGateway:
                 raise APIError(503, "TENANT_ROUTING_MISMATCH", "The workspace routing does not match its native tenant")
         return message
 
+    def public_login_config(self):
+        if self.demo_mode:
+            return {"demoMode": True, "demoTenants": list(self.demo_tenants), "emailOnly": False,
+                    "setupRequired": False, "invitationOnly": True, "brand": "Tradept"}
+        if not self.private_tenant:
+            raise APIError(503, "PRIVATE_SITE_REQUIRED", "请由部署管理员配置当前企业的独立登录入口")
+        value, _ = self._request(self.private_tenant, "/api/method/tradept_core.enterprise_login.login_config", "GET")
+        result = value.get("message") if isinstance(value, dict) else None
+        if not isinstance(result, dict) or type(result.get("setupRequired")) is not bool or type(result.get("emailOnly")) is not bool or result["emailOnly"] == result["setupRequired"]:
+            raise APIError(503, "PRIVATE_LOGIN_NOT_READY", "企业登录服务尚未配置")
+        return {"emailOnly": result["emailOnly"], "setupRequired": result["setupRequired"], "invitationOnly": True, "brand": "Tradept"}
+
+    def public_auth(self, action, body):
+        if self.demo_mode:
+            raise APIError(503, "DEMO_EMAIL_UNAVAILABLE", "演示站点尚未启用邮件激活或找回密码，请使用原账号登录")
+        if not self.private_tenant:
+            raise APIError(503, "PRIVATE_SITE_REQUIRED", "请配置独立企业入口")
+        methods = {"forgot-password": ("forgot_password", ("email",)), "set-password": ("complete_password", ("key", "password"))}
+        if action not in methods:
+            raise APIError(404, "NOT_FOUND", "Unknown authentication action")
+        method, keys = methods[action]
+        fields = {key: body.get(key) for key in keys}
+        if any(not isinstance(value, str) or len(value) > 200 for value in fields.values()):
+            raise APIError(400, "INVALID_AUTH_INPUT", "请检查邮箱、链接或密码格式")
+        value, _ = self._request(self.private_tenant, "/api/method/tradept_core.enterprise_login." + method, "POST", fields)
+        result = value.get("message") if isinstance(value, dict) else None
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise APIError(502, "AUTH_RESPONSE_INVALID", "账号服务返回无效，请稍后重试")
+        return result
+
     def login(self, tenant, username, password):
+        if not self.private_tenant and not self.demo_mode:
+            self.public_login_config()
+        if self.private_tenant:
+            if tenant not in (None, "", self.private_tenant):
+                raise APIError(401, "LOGIN_FAILED", "邮箱或密码无效")
+            tenant = self.private_tenant
+            setup = self.public_login_config()["setupRequired"]
+            if not setup and (not isinstance(username, str) or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", username.strip())):
+                raise APIError(401, "EMAIL_REQUIRED", "请使用企业邮箱登录")
+            username = username.strip().lower() if isinstance(username, str) else username
         self._site(tenant)
         if not isinstance(username, str) or not 1 <= len(username) <= 200 or not isinstance(password, str) or not 1 <= len(password) <= 1000:
             raise APIError(401, "LOGIN_FAILED", "Invalid workspace or credentials")
@@ -272,6 +329,8 @@ class FrappeGateway:
         if not sid or not NATIVE_SID.fullmatch(sid.value):
             raise APIError(401, "LOGIN_FAILED", "Invalid workspace or credentials")
         session = self._dispatch(tenant, sid.value, "session")["result"]
+        if self.private_tenant and (not isinstance(session, dict) or session.get("emailLoginEnabled") is not True and session.get("loginSetupRequired") is not True):
+            raise APIError(503, "PRIVATE_LOGIN_NOT_READY", "企业邮箱登录尚未初始化，请联系部署管理员")
         if not isinstance(session, dict) or not isinstance(session.get("user"), dict):
             raise APIError(403, "WORKSPACE_ACCESS_REQUIRED", "This account is not configured for the workspace")
         return self._sign(tenant, sid.value), {"ok": True, "user": session["user"]}
@@ -297,8 +356,13 @@ class FrappeGateway:
         except (ValueError, TypeError, KeyError, AttributeError):
             raise APIError(401, "SESSION_REQUIRED", "Please sign in") from None
 
-    def read(self, actor, action):
-        return self._dispatch(actor["tenant"], actor["sid"], action)["result"]
+    def read(self, actor, action, payload=None):
+        if payload is None:
+            return self._dispatch(actor["tenant"], actor["sid"], action)["result"]
+        # Parameterised reads use POST, so Frappe's native CSRF check still
+        # applies even though the scoped action cannot change business data.
+        context = self._dispatch(actor["tenant"], actor["sid"], "context")
+        return self._dispatch(actor["tenant"], actor["sid"], action, payload, context.get("csrfToken"))["result"]
 
     def current_exchange_rate(self):
         """Return the shared server-side publication used for conversions."""

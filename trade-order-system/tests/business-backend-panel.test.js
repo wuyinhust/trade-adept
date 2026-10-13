@@ -36,6 +36,14 @@ jest.unstable_mockModule('../js/utils.js', () => ({ escapeHtml, toast }));
 const { BusinessBackendPanel: panel, summarizeBusinessItems } = await import('../js/erpnext-panel.js');
 const sales = docstatus => [{ doctype: 'Sales Order', name: 'SO-1', docstatus }];
 
+test('legacy order receipt cannot bypass withdrawal of payment-entry submission', () => {
+    auth.hasCapability.mockImplementation(cap => cap !== 'finance.payment_entry.submit');
+    panel.receivePayment('FORMAL');
+    expect(app.showModal).not.toHaveBeenCalled();
+    expect(window.Workspace.api.receivePayment).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('创建和提交权限'), 'info');
+});
+
 beforeEach(() => {
     jest.clearAllMocks();
     global.FormData = window.FormData;
@@ -98,6 +106,21 @@ test('read-only finance visibility cannot open native mutation controls', async 
     await panel.runAction('convert', 'BRIEF');
     expect(app.showModal).not.toHaveBeenCalled();
     expect(window.Workspace.api.convertOrder).not.toHaveBeenCalled();
+});
+
+test('an invoiced order cannot repeat the legacy advance path and distinguishes settlement from bank cash', async () => {
+    Object.assign(data.orders[3], { nativeHasPostedSalesInvoices: true, nativeSettlementProjection: true,
+        salesAdvanceAmountUSD: 0, salesInvoiceSettledAmountUSD: 60, salesInvoiceOutstandingAmountUSD: 40,
+        nativeReceiptSummary: [{ name: 'PE-SHARED', paymentType: 'Receive', bankAmount: 35, bankCurrency: 'USD', unallocatedAmount: 35, unallocatedCurrency: 'USD', sharedReceipt: true, additiveByOrder: false }] });
+    await panel.render();
+    expect(document.querySelector('[data-business-payment="FORMAL"]')).toBeNull();
+    expect(document.body.textContent).toContain('销售账单已核销（含抵账）');
+    expect(document.body.textContent).toContain('银行净收 USD 35.00');
+    expect(document.body.textContent).toContain('不按订单重复汇总');
+    panel.receivePayment('FORMAL');
+    expect(app.showModal).not.toHaveBeenCalled();
+    expect(window.Workspace.api.receivePayment).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('避免重复登记'), 'info');
 });
 
 test('backend failure preserves workspace rows and offers no alternate datastore', async () => {

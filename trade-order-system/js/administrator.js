@@ -1,3 +1,4 @@
+import { policyPanel, editPolicy } from './login-policy-admin.js';
 import { Auth } from './auth.js';
 import { App } from './app.js';
 import { escapeHtml, toast } from './utils.js';
@@ -14,7 +15,11 @@ const permissionLabels = {
     'rates.write': '管理汇率',
     'snapshots.read': '查看快照',
     'snapshots.restore': '恢复快照',
-    'accounts.configure': '管理企业配置'
+    'accounts.configure': '管理企业配置',
+    'catalog.read': '商品目录 · 查看',
+    'catalog.create': '商品目录 · 新建',
+    'catalog.write': '商品目录 · 修改',
+    'catalog.disable': '商品目录 · 停用与启用'
 };
 const pageLabels = {
     dashboard: '工作台',
@@ -24,8 +29,78 @@ const pageLabels = {
     shipping: '物流单证',
     profit: '利润报表',
     settings: '业务设置',
+    finance: '应收与应付',
     admin: '管理中心'
 };
+const financeResources = [
+    ['sales_invoice', '销售账单'],
+    ['purchase_invoice', '采购账单'],
+    ['payment_entry', '收付款单'],
+    ['receivables', '应收账龄'],
+    ['payables', '应付账龄'],
+    ['ledger', '总账'],
+    ['reconciliation', '预付款核销'],
+    ['bank_transaction', '银行流水'],
+    ['bank_reconciliation', '银行对账']
+];
+const financeActions = [
+    ['read', '查看'],
+    ['create', '新建'],
+    ['write', '修改'],
+    ['submit', '提交'],
+    ['cancel', '取消'],
+    ['amend', '修订'],
+    ['return', '退货调整'],
+    ['deductions', '费用与核销差额'],
+    ['unreconcile', '解除核销'],
+    ['print', '打印'],
+    ['export', '导出']
+];
+for (const [resource, label] of financeResources) {
+    for (const [action, verb] of financeActions) {
+        permissionLabels[`finance.${resource}.${action}`] = `${label} · ${verb}`;
+    }
+}
+permissionLabels['finance.bank_accounts.read'] = '查看银行账户';
+
+function financePermissionMatrix(available, granted) {
+    const rows = financeResources.filter(([resource]) => available.some(cap => cap.startsWith(`finance.${resource}.`)));
+    if (!rows.length) return '';
+    return `<fieldset><legend>原生财务操作权限</legend><p class="finance-policy-note">每项单独授权；未勾选即拒绝。提交、取消、打印和导出与查看权限分别控制。</p><div class="table-container"><table class="finance-permission-matrix"><thead><tr><th>单据 / 报表</th>${financeActions.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join('')}</tr></thead><tbody>${rows
+        .map(
+            ([resource, label]) =>
+                `<tr><th>${escapeHtml(label)}</th>${financeActions
+                    .map(([action, verb]) => {
+                        const cap = `finance.${resource}.${action}`;
+                        return `<td>${available.includes(cap) ? `<input type="checkbox" name="permissions" value="${escapeHtml(cap)}" ${granted.includes(cap) ? 'checked' : ''} aria-label="${escapeHtml(label + ' ' + verb)}">` : '<span aria-label="不适用">—</span>'}</td>`;
+                    })
+                    .join('')}</tr>`
+        )
+        .join('')}</tbody></table></div>${checkboxList(
+        'permissions',
+        available
+            .filter(cap => cap.startsWith('finance.bank_accounts.'))
+            .map(cap => [cap, permissionLabels[cap] || cap]),
+        granted
+    )}</fieldset>`;
+}
+
+function financePolicyFields(state, role) {
+    if (!state.options.permissions.some(cap => cap.startsWith('finance.sales_invoice.'))) return '';
+    const policy = role.financePolicy || {};
+    const accounts = state.options.finance?.bankAccounts || state.options.financeBankAccounts || [];
+    const selectedAccounts = policy.allowedBankAccounts || [];
+    const accountOptions = [
+        ...accounts.map(item => [
+            item.name || item.id,
+            `${item.label || item.name}${item.currency ? ' · ' + item.currency : ''}`
+        ]),
+        ...selectedAccounts
+            .filter(name => !accounts.some(item => (item.name || item.id) === name))
+            .map(name => [name, name])
+    ];
+    return `<fieldset><legend>财务数据范围与付款限制</legend><div class="finance-policy-grid"><label class="form-group"><span class="form-label">财务数据范围</span><select class="form-select" name="financeScope"><option value="self" ${policy.scope === 'self' ? 'selected' : ''}>本人</option><option value="team" ${policy.scope === 'team' ? 'selected' : ''}>本部门</option><option value="tenant" ${policy.scope === 'tenant' ? 'selected' : ''}>全企业</option></select></label><label class="form-group"><span class="form-label">单笔付款上限（留空则无额外上限）</span><input class="form-input" type="number" min="0" step="0.01" name="paymentLimitAmount" value="${escapeHtml(policy.paymentLimit?.amount ?? '')}"></label><label class="form-group"><span class="form-label">付款上限币种</span><input class="form-input" name="paymentLimitCurrency" pattern="[A-Za-z]{3}" maxlength="3" value="${escapeHtml(policy.paymentLimit?.currency || '')}" placeholder="如 USD"></label></div><p class="finance-policy-note">财务范围最多达到角色的数据范围，并始终与成员的公司授权取交集。上限按付款账户币种核验，不通过前端汇率换算绕过。</p><label class="form-group"><span class="form-label">银行账户范围</span><select class="form-select" name="bankAccountPolicy"><option value="company" ${policy.allowedBankAccounts == null ? 'selected' : ''}>采用成员公司授权与 ERPNext 账户权限</option><option value="selected" ${policy.allowedBankAccounts != null ? 'selected' : ''}>仅允许以下指定银行账户（全不选即禁止）</option></select></label>${checkboxList('allowedBankAccounts', accountOptions, selectedAccounts)}${accountOptions.length ? '' : '<p class="finance-policy-note">当前没有可配置的银行账户。选择“仅允许指定”且不勾选账户将禁止所有银行账户。</p>'}</fieldset>`;
+}
 const tabs = [
     ['overview', '管理概览'],
     ['enterprise', '企业与公司'],
@@ -33,6 +108,7 @@ const tabs = [
     ['members', '成员'],
     ['roles', '角色与权限'],
     ['email', '邮箱与通知'],
+    ['login_policy', '登录与邀请'],
     ['business', '业务设置'],
     ['data', '数据与审计']
 ];
@@ -42,6 +118,7 @@ const steps = [
     ['organization', '组织与权限', '确认角色并建立部门'],
     ['members', '添加成员', '为团队分配岗位和公司范围'],
     ['business', '业务准备', '配置邮箱，其他资料可稍后补充'],
+    ['login', '邮箱登录', '填写私有域名、管理员邮箱和白名单；SMTP 就绪后验证邮箱'],
     ['finish', '开始使用', '核对必需配置并进入工作台']
 ];
 
@@ -115,13 +192,17 @@ const AdminCenter = {
 
     draw() {
         if (!this.state || !this.target) return;
+        const visibleTabs = this.state.loginPolicy?.setupRequired
+            ? tabs.filter(([key]) => ['overview', 'enterprise', 'departments', 'email', 'login_policy'].includes(key))
+            : tabs;
+        if (!visibleTabs.some(([key]) => key === this.tab)) this.tab = 'overview';
         this.target.innerHTML = `
             <section class="page-intro admin-intro">
                 <div><p class="page-eyebrow">ADMINISTRATOR</p><h2>管理中心</h2><p class="page-description">管理当前企业的公司、组织、成员、权限和邮箱。</p></div>
                 <div class="admin-status ${this.state.onboarding.status === 'complete' ? 'is-complete' : ''}">${this.state.onboarding.status === 'complete' ? '企业配置已就绪' : '企业配置待完成'}</div>
             </section>
             <div class="admin-layout">
-                <nav class="admin-tabs" aria-label="管理中心栏目">${tabs.map(([key, label]) => `<button type="button" data-admin-tab="${key}" class="${this.tab === key ? 'active' : ''}">${escapeHtml(label)}</button>`).join('')}</nav>
+                <nav class="admin-tabs" aria-label="管理中心栏目">${visibleTabs.map(([key, label]) => `<button type="button" data-admin-tab="${key}" class="${this.tab === key ? 'active' : ''}">${escapeHtml(label)}</button>`).join('')}</nav>
                 <section class="admin-panel" id="adminPanel">${this.panel()}</section>
             </div>`;
         for (const button of this.target.querySelectorAll('[data-admin-tab]')) {
@@ -158,6 +239,14 @@ const AdminCenter = {
         return `<div class="admin-panel-heading"><div><h3>配置进度</h3><p>必需配置完成后即可开始正式业务。</p></div>${onboarding.status === 'complete' ? '' : '<button class="btn btn-primary" data-admin-action="onboarding">继续初始化</button>'}</div>
             <div class="admin-summary-grid">${cards.map(([label, ready, detail]) => `<article class="admin-summary-card ${ready ? 'ready' : ''}"><span>${ready ? '✓' : '○'}</span><div><strong>${escapeHtml(label)}</strong><p>${escapeHtml(detail)}</p></div></article>`).join('')}</div>
             <div class="card admin-note"><div class="card-body"><strong>权限提示</strong><p>企业管理权限与财务权限分别配置。成员只有被明确授权的公司和数据范围。</p></div></div>`;
+    },
+
+    panel_login_policy() {
+        return policyPanel(this.state.loginPolicy);
+    },
+
+    open_login_policy() {
+        editPolicy(this, formModal);
     },
 
     panel_enterprise() {
@@ -202,13 +291,17 @@ const AdminCenter = {
                 ['成员', '登录账号', '角色', '部门', '公司范围', '状态', ''],
                 this.state.members.map(item => [
                     item.name || item.id,
-                    item.username || item.email,
+                    item.email || item.username,
                     selected(this.state.roles, item.role)?.label || item.role,
                     selected(this.state.departments, item.departmentId || item.teamId)?.name || '—',
                     (item.visibleCompanyIds || [])
                         .map(id => selected(this.state.companies, id)?.name || id)
                         .join('、') || '未授权',
-                    item.enabled ? '启用' : '停用',
+                    !item.enabled
+                        ? '停用'
+                        : item.emailVerified === false || item.passwordChangeRequired
+                          ? '待邮件激活 / 改密'
+                          : '启用',
                     raw(
                         `<button class="btn btn-secondary btn-sm" data-edit-member="${escapeHtml(item.id)}">编辑</button>`
                     )
@@ -217,7 +310,7 @@ const AdminCenter = {
     },
 
     panel_roles() {
-        return `<div class="admin-panel-heading"><div><h3>角色与权限</h3><p>角色决定能做什么，部门和公司授权决定能看到哪些数据。</p></div><button class="btn btn-primary" data-admin-action="role">新增角色</button></div>
+        return `<div class="admin-panel-heading"><div><h3>角色与权限</h3><p>角色决定能做什么，部门和公司授权决定能看到哪些数据。</p></div><div>${this.state.options.catalog ? '<button class="btn btn-secondary" data-admin-action="catalog_template">配置商品管理权限</button> ' : ''}${this.state.options.finance ? '<button class="btn btn-secondary" data-admin-action="finance_template">配置标准财务权限</button> ' : ''}<button class="btn btn-primary" data-admin-action="role">新增角色</button></div></div>
             ${this.table(
                 ['角色', '数据范围', '主要权限', '页面', ''],
                 this.state.roles.map(item => [
@@ -285,7 +378,7 @@ const AdminCenter = {
             this.target
                 .querySelector(`[data-admin-action="${name}"]`)
                 ?.addEventListener('click', () => this[`open_${name}`]?.());
-        ['enterprise', 'company', 'department', 'member', 'role', 'email'].forEach(action);
+        ['enterprise', 'company', 'department', 'member', 'role', 'email', 'finance_template', 'catalog_template'].forEach(action);
         action('onboarding');
         for (const button of this.target.querySelectorAll('[data-edit-company]')) {
             button.onclick = () => this.open_company(selected(this.state.companies, button.dataset.editCompany));
@@ -306,14 +399,41 @@ const AdminCenter = {
     },
 
     async save(resource, value, completedStep) {
-        await api().adminUpdate({ resource, value, expectedVersion: this.state.meta.version, completedStep });
-        if (window.Workspace.refreshSession) await window.Workspace.refreshSession();
-        await this.load();
+        const result = await api().adminUpdate({
+            resource,
+            value,
+            expectedVersion: this.state.meta.version,
+            completedStep
+        });
+        try {
+            if (window.Workspace.refreshSession) await window.Workspace.refreshSession();
+            await this.load();
+        } catch (error) {
+            this.returnToOnboarding = false;
+            if (error.status === 401 || ['SESSION_REQUIRED', 'LOGIN_REQUIRED', 'UNAUTHENTICATED'].includes(error.code)) {
+                try { await Auth.logout(); } catch { Auth.currentUser = null; }
+                this.state = null;
+                App.closeModal();
+                App.showLogin();
+                toast('账号配置已保存，会话已结束，请重新登录', 'success');
+            } else {
+                this.state = null;
+                if (this.target) {
+                    this.target.innerHTML = '<section class="card"><div class="card-body"><p>配置已保存，最新状态暂未读取。请重新读取后继续操作。</p><button class="btn btn-secondary" data-admin-reload>重新读取</button></div></section>';
+                    this.target.querySelector('[data-admin-reload]').onclick = () => this.render(this.target);
+                }
+                toast('配置已保存，读取最新状态失败', 'warning');
+            }
+            return result;
+        }
         const returnToOnboarding = this.returnToOnboarding;
         this.returnToOnboarding = false;
         if (returnToOnboarding) await Onboarding.render(this.target);
         else this.draw();
-        toast('企业配置已保存', 'success');
+        toast(
+            result.changed?.emailDelivery === 'queued' ? '配置已保存，邀请邮件已进入发送队列' : '企业配置已保存',
+            'success'
+        );
     },
 
     open_enterprise() {
@@ -387,9 +507,10 @@ const AdminCenter = {
     },
 
     open_member(item = {}) {
+        const emailLogin = this.state.loginPolicy?.enabled === true;
         formModal(
             item.id ? '编辑成员' : '添加成员',
-            `<div class="admin-form-grid"><label class="form-group"><span class="form-label">成员编号</span><input class="form-input" name="id" required ${item.id ? 'readonly' : ''} value="${escapeHtml(item.id || '')}"></label><label class="form-group"><span class="form-label">姓名</span><input class="form-input" name="name" required value="${escapeHtml(item.name || '')}"></label><label class="form-group"><span class="form-label">登录邮箱</span><input class="form-input" type="email" name="email" required ${item.id ? 'readonly' : ''} value="${escapeHtml(item.email || '')}"></label><label class="form-group"><span class="form-label">登录名</span><input class="form-input" name="username" required value="${escapeHtml(item.username || '')}"></label><label class="form-group"><span class="form-label">角色</span><select class="form-select" name="role" required>${optionList(this.state.roles, item.role)}</select></label><label class="form-group"><span class="form-label">部门</span><select class="form-select" name="departmentId">${optionList(this.state.departments, item.departmentId || item.teamId, '暂不分配')}</select></label><label class="form-group"><span class="form-label">${item.id ? '重置临时密码（可留空）' : '临时密码（至少 12 位）'}</span><input class="form-input" type="password" name="temporaryPassword" ${item.id ? '' : 'required minlength="12"'} autocomplete="new-password"></label><label class="form-group admin-switch"><input type="checkbox" name="disabled" ${item.enabled === false ? 'checked' : ''}> <span>停用该成员</span></label></div><fieldset><legend>可访问公司</legend>${checkboxList(
+            `<div class="admin-form-grid"><label class="form-group"><span class="form-label">成员编号</span><input class="form-input" name="id" required ${item.id ? 'readonly' : ''} value="${escapeHtml(item.id || '')}"></label><label class="form-group"><span class="form-label">姓名</span><input class="form-input" name="name" required value="${escapeHtml(item.name || '')}"></label><label class="form-group"><span class="form-label">登录邮箱</span><input class="form-input" type="email" name="email" required ${item.id ? 'readonly' : ''} value="${escapeHtml(item.email || '')}"></label>${emailLogin ? '' : `<label class="form-group"><span class="form-label">登录名</span><input class="form-input" name="username" required value="${escapeHtml(item.username || '')}"></label>`}<label class="form-group"><span class="form-label">角色</span><select class="form-select" name="role" required>${optionList(this.state.roles, item.role)}</select></label><label class="form-group"><span class="form-label">部门</span><select class="form-select" name="departmentId">${optionList(this.state.departments, item.departmentId || item.teamId, '暂不分配')}</select></label>${emailLogin ? `<label class="form-group admin-switch"><input type="checkbox" name="sendInvitation" ${item.id ? '' : 'checked disabled'}> <span>${item.id ? '重发激活 / 改密邮件（撤销现有会话）' : '发送邀请，由成员验证邮箱并设置密码'}</span></label>` : `<label class="form-group"><span class="form-label">${item.id ? '重置临时密码（可留空）' : '临时密码（至少 12 位）'}</span><input class="form-input" type="password" name="temporaryPassword" ${item.id ? '' : 'required minlength="12"'} autocomplete="new-password"></label>`}<label class="form-group admin-switch"><input type="checkbox" name="disabled" ${item.enabled === false ? 'checked' : ''}> <span>停用该成员</span></label></div><fieldset><legend>可访问公司</legend>${checkboxList(
                 'visibleCompanyIds',
                 this.state.companies.map(company => [company.id, company.name]),
                 item.visibleCompanyIds || []
@@ -406,6 +527,7 @@ const AdminCenter = {
                         role: value(form, 'role'),
                         departmentId: value(form, 'departmentId'),
                         temporaryPassword: value(form, 'temporaryPassword') || undefined,
+                        sendInvitation: emailLogin && (!item.id || form.elements.namedItem('sendInvitation').checked),
                         disabled: form.elements.namedItem('disabled').checked,
                         visibleCompanyIds: checked(form, 'visibleCompanyIds')
                     },
@@ -419,9 +541,15 @@ const AdminCenter = {
             item.key ? '编辑角色' : '新增角色',
             `<div class="admin-form-grid"><label class="form-group"><span class="form-label">角色编号</span><input class="form-input" name="key" required ${item.key ? 'readonly' : ''} value="${escapeHtml(item.key || '')}"></label><label class="form-group"><span class="form-label">角色名称</span><input class="form-input" name="label" required value="${escapeHtml(item.label || '')}"></label><label class="form-group"><span class="form-label">数据范围</span><select class="form-select" name="scope"><option value="self" ${item.scope === 'self' ? 'selected' : ''}>本人</option><option value="team" ${item.scope === 'team' ? 'selected' : ''}>本部门</option><option value="tenant" ${item.scope === 'tenant' ? 'selected' : ''}>全企业</option></select></label></div><fieldset><legend>操作权限</legend>${checkboxList(
                 'permissions',
-                this.state.options.permissions.map(id => [id, permissionLabels[id] || id]),
+                this.state.options.permissions
+                    .filter(
+                        id =>
+                            !financeResources.some(([resource]) => id.startsWith(`finance.${resource}.`)) &&
+                            !id.startsWith('finance.bank_accounts.')
+                    )
+                    .map(id => [id, permissionLabels[id] || id]),
                 item.permissions || []
-            )}</fieldset><fieldset><legend>可见页面</legend>${checkboxList(
+            )}</fieldset>${financePermissionMatrix(this.state.options.permissions, item.permissions || [])}${financePolicyFields(this.state, item)}<fieldset><legend>可见页面</legend>${checkboxList(
                 'pages',
                 this.state.options.pages.map(id => [id, pageLabels[id] || id]),
                 item.pages || []
@@ -437,10 +565,59 @@ const AdminCenter = {
                         scope: value(form, 'scope'),
                         permissions: checked(form, 'permissions'),
                         pages: checked(form, 'pages'),
-                        readScopes: item.readScopes || {}
+                        readScopes: item.readScopes || {},
+                        ...(form.elements.namedItem('financeScope')
+                            ? {
+                                  financePolicy: {
+                                      scope: value(form, 'financeScope'),
+                                      paymentLimit:
+                                          value(form, 'paymentLimitAmount') === ''
+                                              ? null
+                                              : {
+                                                    amount: Number(value(form, 'paymentLimitAmount')),
+                                                    currency: value(form, 'paymentLimitCurrency').toUpperCase()
+                                                },
+                                      allowedBankAccounts:
+                                          value(form, 'bankAccountPolicy') === 'selected'
+                                              ? checked(form, 'allowedBankAccounts')
+                                              : null
+                                  }
+                              }
+                            : {})
                     },
                     'organization'
                 )
+        );
+    },
+
+    open_finance_template() {
+        const templateRoleKeys = this.state.options.finance?.templates?.flatMap(
+            template => template.roleKeys || []
+        ) || ['admin', 'finance'];
+        formModal(
+            '配置标准财务权限',
+            `<p class="finance-policy-note">为企业管理员与财务角色明确启用应收、应付、收付款与财务报表。此操作记录配置审计；公司授权保持受成员范围约束。其他岗位可通过角色编辑逐项授权。</p>${checkboxList(
+                'roleKeys',
+                this.state.roles
+                    .filter(role => templateRoleKeys.includes(role.key))
+                    .map(role => [role.key, role.label || role.key]),
+                []
+            )}`,
+            form => {
+                const roleKeys = checked(form, 'roleKeys');
+                if (!roleKeys.length) throw new Error('请选择至少一个需要配置的角色。');
+                return this.save('finance_template', { roleKeys });
+            },
+            { submitLabel: '应用标准模板' }
+        );
+    },
+
+    open_catalog_template() {
+        formModal(
+            '配置商品管理权限',
+            '<p>为企业管理员明确启用商品查看、新建、修改和停用权限。商品保存在同一业务数据库；其他岗位可在角色编辑中逐项授权，公司和记录范围仍受限制。</p>',
+            () => this.save('catalog_template', { roleKeys: ['admin'] }),
+            { submitLabel: '应用管理员模板' }
         );
     },
 
@@ -508,12 +685,16 @@ const Onboarding = {
         );
         this.target.innerHTML = `<section class="onboarding-shell"><header><p class="page-eyebrow">WELCOME TO TRADEPT</p><h2>${state.onboarding.status === 'complete' ? '企业配置已完成' : '建立你的企业工作区'}</h2><p>进度会自动保存，可以随时退出后继续。</p><div class="onboarding-progress"><span style="width:${Math.round((state.onboarding.completedSteps.length / steps.length) * 100)}%"></span></div></header><div class="onboarding-steps">${steps
             .map(([key, title, description], index) => {
+                if (key === 'members' && state.loginPolicy?.setupRequired) {
+                    title = '管理员邮箱';
+                    description = '绑定初始管理员的真实邮箱；验证后再邀请其他成员';
+                }
                 const done = state.onboarding.completedSteps.includes(key);
                 return `<article class="${done ? 'done' : ''} ${index === currentIndex ? 'current' : ''}"><span>${done ? '✓' : index + 1}</span><div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(description)}</p></div><button class="btn ${index === currentIndex ? 'btn-primary' : 'btn-secondary'} btn-sm" data-onboarding-step="${key}">${done ? '查看' : '开始'}</button></article>`;
             })
             .join(
                 ''
-            )}</div><footer><a href="#/admin" class="btn btn-secondary">进入管理中心</a>${state.onboarding.requiredReady && state.onboarding.status !== 'complete' ? '<button class="btn btn-primary" data-onboarding-complete>完成初始化</button>' : state.onboarding.status === 'complete' ? '<a href="#/dashboard" class="btn btn-primary">进入工作台</a>' : '<span>完成企业资料、公司、角色和管理员后即可开始使用。</span>'}</footer></section>`;
+            )}</div><footer><a href="#/admin" class="btn btn-secondary">进入管理中心</a>${state.onboarding.requiredReady && state.onboarding.status !== 'complete' ? '<button class="btn btn-primary" data-onboarding-complete>完成初始化</button>' : state.onboarding.status === 'complete' ? '<a href="#/dashboard" class="btn btn-primary">进入工作台</a>' : '<span>完成必需企业资料及管理员邮箱验证后即可开始使用。</span>'}</footer></section>`;
         for (const button of this.target.querySelectorAll('[data-onboarding-step]')) {
             button.onclick = () => this.open(button.dataset.onboardingStep);
         }
@@ -524,7 +705,11 @@ const Onboarding = {
             enterprise: () => AdminCenter.open_enterprise(),
             company: () => AdminCenter.open_company(AdminCenter.state.companies[0]),
             organization: () => AdminCenter.open_department(AdminCenter.state.departments[0]),
-            members: () => AdminCenter.open_member(AdminCenter.state.members[0]),
+            members: () =>
+                AdminCenter.state.loginPolicy?.setupRequired
+                    ? AdminCenter.open_login_policy()
+                    : AdminCenter.open_member(AdminCenter.state.members[0]),
+            login: () => AdminCenter.open_login_policy(),
             business: () =>
                 AdminCenter.state.options.emailAvailable
                     ? AdminCenter.open_email(AdminCenter.state.emailAccounts[0])

@@ -141,6 +141,169 @@ jest.unstable_mockModule('../js/utils.js', () => ({
 const { DB } = await import('../js/data.js');
 const { CONSTANTS } = await import('../js/constants.js');
 
+describe('secure new-record identities and server-assigned order numbers', () => {
+    const browserCrypto = globalThis.crypto;
+    const replaceCrypto = value =>
+        Object.defineProperty(globalThis, 'crypto', { configurable: true, writable: true, value });
+    beforeEach(() => resetDB());
+    afterEach(() => {
+        replaceCrypto(browserCrypto);
+        jest.restoreAllMocks();
+    });
+
+    test('128 customer, factory and order creations in one millisecond keep distinct secure identities', () => {
+        jest.spyOn(Date, 'now').mockReturnValue(1760000000000);
+        const weakRandom = jest.spyOn(Math, 'random');
+        const ids = [];
+        for (let index = 0; index < 128; index++) {
+            const customer = DB.addCustomer({ company: `Fictional customer ${index}` });
+            const factory = DB.addFactory({ name: `Fictional factory ${index}` });
+            const order = DB.addOrder({
+                customerId: customer.id,
+                companyOperationNo: 'AUTO-PREVIEW',
+                companyOperationNoAuto: true,
+                orderAmountUSD: 100
+            });
+            ids.push(customer.id, factory.id, order.id);
+        }
+        expect(new Set(ids).size).toBe(384);
+        expect(DB.data.customers).toHaveLength(128);
+        expect(DB.data.factories).toHaveLength(128);
+        expect(DB.data.orders).toHaveLength(128);
+        expect(ids.every(id => /^(C|F|ORD)-[0-9a-f-]{36}$/.test(id))).toBe(true);
+        expect(weakRandom).not.toHaveBeenCalled();
+    });
+
+    test('collisions with any retained local list including deleted records are retried', () => {
+        const first = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const next = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+        const randomUUID = jest.fn().mockReturnValueOnce(first).mockReturnValue(next);
+        replaceCrypto({ randomUUID });
+        DB.data.orders = [{ id: `C-${first.toUpperCase()}`, deleted: true }];
+        const customer = DB.addCustomer({ company: 'Fictional fresh customer' });
+        expect(customer.id).toBe(`C-${next}`);
+        expect(randomUUID).toHaveBeenCalledTimes(2);
+        expect(DB.data.orders[0]).toEqual({ id: `C-${first.toUpperCase()}`, deleted: true });
+    });
+
+    test('persistent RNG collisions fail explicitly before a record is added', () => {
+        const uuid = '00000000-0000-4000-8000-000000000001';
+        replaceCrypto({ randomUUID: () => uuid });
+        DB.data.factories = [{ id: `F-${uuid}`, deleted: true }];
+        expect(() => DB.addFactory({ name: 'Fictional duplicate RNG' })).toThrow('无法生成未被占用');
+        expect(DB.data.factories).toHaveLength(1);
+    });
+
+    test('secure getRandomValues supports browsers without randomUUID', () => {
+        const getRandomValues = jest.fn(bytes => {
+            bytes.fill(0x11);
+            return bytes;
+        });
+        replaceCrypto({ getRandomValues });
+        const customer = DB.addCustomer({ company: 'Fictional fallback customer' });
+        expect(customer.id).toBe('C-11111111-1111-4111-9111-111111111111');
+        expect(getRandomValues).toHaveBeenCalledWith(expect.any(Uint8Array));
+    });
+
+    test('missing secure RNG never falls back to weak random or time-based IDs', () => {
+        replaceCrypto({});
+        const weakRandom = jest.spyOn(Math, 'random');
+        expect(() => DB.addCustomer({ company: 'Fictional blocked customer' })).toThrow('无法安全生成记录编号');
+        expect(() => DB.addFactory({ name: 'Fictional blocked factory' })).toThrow('无法安全生成记录编号');
+        expect(() => DB.addOrder({ customerId: 'C1', companyOperationNo: 'MANUAL', orderAmountUSD: 100 })).toThrow(
+            '无法安全生成记录编号'
+        );
+        expect(DB.data.customers).toHaveLength(0);
+        expect(DB.data.factories).toHaveLength(0);
+        expect(DB.data.orders).toHaveLength(0);
+        expect(weakRandom).not.toHaveBeenCalled();
+    });
+
+    test('automatic number previews may collide locally but manual numbers including deleted history cannot', () => {
+        DB.data.orders = [makeOrder({ id: 'HISTORY', companyOperationNo: 'PREVIEW', deleted: true })];
+        const auto = DB.addOrder({
+            customerId: 'C1',
+            companyOperationNo: 'PREVIEW',
+            companyOperationNoAuto: true,
+            orderAmountUSD: 100
+        });
+        expect(auto.companyOperationNo).toBe('PREVIEW');
+        expect(auto.companyOperationNoAuto).toBe(true);
+        expect(DB.addOrder({ customerId: 'C1', companyOperationNo: 'PREVIEW', orderAmountUSD: 100 })).toBeNull();
+        expect(
+            DB.addOrder({
+                customerId: 'C1',
+                companyOperationNo: 'PREVIEW',
+                companyOperationNoAuto: 'true',
+                orderAmountUSD: 100
+            })
+        ).toBeNull();
+        const manual = DB.addOrder({ customerId: 'C1', companyOperationNo: 'MANUAL-ENTRY', orderAmountUSD: 100 });
+        expect(manual.companyOperationNo).toBe('MANUAL-ENTRY');
+        expect(DB.data.orders.find(row => row.id === 'HISTORY').companyOperationNo).toBe('PREVIEW');
+    });
+});
+
+describe('nonfinancial legacy records and company scope', () => {
+    beforeEach(() => resetDB());
+
+    test('historical nullable customer and factory fields can be searched safely', () => {
+        DB.data.customers = [{ id: 'C1', companyId: 'CO-GR', company: 'Fictional Corp', country: null, contact: null }];
+        DB.data.factories = [{ id: 42, companyId: 'CO-GR', name: 'Fictional Plant', contact: null, products: null }];
+        expect(DB.getCustomers({ search: 'no-match' })).toEqual([]);
+        expect(DB.getCustomers({ search: 'fictional' })).toHaveLength(1);
+        expect(DB.getFactories('no-match')).toEqual([]);
+        expect(DB.getFactories('42')).toHaveLength(1);
+    });
+
+    test('factory relationships support all retained schemas without counting an order twice', () => {
+        DB.data.orders = [
+            { id: 'SINGLE', factoryId: 42 },
+            { id: 'ARRAY', factoryIds: ['42'] },
+            { id: 'LINES', factories: [{ factoryId: 42 }, { factoryId: '42' }] },
+            { id: 'MIXED', factoryId: '42', factoryIds: [42], factories: [{ factoryId: '42' }] },
+            { id: 'DELETED', deleted: true, factoryIds: ['42'] },
+            { id: 'OTHER', factoryIds: ['43'] }
+        ];
+        expect(DB.getFactoryOrders('42').map(order => order.id)).toEqual(['SINGLE', 'ARRAY', 'LINES', 'MIXED']);
+        mockAuth.filterOrders = rows => rows.filter(row => row.id !== 'ARRAY');
+        expect(DB.getFactoryOrders(42).map(order => order.id)).toEqual(['SINGLE', 'LINES', 'MIXED']);
+    });
+
+    test('an owned order remains visible in another authorized company but cannot bypass revoked grants', () => {
+        mockAuth.currentUser = { id: 7 };
+        mockAuth.getVisibleCompanyIds = () => ['CO-GR', 'CO-WY'];
+        DB.data.orders = [
+            makeOrder({ id: 'CURRENT', companyId: 'CO-GR', createdBy: 'other' }),
+            makeOrder({ id: 'OWN', companyId: 'CO-WY', createdBy: '7' }),
+            makeOrder({ id: 'OTHER', companyId: 'CO-WY', createdBy: 'other' }),
+            makeOrder({ id: 'UNAUTHORIZED', companyId: 'CO-GW', createdBy: '7' })
+        ];
+        expect(DB.getOrders().map(order => order.id)).toEqual(['CURRENT', 'OWN']);
+        mockAuth.getVisibleCompanyIds = () => ['CO-GR'];
+        expect(DB.getOrders().map(order => order.id)).toEqual(['CURRENT']);
+    });
+
+    test('all-company readers still get customer and factory counts for the current company only', () => {
+        mockAuth.canSeeAll = () => true;
+        DB.data.customers = [
+            { id: 'C-GR', companyId: 'CO-GR' },
+            { id: 'C-WY', companyId: 'CO-WY' },
+            { id: 'C-DELETED', companyId: 'CO-GR', deleted: true }
+        ];
+        DB.data.factories = [
+            { id: 'F-GR', companyId: 'CO-GR' },
+            { id: 'F-WY1', companyId: 'CO-WY' },
+            { id: 'F-WY2', companyId: 'CO-WY' }
+        ];
+        expect(DB.getCustomers()).toHaveLength(2);
+        expect(DB.getFactories()).toHaveLength(3);
+        expect(DB.getDashboardStats()).toMatchObject({ customerCount: 1, factoryCount: 1 });
+        DB.currentCompanyId = 'CO-WY';
+        expect(DB.getDashboardStats()).toMatchObject({ customerCount: 1, factoryCount: 2 });
+    });
+});
+
 // ==================== Test Helpers ====================
 
 function resetDB() {
@@ -656,7 +819,7 @@ describe('DB — Customers CRUD', () => {
 
     test('addCustomer creates with auto-generated ID', () => {
         const customer = DB.addCustomer({ company: 'New Corp', contact: 'Bob' });
-        expect(customer.id).toMatch(/^C[A-Z0-9]{8}$/);
+        expect(customer.id).toMatch(/^C-[0-9a-f-]{36}$/);
         expect(DB.data.customers).toHaveLength(1);
     });
 

@@ -3,10 +3,12 @@ import { jest } from '@jest/globals';
 const hasCapability = jest.fn(() => true);
 const showModal = jest.fn();
 const toast = jest.fn();
+const logout = jest.fn(async () => {});
+const showLogin = jest.fn();
 
-jest.unstable_mockModule('../js/auth.js', () => ({ Auth: { hasCapability } }));
+jest.unstable_mockModule('../js/auth.js', () => ({ Auth: { hasCapability, logout } }));
 jest.unstable_mockModule('../js/app.js', () => ({
-    App: { showModal, closeModal: jest.fn() }
+    App: { showModal, closeModal: jest.fn(), showLogin }
 }));
 jest.unstable_mockModule('../js/utils.js', () => ({
     escapeHtml: value =>
@@ -191,5 +193,27 @@ describe('administrator experience', () => {
         expect(document.querySelector('.admin-panel img')).toBeNull();
         expect(document.body.textContent).toContain('<img src=x onerror=alert(1)>');
         expect(document.querySelector('[data-edit-company="C1"]')).not.toBeNull();
+    });
+
+    test('an acknowledged self edit asks for login when native sessions are revoked', async () => {
+        await AdminCenter.render(document.getElementById('pageContent'));
+        window.Workspace.refreshSession = jest.fn(async () => { throw Object.assign(new Error('expired'), { status: 401, code: 'SESSION_REQUIRED' }); });
+        const result = await AdminCenter.save('member', { id: 'U1', name: 'Changed admin' });
+        expect(result.meta.version).toBe(9);
+        expect(window.Workspace.api.adminUpdate).toHaveBeenCalledTimes(1);
+        expect(logout).toHaveBeenCalled();
+        expect(showLogin).toHaveBeenCalled();
+        expect(toast).toHaveBeenLastCalledWith('账号配置已保存，会话已结束，请重新登录', 'success');
+        expect(AdminCenter.state).toBeNull();
+    });
+
+    test('a readback failure after acknowledgement does not report a failed save or replay it', async () => {
+        await AdminCenter.render(document.getElementById('pageContent'));
+        window.Workspace.refreshSession = jest.fn(async () => { throw Object.assign(new Error('offline'), { code: 'NETWORK' }); });
+        await AdminCenter.save('enterprise', { name: 'Changed enterprise' });
+        expect(window.Workspace.api.adminUpdate).toHaveBeenCalledTimes(1);
+        expect(document.body.textContent).toContain('配置已保存');
+        expect(document.querySelector('[data-admin-reload]')).not.toBeNull();
+        expect(toast).toHaveBeenLastCalledWith('配置已保存，读取最新状态失败', 'warning');
     });
 });

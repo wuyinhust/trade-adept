@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "checks": [
+    "real_http_session_authenticated",
+    "new_tab_activation_has_priority_over_existing_cookie",
+    "activation_token_removed_from_address_bar",
+    "same_signed_in_tab_activation_visible",
+    "original_session_preserved_until_password_submission"
+  ],
+  "authentication": "real-isolated-http-cookie",
+  "passwordLink": "inert-display-only-no-submission",
+  "mail": "none"
+}

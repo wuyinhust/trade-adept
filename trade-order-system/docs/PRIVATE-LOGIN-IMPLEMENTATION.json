@@ -1,0 +1,89 @@
+{
+  "date": "2026-10-13",
+  "state": "LOGIN_READY-awaiting-integrated-release",
+  "ownedModuleSHA256": {
+    "js/enterprise-login.js": "f77505904341ac0bf289c57f313af5647e09526b006447313b42d8fc9fee7450",
+    "js/login-policy-admin.js": "08a78669036ba42191da378bea0d0023f05fd476bb0808124e63843470a45b17",
+    "integrations/frappe_app/tradept_core/enterprise_login.py": "10cabc94127e1736a0b1e838ad5605d712fa158306a3f03e5aa00b7a3d3f3248",
+    "integrations/frappe_app/tradept_core/login_policy.py": "d9ebced547a7c43b583da78d0ee85d9f71d8ac56b0214d97a843377e6f3d6a16",
+    "integrations/frappe_app/tradept_core/branding.py": "4c95781aa96c7d7853f42b894351969f48cfde2e8b693ed3c9decdaff58a7f6a",
+    "integrations/frappe_app/tradept_core/public/js/desk-brand.js": "28f72565f39fd64c0d5d44634c7311e3dd9a58fa3cb89187b14af3cad844ba80",
+    "integrations/frappe_app/tradept_core/public/css/desk-brand.css": "f0d7c822e8b1c754f059aa652e893c275fa1498094aed87da20b4a1f8a2d447f",
+    "integrations/frappe_app/tradept_core/www/tradept-licenses.html": "d1398cc82aeb904e638f746519cf5e586a7a53a965c68485654af4d763c77cfb",
+    "integrations/frappe_app/tradept_core/public/licenses/ERPNext-GPL-3.0.txt": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "integrations/frappe_app/tradept_core/public/licenses/Frappe-MIT.txt": "bc6001a54ffcc4ab520424d7dbb85b293578efcdcb7d8f8055e00dddf942e5d7",
+    "integrations/frappe_app/tradept_core/login_setup.py": "8e72a2f2ba9c2abae345dbb74646e59a98f89af3a296fc31eb9e6f5d400c39c2",
+    "integrations/frappe_app/tradept_core/session_security.py": "7b105dfdf2622189f0f196d133fc6fe55a531f0ca2ea4f6bb3b30947d7dc31a1"
+  },
+  "checks": {
+    "gateway": {
+      "passed": 65
+    },
+    "nativeBaselineContracts": {
+      "passed": 265,
+      "scope": "complete current native Python unit suite"
+    },
+    "emailPolicy": {
+      "passed": 4
+    },
+    "nativeAuthentication": {
+      "passed": 94,
+      "emailTransport": "mocked",
+      "businessSnapshot": "mocked"
+    },
+    "javascript": {
+      "passed": 701,
+      "suites": 22,
+      "frozenSourceSha256": "9adba8df6bd18873046d0f7f063ee8228ea2a582a92cabe726f508ef537aaa6c"
+    },
+    "browser": {
+      "emailOnly": true,
+      "tenantPicker": false,
+      "passwordResetForm": true,
+      "initialAccountLogin": true,
+      "mode": "real isolated HTTP authentication; activation display only, no reset submission",
+      "existingAuthenticatedSession": {
+        "ok": true,
+        "checks": [
+          "real_http_session_authenticated",
+          "new_tab_activation_has_priority_over_existing_cookie",
+          "activation_token_removed_from_address_bar",
+          "same_signed_in_tab_activation_visible",
+          "original_session_preserved_until_password_submission"
+        ],
+        "authentication": "real-isolated-http-cookie",
+        "passwordLink": "inert-display-only-no-submission",
+        "mail": "none"
+      }
+    },
+    "demoBrowser": {
+      "ok": true,
+      "checks": [
+        "explicit-demo-options-only",
+        "no-default-tenant",
+        "browser-requires-tenant-choice",
+        "both-original-account-names-and-tenants-preserved",
+        "unconfigured-email-recovery-hidden"
+      ],
+      "mode": "UI config and login responses stubbed; native routing separately unit-tested",
+      "realAuthenticationAttempted": false
+    },
+    "historicalOwnershipBootstrap": {
+      "passed": 9,
+      "suites": 1,
+      "sourceSha256": "557d8e05a543d59cf063d281d99adc5ff9c43c6ee44f02e271cbf9d9f89961ff",
+      "note": "targeted rerun after historicalOwners wiring; previous full 701 suite precedes these three new tests"
+    },
+    "migrationSignupPolicy": "actual install entrypoint access settings on native site; schema/asset/branding writes mocked; pending, active and retired configurations keep signup off",
+    "memberTransactions": "real LoginManager.logout execution with native User/Profile/Auth/roles and SQL SID/Redis; disable, System-to-Website role, password post-profile failure rollback; explicit successful commit eviction; manager constructed without initiating a new HTTP login",
+    "catalogBootstrap": "deployment explicitly applies catalog template only to existing standard admin role; finance/custom roles unchanged; bootstrap allows permission configuration but denies catalog_state/catalog_operation; no Item business operations on auth-only site"
+  },
+  "pending": [
+    "final combined immutable candidate image and isolated cloned Grandware/Example deployment acceptance",
+    "deployed Desk visual and asset verification",
+    "release coordinator production deployment and original-account retirement verification",
+    "administrator enters real email, domain, allowlist and SMTP during onboarding; then verify real delivery and receipt"
+  ],
+  "flow": "initial account/password -> enterprise configuration -> administrator email proof and new password -> invitation-only email login",
+  "deploymentMode": "Grandware fixed private entry; new generated initial administrator; retire demo identities; real email/domain/SMTP configured in onboarding"
+}

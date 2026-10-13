@@ -3,6 +3,7 @@ import { jest } from '@jest/globals';
 const auth = {
     currentUser: null,
     users: [],
+    filterOrders: rows => rows,
     canSeeAll: () => false,
     getVisibleCompanyIds: () => auth.currentUser?.visibleCompanyIds || [],
     hasCapability: name => {
@@ -168,6 +169,21 @@ describe('factory saves and bank field permissions', () => {
 });
 
 describe('shared reads and configured mutation scope', () => {
+    test('a disabled historical owner remains editable for the authorized team without becoming assignable', () => {
+        auth.currentUser = actor({ scope: 'team', role: 'custom-manager' });
+        auth.users = [];
+        auth.getRecordOwner = id => id === 'disabled-owner' ? { id, teamId: 'demo-team' } : null;
+        try {
+            expect(Factories.canMutate('edit', factory({ createdBy: 'disabled-owner' }))).toBe(true);
+            expect(Factories.canMutate('delete', factory({ createdBy: 'disabled-owner' }))).toBe(true);
+            expect(Factories.canMutate('edit', factory({ createdBy: 'unknown-owner' }))).toBe(false);
+            expect(Factories.canMutate('edit', factory({ createdBy: 'disabled-owner', companyId: 'ungranted' }))).toBe(false);
+            expect(auth.users).toEqual([]);
+        } finally {
+            delete auth.getRecordOwner;
+        }
+    });
+
     test('keeps another owner factory readable across granted entities and removes mutation controls', () => {
         DB.data.factories = [factory({ createdBy: 'outside-user', companyId: 'CO-GW' })];
         const container = document.getElementById('pageContent');
@@ -240,7 +256,7 @@ describe('shared reads and configured mutation scope', () => {
         expect(DB.data.factories[0].deleted).toBeUndefined();
     });
 
-    test('selection ignores unauthorized factories and rejects a mixed batch without partial deletion', () => {
+    test('selection ignores unauthorized factories and a mixed batch deletes only authorized factories', async () => {
         DB.data.factories.push(factory({ id: 'factory-shared', createdBy: 'outside-user' }));
         Factories.toggleSelect('factory-shared');
         expect(Factories.selectedFactories.size).toBe(0);
@@ -248,8 +264,12 @@ describe('shared reads and configured mutation scope', () => {
         Factories.selectedFactories.add('factory-shared');
         const remove = jest.spyOn(DB, 'deleteFactory');
         Factories.batchDelete();
-        expect(app.showConfirm).not.toHaveBeenCalled();
-        expect(remove).not.toHaveBeenCalled();
+        expect(app.showConfirm).toHaveBeenCalledTimes(1);
+        await app.showConfirm.mock.calls[0][1]();
+        expect(remove).toHaveBeenCalledTimes(1);
+        expect(remove).toHaveBeenCalledWith('factory-existing');
+        expect(DB.data.factories[1].deleted).toBeUndefined();
+        expect(app.toast).toHaveBeenCalledWith('已删除 1 个工厂，跳过 1 个无权限工厂');
     });
 
     test('select all selects only deletable rows while shared rows remain visible', () => {

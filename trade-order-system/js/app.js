@@ -9,6 +9,7 @@ import { DB } from './data.js';
 import { Exchange } from './exchange.js';
 import { escapeHtml, handleError, toast, safeCall, validate, EventBus } from './utils.js';
 import { UI } from './ui.js';
+import { FormDrafts } from './form-drafts.js';
 
 const App = {
     currentPage: 'dashboard',
@@ -24,6 +25,7 @@ const App = {
         profit: './profit.js',
         shipping: './shipping.js',
         settings: './workspace-settings.js',
+        finance: './finance.js',
         admin: './administrator.js',
         onboarding: './administrator.js'
     },
@@ -85,6 +87,12 @@ const App = {
 
     // ==================== 登录 ====================
     showLogin() {
+        // Keep input under its original account key, then remove private DOM
+        // before another account can enter this page.
+        FormDrafts.dismissAll();
+        globalThis.ItemCatalog?.clear?.();
+        const modal = document.getElementById('modalContainer');
+        if (modal) modal.replaceChildren();
         document.getElementById('loginPage').style.display = 'flex';
         document.getElementById('app').style.display = 'none';
     },
@@ -135,7 +143,8 @@ const App = {
 
             // A closing tab preserves a local draft. All business writes use the
             // authenticated, version-checked API; unload never bypasses that API.
-            window.addEventListener('beforeunload', () => {
+            window.addEventListener('beforeunload', event => {
+                FormDrafts.protectUnload(event);
                 DB._stopPolling();
                 DB._backupToLocal();
             });
@@ -188,6 +197,8 @@ const App = {
     },
 
     async handleLogout() {
+        window.Finance?.clear();
+        globalThis.ItemCatalog?.clear?.();
         // 停止云同步轮询 + 强制保存
         DB._stopPolling();
         if (DB._pendingSave) {
@@ -356,16 +367,21 @@ const App = {
         const selectEl = document.getElementById('companySelect');
         if (!selectEl) return;
         const companies = DB.getAccessibleCompanies();
-        selectEl.innerHTML = companies.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+        selectEl.innerHTML = companies
+            .map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
+            .join('');
         // 如果当前公司不在可访问列表中，自动切换到第一个
         const visibleIds = companies.map(c => c.id);
         if (!visibleIds.includes(DB.currentCompanyId)) {
+            globalThis.ItemCatalog?.clear?.();
             DB.setCurrentCompany(visibleIds[0]);
         }
     },
 
     selectCompany(companyId) {
         if (DB.currentCompanyId === companyId) return;
+        window.Finance?.clear?.();
+        globalThis.ItemCatalog?.clear?.();
         DB.setCurrentCompany(companyId);
         this.updateCompanyDisplay();
         this.updateExchangeRateDisplay();
@@ -444,7 +460,17 @@ const App = {
     // ==================== 侧边栏可见性 ====================
     updateSidebarVisibility() {
         const visible = Auth.getVisiblePages();
-        const allNavs = ['dashboard', 'orders', 'customers', 'factories', 'profit', 'shipping', 'settings', 'admin'];
+        const allNavs = [
+            'dashboard',
+            'orders',
+            'customers',
+            'factories',
+            'profit',
+            'shipping',
+            'finance',
+            'settings',
+            'admin'
+        ];
 
         allNavs.forEach(page => {
             const nav = document.getElementById('nav-' + page);
@@ -462,6 +488,8 @@ const App = {
     },
 
     async router() {
+        window.Finance?.clear();
+        globalThis.ItemCatalog?.clear?.();
         // 移动端：路由跳转时关闭侧边栏
         this.closeMobileSidebar();
 
@@ -508,6 +536,7 @@ const App = {
             factories: '工厂管理',
             profit: '利润分析',
             shipping: '物流单证',
+            finance: '应收与应付',
             settings: '系统设置',
             admin: '管理中心',
             onboarding: '企业初始化'
@@ -537,6 +566,7 @@ const App = {
                 factories: () => Factories.render(content, param),
                 profit: () => Profit.render(content),
                 shipping: () => Shipping.render(content, param),
+                finance: () => window.Finance.render(content),
                 settings: () => Settings.render(content),
                 admin: () => window.AdminCenter.render(content),
                 onboarding: () => window.Onboarding.render(content)
@@ -545,7 +575,7 @@ const App = {
             const renderFn = moduleMap[page] || moduleMap.dashboard;
             await renderFn();
             content.dataset.page = page;
-            if (!['dashboard', 'admin', 'onboarding'].includes(page) && !param) {
+            if (!['dashboard', 'admin', 'onboarding', 'finance'].includes(page) && !param) {
                 this.renderPageIntro(content, page, titles[page]);
             }
             UI.decorate(content);

@@ -12,7 +12,7 @@ import uuid
 
 import frappe
 
-from .domain import APIError, DEFAULT_ROLES, now, safe_record_id
+from .domain import APIError, DEFAULT_ROLES, FINANCE_CAPABILITIES, CATALOG_CAPABILITIES, now, safe_record_id
 from .schema import COLLECTIONS, dumps, loads
 from . import repository as repo
 
@@ -24,12 +24,14 @@ ROLE_PERMISSIONS = {
     "finance.read", "finance.write", "rates.write",
     "snapshots.read", "snapshots.restore", MANAGE_CAPABILITY,
 }
-ROLE_PAGES = {"dashboard", "orders", "customers", "factories", "shipping", "profit", "settings", "admin"}
+ROLE_PERMISSIONS.update(FINANCE_CAPABILITIES)
+ROLE_PERMISSIONS.update(CATALOG_CAPABILITIES)
+ROLE_PAGES = {"dashboard", "orders", "customers", "factories", "shipping", "profit", "settings", "admin", "finance"}
 ROLE_LABELS = {
     "admin": "企业管理员", "finance": "财务", "manager": "业务经理",
     "salesperson": "业务员", "document": "物流单证",
 }
-ONBOARDING_STEPS = ("enterprise", "company", "organization", "members", "business", "finish")
+ONBOARDING_STEPS = ("enterprise", "company", "organization", "members", "business", "login", "finish")
 
 
 def _text(value, label, maximum=200, required=True):
@@ -168,9 +170,14 @@ def _onboarding(cfg, profiles):
         "members": bool(profiles),
         "business": bool(configured.get("businessPrepared")),
     }
+    checks["login"] = not cfg.get("loginSetup")
     if legacy_ready:
         completed.update(ONBOARDING_STEPS)
-    required_ready = all(checks[key] for key in ("enterprise", "company", "organization", "members"))
+    if checks["login"]:
+        completed.add("login")
+    else:
+        completed.discard("login")
+    required_ready = all(checks[key] for key in ("enterprise", "company", "organization", "members", "login"))
     status = configured.get("status") or ("complete" if legacy_ready else "required")
     if status == "complete" and not required_ready:
         status = "in_progress"
@@ -196,6 +203,8 @@ def _members(cfg, profiles):
         output.append({
             **{key: profile.get(key) for key in ("id", "name", "username", "role", "teamId", "departmentId", "visibleCompanyIds")},
             "email": native,
+            "emailVerified": bool(frappe.db.get_value("User", native, "custom_tradept_email_verified")) if cfg.get("loginPolicy", {}).get("enabled") else None,
+            "passwordChangeRequired": bool(frappe.db.get_value("User", native, "custom_tradept_password_change_required")) if cfg.get("loginPolicy", {}).get("enabled") else None,
             "enabled": bool(frappe.db.get_value("User", native, "enabled")) if native else False,
         })
     return sorted(output, key=lambda value: (str(value.get("name") or ""), str(value.get("id") or "")))
@@ -260,13 +269,86 @@ def state(work, cfg, actor, rules, profiles):
         "members": _members(cfg, configured_profiles),
         "roles": _roles(cfg),
         "emailAccounts": _mailboxes(cfg),
+        "loginPolicy": {**copy.deepcopy(cfg.get("loginPolicy", {})), "setupRequired": bool(cfg.get("loginSetup")), "administratorEmail": cfg.get("loginSetup", {}).get("administratorEmail", "")},
         "onboarding": onboarding,
         "options": {
             "permissions": sorted(ROLE_PERMISSIONS), "pages": sorted(ROLE_PAGES),
             "collections": list(COLLECTIONS),
             "scopes": sorted(ROLE_SCOPES), "emailAvailable": bool(frappe.db.exists("DocType", "Email Account")),
+            "finance": _finance_options(cfg, actor, rules),
+            "catalog": _catalog_options(cfg),
         },
     }
+
+
+def _finance_options(cfg, actor, rules):
+    from .finance_permissions import Policy, FINANCE_POLICY_VERSION
+    companies = Policy(cfg, actor, rules).companies()
+    accounts = []
+    if companies and frappe.db.exists("DocType", "Bank Account"):
+        for row in frappe.get_all("Bank Account", filters={"company": ["in", list(companies.values())], "is_company_account": 1}, fields=["name", "account_name", "company", "account"]):
+            accounts.append({
+                "name": row.name, "label": row.get("account_name") or row.name,
+                "companyId": next((key for key, native in companies.items() if native == row.company), None),
+                "currency": frappe.db.get_value("Account", row.get("account"), "account_currency") if row.get("account") else None,
+            })
+    return {
+        "version": FINANCE_POLICY_VERSION,
+        "initialized": any(any(bool(policy.get("permissions", {}).get(cap)) if isinstance(policy.get("permissions"), dict) else cap in policy.get("permissions", []) for cap in FINANCE_CAPABILITIES) for policy in cfg.get("roles", {}).values()),
+        "configuration": copy.deepcopy(cfg.get("financePermissions") or {}),
+        "capabilities": sorted(FINANCE_CAPABILITIES), "bankAccounts": accounts,
+        "templates": [{"key": "native-ar-ap", "label": "ERPNext 应收应付标准权限", "roleKeys": [key for key in ("admin", "finance") if key in cfg.get("roles", {})]}],
+    }
+
+
+def _finance_template(cfg, actor, value):
+    from .finance_permissions import FINANCE_POLICY_VERSION, validate_policy
+    selected = _list(value.get("roleKeys", ["admin", "finance"]), "财务模板角色")
+    if not selected or any(key not in ("admin", "finance") or key not in cfg.get("roles", {}) for key in selected):
+        raise APIError(400, "INVALID_FINANCE_TEMPLATE_ROLE", "请选择已有企业管理员或财务角色应用标准模板")
+    for key in selected:
+        role = cfg["roles"][key]
+        if role.get("scope") != "tenant":
+            raise APIError(400, "FINANCE_TEMPLATE_SCOPE_REQUIRED", "标准财务模板只适用于企业范围角色")
+        permissions = role.get("permissions", [])
+        if isinstance(permissions, dict):
+            permissions = [name for name, allowed in permissions.items() if allowed]
+        role["permissions"] = list(dict.fromkeys([*permissions, *sorted(FINANCE_CAPABILITIES)]))
+        role["pages"] = list(dict.fromkeys([*role.get("pages", []), "finance"]))
+        role["financePolicy"] = validate_policy(role.get("financePolicy"), role["scope"])
+        role_name = _native_role(key)
+        if not frappe.db.exists("Role", role_name):
+            frappe.get_doc({"doctype": "Role", "role_name": role_name, "desk_access": 0}).insert(ignore_permissions=True)
+    cfg["financePermissions"] = {"version": FINANCE_POLICY_VERSION, "roleKeys": selected, "updatedAt": now(), "updatedBy": actor.get("id")}
+    return {"id": "native-ar-ap", **copy.deepcopy(cfg["financePermissions"])}
+
+
+def _catalog_options(cfg):
+    permissions = cfg.get("roles", {}).get("admin", {}).get("permissions", [])
+    return {
+        "version": 1, "capabilities": sorted(CATALOG_CAPABILITIES),
+        "initialized": all(bool(permissions.get(cap)) if isinstance(permissions, dict) else cap in permissions for cap in CATALOG_CAPABILITIES),
+        "configuration": copy.deepcopy(cfg.get("catalogPermissions") or {}),
+        "templates": [{"key": "native-items", "label": "原生商品标准管理权限", "roleKeys": ["admin"] if "admin" in cfg.get("roles", {}) else []}],
+    }
+
+
+def _catalog_template(cfg, actor, value):
+    selected = _list(value.get("roleKeys", ["admin"]), "商品模板角色")
+    if selected != ["admin"] or "admin" not in cfg.get("roles", {}):
+        raise APIError(400, "INVALID_CATALOG_TEMPLATE_ROLE", "标准商品模板只适用于已有企业管理员角色")
+    role = cfg["roles"]["admin"]
+    if role.get("scope") != "tenant":
+        raise APIError(400, "CATALOG_TEMPLATE_SCOPE_REQUIRED", "标准商品模板需要企业范围")
+    permissions = role.get("permissions", [])
+    if isinstance(permissions, dict):
+        permissions = [name for name, allowed in permissions.items() if allowed]
+    role["permissions"] = list(dict.fromkeys([*permissions, *sorted(CATALOG_CAPABILITIES)]))
+    role_name = _native_role("admin")
+    if not frappe.db.exists("Role", role_name):
+        frappe.get_doc({"doctype": "Role", "role_name": role_name, "desk_access": 0}).insert(ignore_permissions=True)
+    cfg["catalogPermissions"] = {"version": 1, "roleKeys": selected, "updatedAt": now(), "updatedBy": actor.get("id")}
+    return {"id": "native-items", **copy.deepcopy(cfg["catalogPermissions"])}
 
 
 def _save(work, cfg, actor, kind, summary):
@@ -426,6 +508,8 @@ def _role(cfg, actor, value):
     pages = _role_pages(value.get("pages", []))
     if "profit" in pages and "finance.read" not in permissions:
         raise APIError(400, "ROLE_PAGE_PERMISSION_MISMATCH", "利润页面需要查看财务权限")
+    if "finance" in pages and not FINANCE_CAPABILITIES.intersection(permissions):
+        raise APIError(400, "ROLE_PAGE_PERMISSION_MISMATCH", "财务页面至少需要一项原生财务权限")
     if "settings" in pages and not {"rates.write", "snapshots.read"}.intersection(permissions):
         raise APIError(400, "ROLE_PAGE_PERMISSION_MISMATCH", "业务设置页面需要汇率或快照权限")
     if MANAGE_CAPABILITY in permissions:
@@ -450,6 +534,13 @@ def _role(cfg, actor, value):
         "scope": scope, "permissions": permissions, "pages": pages,
         "readScopes": copy.deepcopy(scopes),
     }
+    if "financePolicy" in value or "financePolicy" in existing:
+        from .finance_permissions import validate_policy
+        policy["financePolicy"] = validate_policy(value.get("financePolicy", existing.get("financePolicy")), scope)
+        for name in policy["financePolicy"].get("allowedBankAccounts") or []:
+            company = frappe.db.get_value("Bank Account", name, "company")
+            if not company or company not in {repo.native_company(item["id"]) for item in cfg.get("companies", [])}:
+                raise APIError(400, "INVALID_BANK_ACCOUNT_GRANT", "角色银行账户必须属于本企业公司")
     if collections is not None or "collections" in value:
         policy["collections"] = collections
     cfg.setdefault("roles", {})[key] = policy
@@ -465,6 +556,9 @@ def _member(cfg, actor, value):
     if not safe_record_id(uid):
         raise APIError(400, "INVALID_MEMBER_ID", "成员编号格式无效")
     existing = profiles.get(uid)
+    if cfg.get('loginPolicy', {}).get('enabled'):
+        from .enterprise_login import prepare_member
+        value = prepare_member(cfg, value, existing)
     _creating(value, existing, "成员编号")
     role = _text(value.get("role", (existing or {}).get("role", "salesperson")), "角色", 80).lower()
     if role not in cfg.get("roles", {}):
@@ -508,6 +602,13 @@ def _member(cfg, actor, value):
             raise APIError(400, "INVALID_TEMPORARY_PASSWORD", "临时密码至少需要 12 位")
         native.new_password = password
     native.set("roles", [{"role": _native_role(role)}])
+    if not is_new:
+        # User.validate may log out a disabled member, and on_update may clear
+        # sessions after role-derived user_type/password changes. Native session
+        # deletion commits internally; remove its SID rows transactionally first
+        # so profile, grants and workspace audit remain one atomic update.
+        from .session_security import revoke_user_sessions
+        revoke_user_sessions(email)
     native.save(ignore_permissions=True)
     profile = {
         **({key: val for key, val in existing.items() if key != "nativeUser"} if existing else {}),
@@ -530,7 +631,11 @@ def _member(cfg, actor, value):
         item["memberIds"] = list(dict.fromkeys(members))
     if cfg.get("departments") is not None:
         cfg["teams"] = copy.deepcopy(cfg["departments"])
-    return {**profile, "email": email, "enabled": not disabled}
+    delivery = {}
+    if cfg.get("loginPolicy", {}).get("enabled"):
+        from .enterprise_login import member_saved
+        delivery = member_saved(cfg, email, is_new, value)
+    return {**profile, "email": email, "enabled": not disabled, **delivery}
 
 
 def _email_account(cfg, value):
@@ -667,8 +772,15 @@ def update(work, cfg, actor, rules, supplied):
         changed = _department(cfg, value)
     elif resource == "role":
         changed = _role(cfg, actor, value)
+    elif resource == "finance_template":
+        changed = _finance_template(cfg, actor, value)
+    elif resource == "catalog_template":
+        changed = _catalog_template(cfg, actor, value)
     elif resource == "member":
         changed = _member(cfg, actor, value)
+    elif resource == "login-policy":
+        from .enterprise_login import configure
+        changed = configure(cfg, actor, value)
     elif resource == "email":
         from .permissions import delegated_email_configuration
         with delegated_email_configuration(cfg, actor, rules):

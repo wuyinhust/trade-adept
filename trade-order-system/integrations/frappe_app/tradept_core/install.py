@@ -86,6 +86,9 @@ def install():
         _field("custom_tradept_record_id", unique=1, read_only=1), _field("custom_tradept_configuration", "Long Text", hidden=1, read_only=1),
         _field("custom_tradept_profit_policy", read_only=1), _field("custom_tradept_settlement_currency", "Link", options="Currency", read_only=1),
     ]
+    # New Tradept SKUs are company-bound; existing untagged ERPNext Items
+    # deliberately retain the native enterprise-wide sharing semantics.
+    custom["Item"] = [_field("custom_tradept_company", "Link", options="Company", read_only=1)]
     contact_map = fields(data=("id", "name", "position", "email", "phone", "mobilePhone"), text=("homeAddress",))
     custom["Contact"] = [_field("custom_tradept_" + name, kind, hidden=1, read_only=1) for name, kind in contact_map.values() if name not in ("name", "position", "email", "phone", "mobile_phone")] + [
         _field("custom_tradept_parent_type", "Link", options="DocType", hidden=1),
@@ -119,4 +122,11 @@ def install():
         frappe.db.set_single_value("Website Settings", "disable_signup", int(not native_signup))
     if frappe.get_meta("System Settings").has_field("allow_login_using_user_name"):
         frappe.db.set_single_value("System Settings", "allow_login_using_user_name", 1)
+    from . import enterprise_login, branding, assets
+    assets.ensure()
+    enterprise_login.install()
+    branding.install()
+    if enterprise_login.active_policy():
+        frappe.db.set_single_value("Website Settings", "disable_signup", 1)
+        frappe.db.set_single_value("System Settings", "allow_login_using_user_name", 0)
     frappe.clear_cache()

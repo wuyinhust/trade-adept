@@ -3,6 +3,7 @@
  * Writes contain only changes from the immutable, acknowledged read baseline.
  * The server owns authorization, atomic version checking and persistence.
  */
+import { proposeContactMerge, resolveContactMerge } from './contact-merge.js';
 
 // Parents must exist before dependent records in a single atomic import batch.
 const COLLECTIONS = ['customers', 'factories', 'orders', 'shipments', 'invoices'];
@@ -30,13 +31,31 @@ const FINANCIAL_FIELDS = new Set([
     'erpItems'
 ]);
 const NESTED_FINANCIAL_FIELDS = new Set(['totalAmount', 'prepayment', 'paidAmount', 'cost', 'costUSD', 'costRMB']);
+const PROJECTED_FACTORY_FIELDS = new Set([
+    'advanceAmount',
+    'invoiceSettledAmount',
+    'invoiceOutstandingAmount',
+    'invoiceNames'
+]);
+const NORMALIZED_ORDER_INPUTS = [
+    'companyOperationNo',
+    'factoryCostUSD',
+    'factoryCostRMB',
+    'freightCostUSD',
+    'freightCostRMB',
+    'otherCostUSD',
+    'otherCostRMB'
+];
 const ORDER_RATE_FIELDS = new Set([
     'companyId',
     'orderAmountUSD',
     'factoryCostRMB',
+    'factoryCostUSD',
     'freightCostUSD',
+    'freightCostRMB',
     'insuranceCostUSD',
-    'otherCostUSD'
+    'otherCostUSD',
+    'otherCostRMB'
 ]);
 const NESTED_ORDER_RATE_FIELDS = new Set([
     'totalAmount',
@@ -82,9 +101,29 @@ const SERVER_FIELDS = new Set([
     'historicalReference',
     'exchangeRateUsed',
     'profitPolicy',
-    'settlementCurrency'
+    'settlementCurrency',
+    'nativeSettlementProjection',
+    'nativeHasPostedSalesInvoices',
+    'nativeSettlementCurrency',
+    'salesAdvanceAmountUSD',
+    'salesInvoiceSettledAmountUSD',
+    'salesInvoiceOutstandingAmountUSD',
+    'salesInvoiceNames',
+    'factoryAdvanceAmount',
+    'factoryInvoiceSettledAmount',
+    'factoryInvoiceOutstandingAmount',
+    'factoryInvoiceNames',
+    'nativeReceiptSummary'
 ]);
 const clone = value => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
+const CONTACT_ALIASES = {
+    contact: 'name',
+    position: 'position',
+    email: 'email',
+    phone: 'phone',
+    mobilePhone: 'mobilePhone',
+    homeAddress: 'homeAddress'
+};
 
 export function workspaceDraftKey(session, origin) {
     const user = session.user;
@@ -172,6 +211,9 @@ export class BusinessAPIClient {
         this._ready = false;
         this._conflict = null;
         this._permissions = null;
+        this._contactMergePreview = null;
+        this._contactMergeSequence = 0;
+        this._workingGeneration = 0;
     }
 
     get lastMeta() {
@@ -247,9 +289,12 @@ export class BusinessAPIClient {
         });
     }
 
-    async login({ tenantId, username, password }) {
+    async login({ tenantId, username, email, password }) {
         return this._enqueue(async () => {
-            const result = await this._request('/login', { method: 'POST', body: { tenantId, username, password } });
+            const result = await this._request('/login', {
+                method: 'POST',
+                body: { tenantId, username, email, password }
+            });
             this.resetBaseline();
             this.setSessionContext(result);
             this._ready = true;
@@ -269,10 +314,175 @@ export class BusinessAPIClient {
 
     /** Call only after an explicit decision to discard a draft or change session. */
     resetBaseline() {
+        this._workingGeneration++;
         this._baseline = null;
         this._working = null;
         this._lastMeta = { version: 0, updatedAt: null, updatedBy: null };
         this._conflict = null;
+        this._contactMergePreview = null;
+    }
+
+    exportDraftBaseline() {
+        return clone(this._baseline);
+    }
+
+    restoreDraftBaseline(baseline, expectedVersion, { conflict = false } = {}) {
+        if (
+            !this._baseline ||
+            !baseline ||
+            baseline.meta?.version !== expectedVersion ||
+            expectedVersion > this._baseline.meta.version ||
+            !COLLECTIONS.every(collection => Array.isArray(baseline.data?.[collection]))
+        ) {
+            throw apiError('草稿缺少原始读取版本，请保留草稿并人工核对', 'INVALID_DRAFT_BASELINE');
+        }
+        const normalized = this._normalizeDataResult(baseline);
+        for (const collection of COLLECTIONS) recordsById(normalized.data[collection]);
+        const serverVersion = this._baseline.meta.version;
+        this._workingGeneration++;
+        this._baseline = clone(normalized);
+        this._lastMeta = clone(normalized.meta);
+        this._conflict =
+            conflict || expectedVersion < serverVersion
+                ? apiError('已恢复旧版本草稿，请先处理冲突', 'CONFLICT', 409)
+                : null;
+        this._contactMergePreview = null;
+    }
+
+    async prepareContactMerge({ expectedBaseVersion = this._baseline?.meta.version } = {}) {
+        return this._enqueue(async () => {
+            if (!this._baseline || !this._working?.data) throw apiError('请先读取业务数据', 'NO_BASELINE');
+            if (expectedBaseVersion !== this._baseline.meta.version) {
+                throw apiError(
+                    '旧草稿缺少原始联系人基线，请下载保留并人工核对，不能自动覆盖服务器资料',
+                    'CONTACT_BASE_MISSING'
+                );
+            }
+            const baseline = clone(this._baseline);
+            const working = clone(this._working);
+            const patch = this._diff(working.data, working.exchangeRates, working.rateMetas);
+            const old = recordsById(baseline.data.customers);
+            if (
+                !patch.changes.length ||
+                patch.exchangeRates ||
+                patch.rateMetas ||
+                !patch.changes.every(change => {
+                    if (
+                        change.collection !== 'customers' ||
+                        change.deleted ||
+                        !old.has(String(change.id)) ||
+                        !Array.isArray(change.value?.contacts)
+                    ) {
+                        return false;
+                    }
+                    const primary = change.value.contacts[0] || {};
+                    return Object.entries(change.value).every(
+                        ([field, value]) =>
+                            field === 'contacts' ||
+                            (Object.hasOwn(CONTACT_ALIASES, field) &&
+                                equal(value, primary[CONTACT_ALIASES[field]] ?? ''))
+                    );
+                })
+            ) {
+                throw apiError(
+                    '当前草稿还包含其他修改，请先下载保留；联系人合并只处理已有客户的联系人修改',
+                    'CONTACT_MERGE_REQUIRES_CONTACT_ONLY'
+                );
+            }
+            const remote = this._normalizeDataResult(await this._request('/data'), baseline.meta.version);
+            if (!equal(working, this._working) || !equal(baseline, this._baseline)) {
+                throw apiError('读取期间产生了新输入，请重新查看差异', 'CONTACT_MERGE_CHANGED');
+            }
+            const latest = recordsById(remote.data.customers);
+            const customers = patch.changes.map(change => {
+                const current = latest.get(String(change.id));
+                if (!current || current.deleted || current.companyId !== old.get(String(change.id)).companyId) {
+                    throw apiError(
+                        '客户已删除、归属变化或不再可访问，请保留草稿并人工核对',
+                        'CONTACT_MERGE_UNAVAILABLE'
+                    );
+                }
+                return {
+                    id: change.id,
+                    name: current.company || current.companyName || String(change.id),
+                    plan: proposeContactMerge(
+                        old.get(String(change.id)).contacts || [],
+                        change.value.contacts,
+                        current.contacts || []
+                    )
+                };
+            });
+            const id = ++this._contactMergeSequence;
+            this._contactMergePreview = {
+                id,
+                working,
+                baseline,
+                remote,
+                customers,
+                context: clone(this._sessionIdentity)
+            };
+            return clone({ id, baseVersion: baseline.meta.version, serverVersion: remote.meta.version, customers });
+        });
+    }
+
+    async applyContactMerge(previewId, choices = {}) {
+        return this._enqueue(async () => {
+            const preview = this._contactMergePreview;
+            if (
+                !preview ||
+                preview.id !== previewId ||
+                !equal(preview.working, this._working) ||
+                !equal(preview.baseline, this._baseline) ||
+                !equal(preview.context, this._sessionIdentity)
+            ) {
+                throw apiError('草稿或读取版本已变化，请重新查看差异', 'CONTACT_MERGE_CHANGED');
+            }
+            const latest = recordsById(preview.remote.data.customers);
+            const changes = preview.customers.map(customer => {
+                const selected = Object.fromEntries(
+                    customer.plan.conflicts.map(conflict => [conflict.id, choices[`${customer.id}:${conflict.id}`]])
+                );
+                const resolved = resolveContactMerge(customer.plan, selected);
+                if (!resolved.canSubmit || !resolved.result?.length) {
+                    throw apiError('请逐项确认联系人冲突；至少保留一位联系人', 'CONTACT_MERGE_UNRESOLVED');
+                }
+                const current = latest.get(String(customer.id));
+                const primary = resolved.result[0];
+                const value = { contacts: clone(resolved.result) };
+                for (const [field, source] of Object.entries(CONTACT_ALIASES)) {
+                    if (Object.hasOwn(current, field)) value[field] = primary[source] ?? '';
+                }
+                return { collection: 'customers', id: customer.id, value };
+            });
+            const result = await this._request('/changes', {
+                method: 'POST',
+                body: { expectedVersion: preview.remote.meta.version, changes }
+            });
+            if (!Number.isInteger(result.meta?.version) || result.meta.version <= preview.remote.meta.version) {
+                throw apiError('合并确认缺少有效新版本，请保留草稿', 'INVALID_RESPONSE');
+            }
+            if (
+                this._contactMergePreview !== preview ||
+                !equal(preview.baseline, this._baseline) ||
+                !equal(preview.context, this._sessionIdentity)
+            ) {
+                throw apiError('登录或权限已变化，请重新读取当前账号数据', 'CONTACT_MERGE_CHANGED');
+            }
+            this._baseline = clone(preview.remote);
+            this._acknowledge({ changes }, result.meta);
+            this._contactMergePreview = null;
+            if (!equal(preview.working, this._working)) {
+                throw this._operationAppliedConflict(
+                    result.meta,
+                    apiError('合并已保存，提交期间的新输入仍保留，请核对后继续', 'CONTACT_MERGE_CHANGED')
+                );
+            }
+            this._conflict = null;
+            const working = clone(this._baseline);
+            this._workingGeneration++;
+            this.bindWorkingData(working.data, working.exchangeRates, working.rateMetas);
+            return working;
+        });
     }
 
     bindWorkingData(data, exchangeRates, rateMetas) {
@@ -280,12 +490,24 @@ export class BusinessAPIClient {
     }
 
     setSessionContext(session) {
+        globalThis.Finance?.clear?.();
         const user = session?.user;
         const role = Array.isArray(session?.roles)
             ? session.roles.find(entry => entry.id === user?.role)
             : session?.roles?.[user?.role];
         const permissions = user?.permissions ?? role?.permissions;
         this._permissions = permissions === undefined ? null : clone(permissions);
+        this._sessionIdentity = clone(
+            user
+                ? {
+                      id: user.id,
+                      tenantId: user.tenantId,
+                      visibleCompanyIds: user.visibleCompanyIds,
+                      scope: user.scope,
+                      permissions
+                  }
+                : null
+        );
     }
 
     _canWriteFinance() {
@@ -306,7 +528,7 @@ export class BusinessAPIClient {
             ) {
                 continue;
             }
-            if (key === 'factories' && Array.isArray(value) && finance !== true) {
+            if (key === 'factories' && Array.isArray(value)) {
                 result.factories = value.map(row => {
                     const old = (baseline?.factories || []).find(
                         item => String(item.factoryId) === String(row.factoryId)
@@ -314,8 +536,10 @@ export class BusinessAPIClient {
                     return Object.fromEntries(
                         Object.entries(row).filter(
                             ([field]) =>
-                                !NESTED_FINANCIAL_FIELDS.has(field) ||
-                                (finance === null && Object.hasOwn(old || {}, field))
+                                !PROJECTED_FACTORY_FIELDS.has(field) &&
+                                (finance === true ||
+                                    !NESTED_FINANCIAL_FIELDS.has(field) ||
+                                    (finance === null && Object.hasOwn(old || {}, field)))
                         )
                     );
                 });
@@ -391,6 +615,7 @@ export class BusinessAPIClient {
             this._ready = true;
             this._conflict = null;
             const working = clone(normalized);
+            this._workingGeneration++;
             this.bindWorkingData(working.data, working.exchangeRates, working.rateMetas);
             return working;
         });
@@ -438,6 +663,7 @@ export class BusinessAPIClient {
 
     _reconcileRateDerivedOrders(normalized, data, orderIds) {
         const authoritative = recordsById(normalized.data.orders);
+        const acknowledged = recordsById(this._baseline.data.orders);
         const current = recordsById(data.orders || []);
         const merges = [];
         for (const id of orderIds) {
@@ -445,15 +671,21 @@ export class BusinessAPIClient {
             if (!source) throw apiError('保存后的订单未出现在权威读取结果中', 'INVALID_RESPONSE');
             const target = current.get(id);
             if (!target || target.deleted === true) continue;
-            merges.push({ source, target });
+            merges.push({ source, target, accepted: acknowledged.get(id) || {} });
         }
         this._baseline = clone(normalized);
         this._lastMeta = clone(normalized.meta);
         this._conflict = null;
-        for (const { source, target } of merges) {
+        for (const { source, target, accepted } of merges) {
             for (const field of AUTHORITATIVE_ORDER_FIELDS) {
                 if (Object.hasOwn(source, field)) target[field] = clone(source[field]);
             }
+            for (const field of NORMALIZED_ORDER_INPUTS) {
+                if (!equal(target[field], accepted[field])) continue;
+                if (Object.hasOwn(source, field)) target[field] = clone(source[field]);
+                else delete target[field];
+            }
+            delete target.companyOperationNoAuto;
         }
     }
 
@@ -470,8 +702,12 @@ export class BusinessAPIClient {
     async saveData(data, exchangeRates, rateMetas) {
         // Preserve the reference, then sample it when its queued operation starts.
         // New edits made during an earlier network request remain observable.
+        const generation = this._workingGeneration;
         this.bindWorkingData(data, exchangeRates, rateMetas);
         return this._enqueue(async () => {
+            if (generation !== this._workingGeneration) {
+                throw apiError('读取版本已切换，旧保存请求未执行；请核对当前数据', 'STALE_WORKING_DATA');
+            }
             if (this._conflict) throw this._conflict;
             if (!this._baseline) throw apiError('请先读取数据，不能从未知版本保存', 'NO_BASELINE');
             const patch = this._diff(data, exchangeRates, rateMetas);
@@ -523,6 +759,73 @@ export class BusinessAPIClient {
 
     async adminState() {
         return this._enqueue(async () => clone(await this._request('/administrator')));
+    }
+
+    _financeQuery(params) {
+        return new URLSearchParams(
+            Object.entries(params || {}).filter(([, value]) => value !== undefined && value !== null)
+        ).toString();
+    }
+
+    financeState(params = {}) {
+        return this._enqueue(async () => clone(await this._request('/finance/state?' + this._financeQuery(params))));
+    }
+
+    financeDocument(params = {}) {
+        return this._enqueue(async () => clone(await this._request('/finance/document?' + this._financeQuery(params))));
+    }
+
+    catalogState(params = {}) {
+        const query = { ...params };
+        if (typeof query.includeDisabled === 'boolean') query.includeDisabled = Number(query.includeDisabled);
+        return this._enqueue(async () => clone(await this._request('/catalog/state?' + this._financeQuery(query))));
+    }
+
+    catalogOperation(params) {
+        return this._enqueue(async () => {
+            if (this.hasChanges()) throw apiError('请先保存或处理当前业务草稿，再维护商品', 'LOCAL_CHANGES');
+            if (!Number.isInteger(params?.expectedVersion) || params.expectedVersion < 0 || !String(params?.idempotencyKey || '').trim()) {
+                throw apiError('商品操作缺少当前版本或稳定请求标识', 'INVALID_REQUEST');
+            }
+            const result = await this._request('/catalog/operation', { method: 'POST', body: clone(params) });
+            const version = result.meta?.version ?? result.version;
+            if (!Number.isInteger(version) || version < params.expectedVersion) {
+                throw apiError('商品保存确认缺少有效版本，请保留原请求核对结果', 'INVALID_RESPONSE');
+            }
+            // Only a full data read can acknowledge business-record changes;
+            // a native Item write must leave their save baseline intact.
+            return clone(result);
+        });
+    }
+
+    financeReport(params = {}) {
+        return this._enqueue(async () =>
+            clone(await this._request('/finance/report', { method: 'POST', body: clone(params) }))
+        );
+    }
+
+    financeOperation(params) {
+        return this._enqueue(async () => {
+            if (this.hasChanges()) {
+                throw apiError('请先保存或处理当前业务草稿，再进行财务操作', 'LOCAL_CHANGES');
+            }
+            if (
+                !Number.isInteger(params?.expectedVersion) ||
+                params.expectedVersion < 0 ||
+                !String(params?.idempotencyKey || '').trim()
+            ) {
+                throw apiError('财务操作缺少当前版本或稳定请求标识', 'INVALID_REQUEST');
+            }
+            // Keep the business-record save baseline unchanged. Invoice writes
+            // can change projected order balances; only a full authorised data
+            // read may acknowledge those new values.
+            const result = await this._request('/finance/operation', { method: 'POST', body: clone(params) });
+            const version = result.meta?.version ?? result.version;
+            if (!Number.isInteger(version) || version < params.expectedVersion) {
+                throw apiError('财务操作确认缺少有效版本，请保留原请求并核对单据', 'INVALID_RESPONSE');
+            }
+            return clone(result);
+        });
     }
 
     async adminUpdate(body) {

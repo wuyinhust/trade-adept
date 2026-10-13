@@ -555,6 +555,39 @@ describe('App — Company Selection', () => {
         expect(toastCalls.length).toBeGreaterThan(0);
     });
 
+    test('configured company names remain literal text in the company selector', () => {
+        const original = DB.getAccessibleCompanies;
+        const name = '原公司</option><option data-injected="yes" onmouseover="alert(1)">另一主体';
+        DB.getAccessibleCompanies = () => [{ id: 'GR', name }];
+        DB.currentCompanyId = 'GR';
+        try {
+            App.renderCompanySelect();
+            const select = document.getElementById('companySelect');
+            expect(select.querySelector('[data-injected]')).toBeNull();
+            expect(select.options).toHaveLength(1);
+            expect(select.options[0].textContent).toBe(name);
+        } finally {
+            DB.getAccessibleCompanies = original;
+        }
+    });
+
+    test('company switch clears the catalog while the old company is still current', () => {
+        DB.currentCompanyId = 'GR';
+        const originalCatalog = globalThis.ItemCatalog;
+        const originalRouter = App.router;
+        const seen = [];
+        globalThis.ItemCatalog = { clear: () => seen.push(DB.currentCompanyId) };
+        App.router = jest.fn();
+        try {
+            App.selectCompany('WY');
+            expect(seen).toEqual(['GR']);
+            expect(DB.currentCompanyId).toBe('WY');
+        } finally {
+            globalThis.ItemCatalog = originalCatalog;
+            App.router = originalRouter;
+        }
+    });
+
     test('selectCompany does nothing if same company', () => {
         toastCalls.length = 0;
         DB.currentCompanyId = 'GR';
@@ -777,6 +810,16 @@ describe('App — Login / Logout', () => {
         App.showLogin();
         expect(document.getElementById('loginPage').style.display).toBe('flex');
         expect(document.getElementById('app').style.display).toBe('none');
+    });
+
+    test('returning to login removes the previous account business modal', () => {
+        const modal = document.createElement('div');
+        modal.id = 'modalContainer';
+        modal.innerHTML = '<form id="customerForm"><input name="company" value="Private customer"></form>';
+        document.body.append(modal);
+        App.showLogin();
+        expect(modal.children).toHaveLength(0);
+        expect(document.body.textContent).not.toContain('Private customer');
     });
 
     test('initial login applies the saved theme before showing the form', async () => {

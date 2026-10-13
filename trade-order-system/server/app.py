@@ -10,7 +10,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from .errors import APIError
 from .exchange_rate import ExchangeRateService
@@ -145,6 +145,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._origin()
             path = urlsplit(self.path).path
+            if path == "/api/login-config":
+                self._json(200, self.gateway.public_login_config())
+                return
             if path == "/api/version":
                 self._json(200, self.server.release_info)
                 return
@@ -154,6 +157,43 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, self.server.exchange_rates.get())
                     return
                 routes = {"/api/session": "session", "/api/data": "data", "/api/meta": "meta", "/api/snapshots": "snapshots", "/api/backend/status": "backend_status", "/api/erpnext/status": "backend_status", "/api/administrator": "admin_state"}
+                if path == "/api/catalog/state":
+                    try:
+                        pairs = parse_qsl(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=8)
+                    except ValueError:
+                        raise APIError(400, "INVALID_QUERY", "Too many catalog query parameters") from None
+                    payload = dict(pairs)
+                    if len(payload) != len(pairs) or not set(payload).issubset({"companyId", "search", "name", "includeDisabled", "limit", "offset"}):
+                        raise APIError(400, "INVALID_QUERY", "Invalid catalog query parameters")
+                    for key in ("limit", "offset"):
+                        if key in payload:
+                            if not re.fullmatch(r"\d{1,7}", payload[key]):
+                                raise APIError(400, "INVALID_QUERY", "Catalog pagination requires whole numbers")
+                            payload[key] = int(payload[key])
+                    if "includeDisabled" in payload:
+                        if payload["includeDisabled"] not in ("0", "1"):
+                            raise APIError(400, "INVALID_QUERY", "Catalog visibility requires a boolean flag")
+                        payload["includeDisabled"] = payload["includeDisabled"] == "1"
+                    self._json(200, self.gateway.read(actor, "catalog_state", payload))
+                    return
+                if path in ("/api/finance/state", "/api/finance/document"):
+                    try:
+                        pairs = parse_qsl(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=20)
+                    except ValueError:
+                        raise APIError(400, "INVALID_QUERY", "Too many financial query parameters") from None
+                    payload = dict(pairs)
+                    allowed = {"companyId", "resource", "search", "status", "party", "partyType", "limit", "offset",
+                               "name", "purpose", "action", "fromDate", "toDate", "reportDate", "currency"}
+                    if len(payload) != len(pairs) or not set(payload).issubset(allowed):
+                        raise APIError(400, "INVALID_QUERY", "Invalid financial query parameters")
+                    for key in ("limit", "offset"):
+                        if key in payload:
+                            if not re.fullmatch(r"\d{1,7}", payload[key]):
+                                raise APIError(400, "INVALID_QUERY", "Financial pagination requires whole numbers")
+                            payload[key] = int(payload[key])
+                    action = "finance_state" if path.endswith("/state") else "finance_document"
+                    self._json(200, self.gateway.read(actor, action, payload))
+                    return
                 action = routes.get(path)
                 if not action:
                     raise APIError(404, "NOT_FOUND", "API endpoint not found")
@@ -170,8 +210,11 @@ class Handler(BaseHTTPRequestHandler):
             self._origin(required=True)
             path = urlsplit(self.path).path
             body = {} if path == "/api/logout" and self.headers.get("Content-Length", "0") == "0" else self._body()
+            if path in ("/api/forgot-password", "/api/set-password"):
+                self._json(200, self.gateway.public_auth(path.rsplit("/", 1)[1], body))
+                return
             if path == "/api/login":
-                token, session = self.gateway.login(body.get("tenantId"), body.get("username"), body.get("password"))
+                token, session = self.gateway.login(body.get("tenantId"), body.get("email", body.get("username")), body.get("password"))
                 self._json(200, session, self._session_cookie(token, SESSION_TTL))
                 return
             if path == "/api/logout":
@@ -179,7 +222,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True}, self._session_cookie("", 0))
                 return
             actor = self.gateway.actor(self._token())
-            action = {"/api/changes": "changes", "/api/restore": "restore", "/api/orders/convert": "convert_order", "/api/orders/submit": "submit_order", "/api/orders/payment": "receive_payment", "/api/orders/cancel": "cancel_order", "/api/administrator": "admin_update"}.get(path)
+            if path == "/api/finance/report":
+                self._json(200, self.gateway.read(actor, "finance_report", body))
+                return
+            action = {"/api/changes": "changes", "/api/restore": "restore", "/api/orders/convert": "convert_order", "/api/orders/submit": "submit_order", "/api/orders/payment": "receive_payment", "/api/orders/cancel": "cancel_order", "/api/administrator": "admin_update", "/api/finance/operation": "finance_operation", "/api/catalog/operation": "catalog_operation"}.get(path)
             if action is None:
                 raise APIError(404, "NOT_FOUND", "API endpoint not found")
             result = self.gateway.write(actor, action, body)

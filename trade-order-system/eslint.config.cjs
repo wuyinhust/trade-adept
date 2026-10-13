@@ -80,6 +80,7 @@ module.exports = [
                 FileReader: 'readonly',
                 Blob: 'readonly',
                 URL: 'readonly',
+                URLSearchParams: 'readonly',
                 // App globals (assigned to window by modules)
                 App: 'writable',
                 DB: 'writable',

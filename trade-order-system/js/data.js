@@ -35,7 +35,7 @@ import { handleError, toast, validate, escapeHtml } from './utils.js';
 
 /**
  * @typedef {Object} Customer
- * @property {string} id - 客户 ID (时间戳格式)
+ * @property {string} id - 稳定客户 ID（历史 ID 保留，新记录使用安全随机编号）
  * @property {string} company - 公司名称
  * @property {string} country - 国家
  * @property {Contact[]} contacts - 联系人列表
@@ -619,6 +619,11 @@ const DB = {
                     draft.actorId === Auth.currentUser?.id &&
                     draft.data
                 ) {
+                    if (draft.baseline && draft.baseline.meta?.version === draft.baseVersion) {
+                        this._businessAPI.restoreDraftBaseline?.(draft.baseline, draft.baseVersion, {
+                            conflict: draft.conflict === true
+                        });
+                    }
                     this.data = draft.data;
                     this.exchangeRates = draft.exchangeRates;
                     this.rateMetas = draft.rateMetas;
@@ -680,6 +685,7 @@ const DB = {
                         ? this._draftBaseVersion
                         : this._cloudVersion,
                 conflict: this._saveConflict,
+                baseline: this._businessAPI?.exportDraftBaseline?.(),
                 actorId: Auth.currentUser?.id,
                 tenantId: Auth.currentUser?.tenantId
             };
@@ -922,19 +928,26 @@ const DB = {
 
     filterByCompany(items) {
         let result = items;
+        const visibleIds = Auth.getVisibleCompanyIds();
+        const myId = Auth.currentUser?.id;
+        const companyAllowed = item =>
+            visibleIds === null
+                ? this.companies.some(company => String(company.id) === String(item.companyId))
+                : Array.isArray(visibleIds) && visibleIds.some(id => String(id) === String(item.companyId));
         // 非 admin/finance 用户按当前公司过滤；currentCompanyId 已在 init 时校正为可见公司
         if (this.currentCompanyId && !Auth.canSeeAll()) {
-            result = result.filter(item => item.companyId === this.currentCompanyId || item.companyId === undefined);
-        }
-        const visibleIds = Auth.getVisibleCompanyIds();
-        if (visibleIds !== null) {
-            const myId = Auth.currentUser ? Auth.currentUser.id : null;
             result = result.filter(
                 item =>
+                    String(item.companyId) === String(this.currentCompanyId) ||
                     item.companyId === undefined ||
-                    visibleIds.includes(item.companyId) ||
-                    (item.createdBy && myId && item.createdBy === myId) // 自己创建的数据始终可见
+                    (myId != null &&
+                        item.createdBy != null &&
+                        String(item.createdBy) === String(myId) &&
+                        companyAllowed(item))
             );
+        }
+        if (visibleIds !== null) {
+            result = result.filter(item => item.companyId === undefined || companyAllowed(item));
         }
         return result;
     },
@@ -1080,17 +1093,27 @@ const DB = {
 
     /** 为新/更新的订单计算并设置利润相关字段（修改传入对象） */
     _applyProfitFields(order) {
+        const frozen =
+            order.stage === 'legacy' ||
+            order.stage === 'native' ||
+            order.historicalReference === true ||
+            (Array.isArray(order.nativeDocuments) && order.nativeDocuments.length > 0) ||
+            (Number.isFinite(order.exchangeRateUsed) && order.exchangeRateUsed > 0);
+        if (frozen || (typeof Auth.canSeeFinancials === 'function' && !Auth.canSeeFinancials())) return order;
         const isHK = !this.isDomesticCompany(order.companyId);
         const rate = this.getExchangeRate(order.companyId);
-        const profit = this.calcOrderProfit(
-            order.orderAmountUSD,
-            order.factoryCostRMB,
-            order.freightCostUSD,
-            order.insuranceCostUSD,
-            order.otherCostUSD,
-            order.companyId,
-            order.formulaVersion
-        );
+        const profit =
+            typeof Exchange.calcOrderProfitForOrder === 'function'
+                ? Exchange.calcOrderProfitForOrder(order)
+                : this.calcOrderProfit(
+                      order.orderAmountUSD,
+                      order.factoryCostRMB,
+                      order.freightCostUSD,
+                      order.insuranceCostUSD,
+                      order.otherCostUSD,
+                      order.companyId,
+                      order.formulaVersion
+                  );
         // HK 公司全部美金交易，orderAmountRMB = orderAmountUSD（不乘汇率）
         const totalRevenueRMB = isHK ? order.orderAmountUSD : order.orderAmountUSD * rate;
         order.orderAmountRMB = Math.round(totalRevenueRMB * 100) / 100;
@@ -1237,6 +1260,41 @@ const DB = {
         return pattern + String(nextSeq).padStart(3, '0');
     },
 
+    /** 新记录身份与业务编号分开；已删除记录也占用技术 ID。 */
+    _newRecordId(prefix) {
+        const random = globalThis.crypto;
+        if (typeof random?.randomUUID !== 'function' && typeof random?.getRandomValues !== 'function') {
+            throw new Error('当前浏览器无法安全生成记录编号，请使用受支持的浏览器后重试');
+        }
+        const occupied = new Set(
+            Object.values(this.data)
+                .filter(Array.isArray)
+                .flatMap(rows => rows.map(row => String(row.id).toLowerCase()))
+        );
+        for (let attempt = 0; attempt < 8; attempt++) {
+            let uuid;
+            if (typeof random.randomUUID === 'function') {
+                uuid = random.randomUUID();
+            } else {
+                const bytes = new Uint8Array(16);
+                random.getRandomValues(bytes);
+                bytes[6] = (bytes[6] & 0x0f) | 0x40;
+                bytes[8] = (bytes[8] & 0x3f) | 0x80;
+                const hex = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+                uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+            }
+            if (
+                typeof uuid !== 'string' ||
+                !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)
+            ) {
+                throw new Error('安全随机源返回无效记录编号，请重试');
+            }
+            const id = prefix + uuid.toLowerCase();
+            if (!occupied.has(id.toLowerCase())) return id;
+        }
+        throw new Error('无法生成未被占用的记录编号，请稍后重试');
+    },
+
     /**
      * 创建新订单（含输入验证 + 自动生成 ID + 利润计算）
      * @param {Partial<Order>} order - 订单数据
@@ -1267,13 +1325,13 @@ const DB = {
                     .trim()
                     .toUpperCase() === order.companyOperationNo.toUpperCase()
         );
-        if (duplicate) {
+        if (duplicate && order.companyOperationNoAuto !== true) {
             toast('公司操作单号已存在（含已删除订单），请更换单号', 'warning');
             return null;
         }
         // Separate immutable identity from editable business numbering. Existing
         // records keep their historical IDs; the server enforces uniqueness too.
-        order.id = 'ORD-' + crypto.randomUUID();
+        order.id = this._newRecordId('ORD-');
         order.orderAmountUSD = Number(order.orderAmountUSD);
         order.createdAt = new Date().toISOString();
         this._applyProfitFields(order);
@@ -1296,9 +1354,12 @@ const DB = {
             if (!canSeeFinancials) {
                 for (const key of [
                     'factoryCostRMB',
+                    'factoryCostUSD',
                     'freightCostUSD',
+                    'freightCostRMB',
                     'insuranceCostUSD',
                     'otherCostUSD',
+                    'otherCostRMB',
                     'factoryPaidRMB',
                     'factoryPaidStatus',
                     'orderAmountRMB',
@@ -1337,11 +1398,18 @@ const DB = {
                 'orderAmountUSD',
                 'exchangeRate',
                 'factoryCostRMB',
+                'factoryCostUSD',
                 'freightCostUSD',
+                'freightCostRMB',
                 'insuranceCostUSD',
-                'otherCostUSD'
+                'otherCostUSD',
+                'otherCostRMB'
             ];
+            const canonicalFeeIntroduced = ['factoryCostUSD', 'freightCostRMB', 'otherCostRMB'].some(
+                key => Object.hasOwn(patch, key) && !Object.hasOwn(current, key)
+            );
             const financeChanged =
+                canonicalFeeIntroduced ||
                 numericFinanceInputs.some(
                     key => Object.hasOwn(patch, key) && Number(patch[key] ?? 0) !== Number(current[key] ?? 0)
                 ) ||
@@ -1407,12 +1475,12 @@ const DB = {
         result = Auth.filterCustomers(result, this.data.orders);
         if (filter.search) {
             const q = filter.search.toLowerCase();
-            result = result.filter(
-                c =>
-                    c.company.toLowerCase().includes(q) ||
-                    c.contact.toLowerCase().includes(q) ||
-                    c.country.toLowerCase().includes(q) ||
-                    c.position.toLowerCase().includes(q)
+            result = result.filter(c =>
+                [c.company, c.contact, c.country, c.position].some(value =>
+                    String(value ?? '')
+                        .toLowerCase()
+                        .includes(q)
+                )
             );
         }
         return result;
@@ -1450,10 +1518,7 @@ const DB = {
             toast(`请填写必填字段：${missing}`, 'warning');
             return null;
         }
-        customer.id =
-            'C' +
-            Date.now().toString(36).toUpperCase().slice(-6) +
-            Math.random().toString(36).toUpperCase().slice(2, 4);
+        customer.id = this._newRecordId('C-');
         customer.companyId = customer.companyId || this._getEffectiveCompanyId();
         customer.createdBy = customer.createdBy || (Auth.currentUser ? Auth.currentUser.id : null);
         customer.salespersonId = customer.salespersonId || (Auth.currentUser ? Auth.currentUser.id : null);
@@ -1633,12 +1698,12 @@ const DB = {
         }
         if (search) {
             const kw = search.toLowerCase();
-            result = result.filter(
-                f =>
-                    f.name.toLowerCase().includes(kw) ||
-                    f.contact.toLowerCase().includes(kw) ||
-                    f.products.toLowerCase().includes(kw) ||
-                    f.id.toLowerCase().includes(kw)
+            result = result.filter(f =>
+                [f.name, f.contact, f.products, f.id].some(value =>
+                    String(value ?? '')
+                        .toLowerCase()
+                        .includes(kw)
+                )
             );
         }
         return result;
@@ -1655,7 +1720,16 @@ const DB = {
     },
     getFactoryOrders(factoryId) {
         const fid = String(factoryId);
-        return this.data.orders.filter(o => !o.deleted && o.factoryIds && o.factoryIds.some(id => String(id) === fid));
+        return Auth.filterOrders(
+            this.data.orders.filter(
+                order =>
+                    !order.deleted &&
+                    ((order.factoryId != null && String(order.factoryId) === fid) ||
+                        (Array.isArray(order.factoryIds) && order.factoryIds.some(id => String(id) === fid)) ||
+                        (Array.isArray(order.factories) &&
+                            order.factories.some(line => line?.factoryId != null && String(line.factoryId) === fid)))
+            )
+        );
     },
 
     /**
@@ -1670,15 +1744,8 @@ const DB = {
             toast(`请填写必填字段：${missing}`, 'warning');
             return null;
         }
-        const prefix = this.currentCompanyId ? this.currentCompanyId.replace('CO-', '') : 'FC';
-        const id =
-            'F-' +
-            prefix +
-            '-' +
-            Date.now().toString(36).toUpperCase().slice(-6) +
-            Math.random().toString(36).toUpperCase().slice(2, 4);
         const factory = {
-            id: id,
+            id: this._newRecordId('F-'),
             companyId: this._getEffectiveCompanyId(),
             createdBy: Auth.currentUser ? Auth.currentUser.id : null,
             name: data.name,
@@ -1797,9 +1864,12 @@ const DB = {
             totalPaidUSD,
             unpaidAmount,
             avgProfitRate,
-            customerCount: Auth.filterCustomers(
-                this.filterByCompany(this.data.customers.filter(c => !c.deleted)),
-                this.data.orders
+            customerCount: this.getCustomers().filter(
+                customer =>
+                    this.currentCompanyId == null || String(customer.companyId) === String(this.currentCompanyId)
+            ).length,
+            factoryCount: this.getFactories().filter(
+                factory => this.currentCompanyId == null || String(factory.companyId) === String(this.currentCompanyId)
             ).length,
             monthlyStats,
             statusStats,
