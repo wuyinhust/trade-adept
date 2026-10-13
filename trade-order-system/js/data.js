@@ -144,9 +144,43 @@ const DB = {
         'CO-LK': { source: '手动设置', updateTime: null, isAuto: false }
     },
 
+    // BusinessAPI 的实时汇率只属于当前运行时，不是 ERPNext Currency Exchange 配置。
+    // 独立保存可避免“读取实时价”被误判为用户修改业务数据。
+    liveExchangeRates: {},
+    liveRateMetas: {},
+
+    /** BusinessAPI 模式下哪些法人主体需要 USD → CNY 实时换算。 */
+    usesLiveExchangeRate(companyId) {
+        if (!this._businessAPI) return false;
+        const company = this.companies?.find(item => item.id === companyId);
+        if (company?.settlementCurrency) return company.settlementCurrency === 'CNY';
+        // 旧租户数据没有 settlementCurrency 时保持原 Grandware 兼容判断。
+        return Exchange.isDomestic(companyId);
+    },
+
+    /** 将运行时实时价覆盖到兼容对象，供仍直接读取 exchangeRates 的旧模块使用。 */
+    _overlayLiveExchangeData() {
+        if (!this._businessAPI) return;
+        for (const company of this.companies || []) {
+            if (!this.usesLiveExchangeRate(company.id)) continue;
+            const live = Number(this.liveExchangeRates[company.id]);
+            this.exchangeRates[company.id] = Number.isFinite(live) && live > 0 ? live : Number.NaN;
+        }
+        for (const [cid, meta] of Object.entries(this.liveRateMetas)) {
+            this.rateMetas[cid] = { ...meta };
+        }
+    },
+
     // 获取指定公司的汇率 (默认当前公司)
     getExchangeRate(companyId) {
         const cid = companyId || this.currentCompanyId;
+        if (this.usesLiveExchangeRate(cid)) {
+            const live = Number(this.liveExchangeRates[cid]);
+            if (Number.isFinite(live) && live > 0) return live;
+            // BusinessAPI 的 CNY 业务不得悄悄回退到 ERPNext 中的历史配置。
+            // NaN 会让调用方明确展示“实时汇率不可用”，并阻止静态价参与新计算。
+            return Number.NaN;
+        }
         const val = this.exchangeRates[cid] !== undefined ? this.exchangeRates[cid] : CONSTANTS.DEFAULT_EXCHANGE_RATE;
         return parseFloat(val) || CONSTANTS.DEFAULT_EXCHANGE_RATE;
     },
@@ -154,6 +188,7 @@ const DB = {
     // 获取指定公司的汇率元数据
     getRateMeta(companyId) {
         const cid = companyId || this.currentCompanyId;
+        if (this.usesLiveExchangeRate(cid) && this.liveRateMetas[cid]) return this.liveRateMetas[cid];
         return this.rateMetas[cid] || { source: '手动设置', updateTime: null, isAuto: false };
     },
 
@@ -448,6 +483,7 @@ const DB = {
                         this.data = result.data;
                         this.exchangeRates = result.exchangeRates || {};
                         this.rateMetas = result.rateMetas || {};
+                        this._overlayLiveExchangeData();
                         this._cloudVersion = result.meta.version;
                         this._cloudUpdatedAt = result.meta.updatedAt;
                         this._businessAPI.bindWorkingData(this.data, this.exchangeRates, this.rateMetas);
@@ -561,6 +597,9 @@ const DB = {
     },
 
     async _initFromBusinessAPI() {
+        // 登录切换租户时不得沿用上一工作区的运行时行情。
+        this.liveExchangeRates = {};
+        this.liveRateMetas = {};
         const result = await Cloud.loadData();
         if (!result?.data) throw new Error('数据库未返回有效业务数据');
         this.data = result.data;
@@ -592,8 +631,15 @@ const DB = {
                 toast('草稿格式无效，已保留原备份', 'warning');
             }
         }
+
+        // 页面开始业务计算前先取得服务端统一缓存的最新发布价。
+        // 失败时 CNY 新计算保持不可用；服务端也会阻止缺少实时价的财务保存。
+        const rateResult = await Exchange.fetchRate({ updateDisplay: false });
+        if (!rateResult?.success) console.warn('[汇率] 实时汇率不可用，CNY 新计算已停用:', rateResult?.error);
+        this._overlayLiveExchangeData();
         this._businessAPI.bindWorkingData(this.data, this.exchangeRates, this.rateMetas);
         this._startPolling();
+        Exchange.startAutoRefresh({ skipInitial: true });
         return true;
     },
 
@@ -840,6 +886,7 @@ const DB = {
                     this.rateMetas[cid] = { ...this.rateMetas[cid], ...result.rateMeta };
                 }
             }
+            this._overlayLiveExchangeData();
             if (result.meta) {
                 this._cloudVersion = result.meta.version || 0;
                 this._cloudUpdatedAt = result.meta.updatedAt || null;
@@ -911,7 +958,8 @@ const DB = {
     },
 
     async fetchExchangeRate() {
-        return Exchange.fetchRate();
+        // BusinessAPI 已在启动时加载运行时行情；发布时间未到时直接返回内存缓存。
+        return this._businessAPI ? Exchange.autoFetchIfStale() : Exchange.fetchRate();
     },
 
     async tryAutoFetchRate() {

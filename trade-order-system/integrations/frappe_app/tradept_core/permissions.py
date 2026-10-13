@@ -19,6 +19,35 @@ def delegated_actor():
 
 
 @contextmanager
+def delegated_email_configuration(cfg, actor, rules):
+    """Allow native mailbox controller checks for an authorized tenant manager."""
+    user = frappe.session.user
+    if user in ("Guest", "Administrator") or actor.get("nativeUser") != user or actor.get("tenantId") != cfg.get("id") or not is_workbench_user(user):
+        raise APIError(403, "EMAIL_DELEGATION_DENIED", "Mailbox configuration requires the current configured workspace account")
+    if not rules.permitted(cfg, actor, "accounts.configure") or rules._policy(cfg, actor).get("scope") != "tenant":
+        raise APIError(403, "EMAIL_DELEGATION_DENIED", "Mailbox configuration requires tenant management permission")
+    token = _native_grant.set({"user": user, "action": "administrator:email"})
+    cache_defaults = {"cache": {}, "role_permissions": {}, "new_doc_templates": {}, "user_perms": None}
+    original_caches = {key: getattr(frappe.local, key, _missing) for key in cache_defaults}
+    try:
+        # Retain the authenticated session object, SID, CSRF state and form.
+        frappe.session.user = "Administrator"
+        for key, temporary in cache_defaults.items():
+            setattr(frappe.local, key, temporary)
+        yield
+    finally:
+        try:
+            frappe.session.user = user
+            for key, original in original_caches.items():
+                if original is _missing:
+                    delattr(frappe.local, key)
+                else:
+                    setattr(frappe.local, key, original)
+        finally:
+            _native_grant.reset(token)
+
+
+@contextmanager
 def delegated_operation(action, cfg, actor, rules, value, payload, doc):
     """Delegate one validated native workflow, retaining the real actor.
 

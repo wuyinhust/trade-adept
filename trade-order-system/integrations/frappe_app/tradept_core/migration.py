@@ -66,6 +66,15 @@ def _company(value):
     return company
 
 
+def _validate_workspace_shape(cfg):
+    companies = cfg.get("companies")
+    onboarding_status = (cfg.get("onboarding") or {}).get("status")
+    if not cfg.get("id") or not isinstance(companies, list):
+        raise ValueError("Workspace configuration requires an ID and a legal entity array")
+    if not companies and onboarding_status not in ("required", "in_progress"):
+        raise ValueError("A completed workspace requires at least one legal entity")
+
+
 @managed
 def configure_workspace(configuration, credentials=None):
     _admin()
@@ -75,8 +84,7 @@ def configure_workspace(configuration, credentials=None):
         raise ValueError("Each Frappe site must contain exactly one Tradept tenant")
     cfg = copy.deepcopy(tenants[0])
     users = cfg.pop("users", [])
-    if not cfg.get("id") or not cfg.get("companies"):
-        raise ValueError("Workspace configuration requires an ID and legal entities")
+    _validate_workspace_shape(cfg)
     known = [company["id"] for company in cfg["companies"]]
     if len(set(known)) != len(known):
         raise ValueError("Duplicate legal entity ID")

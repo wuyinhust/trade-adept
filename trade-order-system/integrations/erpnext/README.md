@@ -8,7 +8,7 @@ Grandware 在 `grandware.test`，虚构 Example 在既有 `frontend`，二者拥
 
 - Tradept 网关：`http://127.0.0.1:3087/`，默认登录使用已配置账号。可选原生注册不自动授予租户或业务权限，需管理员另行配置。
 - Example Native Desk：`http://127.0.0.1:3088/`；Grandware Native Desk：`http://grandware.localhost:3088/`。这是同一业务库的原生管理入口，管理员凭据只在本机私有配置中。
-- 网关路由配置：私有 runtime 中 `frappe-sites.json`，格式见 [config.example.json](config.example.json)，文件 `0600`、目录 `0700`。
+- 网关路由配置：私有 runtime 中 `frappe-sites.json`，格式见 [config.example.json](config.example.json)，文件 `0600`、目录 `0700`。每个租户用 `openssl rand -hex 32` 生成独立的 `gatewayHmacKey`，替换示例占位文本，并把同一值写入对应站点：`bench --site <site> set-config tradept_gateway_hmac_key '<64位十六进制密钥>'`。两端不一致时，需要实时汇率的财务写入将被拒绝。
 - Nginx 固定 Host/site 组合仅允许 loopback 的 Example 与 Grandware；未知 Host、未知站点、Grandware 专属 Host 的冲突站点头均返回404，资产路径也受同一守卫保护。两站原生 SID 已实际双向验证跨站403。浏览器不能自行指定 ERP URL、DocType 或集成 token。
 
 `FRAPPE_SITE_NAME_HEADER: "$$tradept_site_name"` 是 Compose 对字面 `$` 的转义。配套 [tradept-sites.map.conf](tradept-sites.map.conf) 与 [tradept-frappe-nginx.conf.template](tradept-frappe-nginx.conf.template) 必须与 Compose 一起复制。模板保留官方 Nginx locations，新增站点守卫并保留原 Host 端口。两个租户不能指向同一 Frappe site。

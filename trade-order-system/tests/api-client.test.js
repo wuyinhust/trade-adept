@@ -93,6 +93,8 @@ describe('BusinessAPIClient acknowledged baseline and atomic API contract', () =
             expectedVersion: 4,
             changes: [{ collection: 'orders', id: 'O2', value: { remarks: 'B edits order two' } }]
         });
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(fetcher.mock.calls[0][0]).toBe('/api/changes');
         expect(client.lastMeta.version).toBe(5);
         expect(client.hasChanges()).toBe(false);
     });
@@ -194,12 +196,22 @@ describe('BusinessAPIClient acknowledged baseline and atomic API contract', () =
             profitRate: 80
         });
         working.data.orders[0].factories = [{ factoryId: 'F1', totalAmount: 120, prepayment: 20 }];
-        fetcher.mockResolvedValue(response({ meta: meta(5) }));
+        const authoritative = fixture();
+        Object.assign(authoritative.data.orders[0], {
+            factoryCostRMB: 120,
+            factories: [{ factoryId: 'F1', totalAmount: 120, prepayment: 20 }],
+            orderAmountRMB: 720,
+            profitRMB: 600,
+            profitRate: 83.33
+        });
+        authoritative.meta = meta(5);
+        fetcher.mockResolvedValueOnce(response({ meta: meta(5) })).mockResolvedValueOnce(response(authoritative));
         await client.saveData(working.data);
         expect(posted().changes[0].value).toEqual({
             factoryCostRMB: 120,
             factories: [{ factoryId: 'F1', totalAmount: 120, prepayment: 20 }]
         });
+        expect(working.data.orders[0]).toMatchObject({ orderAmountRMB: 720, profitRMB: 600, profitRate: 83.33 });
     });
 
     test('readonly finance visibility does not imply permission to submit financial edits', async () => {
@@ -395,6 +407,232 @@ describe('BusinessAPIClient acknowledged baseline and atomic API contract', () =
         fetcher.mockResolvedValue(response({ snapshots: [{ id: 'SNAP-1', version: 2 }] }));
         expect(await client.listSnapshots()).toEqual([{ id: 'SNAP-1', version: 2 }]);
         expect(client.lastMeta.version).toBe(4);
+    });
+
+    test('administrator reads and writes use their dedicated route and advance the shared CAS baseline', async () => {
+        fetcher.mockResolvedValueOnce(response({ enterprise: { name: 'Before' }, meta: meta(4) }));
+        expect((await client.adminState()).enterprise.name).toBe('Before');
+        fetcher.mockResolvedValueOnce(response({ changed: { name: 'After' }, meta: meta(5) }));
+        await client.adminUpdate({ expectedVersion: 4, resource: 'enterprise', value: { name: 'After' } });
+        working.data.orders[0].remarks = 'business edit after configuration';
+        fetcher.mockResolvedValueOnce(response({ meta: meta(6) }));
+        await client.saveData(working.data);
+
+        expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+            '/api/administrator',
+            '/api/administrator',
+            '/api/changes'
+        ]);
+        expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({
+            expectedVersion: 4,
+            resource: 'enterprise',
+            value: { name: 'After' }
+        });
+        expect(JSON.parse(fetcher.mock.calls[2][1].body).expectedVersion).toBe(5);
+        expect(client.lastMeta.version).toBe(6);
+    });
+
+    test('administrator update is blocked while a business draft is dirty', async () => {
+        working.data.orders[0].remarks = 'unsaved draft';
+        await expect(
+            client.adminUpdate({ expectedVersion: 4, resource: 'enterprise', value: { name: 'After' } })
+        ).rejects.toMatchObject({ code: 'LOCAL_CHANGES' });
+        expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    test('administrator update rejects a stale page version before network mutation', async () => {
+        await expect(
+            client.adminUpdate({ expectedVersion: 3, resource: 'enterprise', value: { name: 'After' } })
+        ).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+        expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    test('live exchange-rate read uses the same-origin gateway without altering the data baseline', async () => {
+        const rate = {
+            rawRate: 7.28,
+            adjustedRate: 7.26,
+            publishedAt: '2026-10-12T00:02:31Z',
+            nextUpdateAt: '2026-10-13T00:02:31Z',
+            cached: true
+        };
+        fetcher.mockResolvedValue(response(rate));
+        expect(await client.getExchangeRate()).toEqual(rate);
+        expect(fetcher.mock.calls[0][0]).toBe('/api/exchange-rate');
+        expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin' });
+        expect(client.lastMeta.version).toBe(4);
+    });
+
+    test('live-rate mode never persists an in-memory market quote with an unrelated business edit', async () => {
+        const liveFetcher = jest.fn().mockResolvedValueOnce(response(fixture()));
+        const liveClient = new BusinessAPIClient({ fetcher: liveFetcher, persistExchangeRates: false });
+        const liveWorking = await liveClient.loadData();
+        liveFetcher.mockClear();
+        liveWorking.exchangeRates['CO-DEMO'] = 7.26;
+        liveWorking.rateMetas['CO-DEMO'] = { source: 'ExchangeRate-API', isAuto: true };
+        liveWorking.data.orders[0].remarks = 'uses current quote';
+        liveFetcher.mockResolvedValue(response({ ok: true, meta: meta(5) }));
+        await liveClient.saveData(liveWorking.data, liveWorking.exchangeRates, liveWorking.rateMetas);
+        const body = JSON.parse(liveFetcher.mock.calls[0][1].body);
+        expect(body.changes).toEqual([{ collection: 'orders', id: 'O1', value: { remarks: 'uses current quote' } }]);
+        expect(body).not.toHaveProperty('exchangeRates');
+        expect(body).not.toHaveProperty('rateMetas');
+    });
+
+    test('financial save reads back and displays server-derived values from the accepted rate publication', async () => {
+        client.setSessionContext({ user: { permissions: ['finance.write'] } });
+        Object.assign(working.data.orders[0], {
+            companyId: 'CO-DEMO',
+            orderAmountUSD: 100,
+            orderAmountRMB: 720,
+            profitRMB: 120
+        });
+        const authoritative = fixture();
+        Object.assign(authoritative.data.orders[0], {
+            companyId: 'CO-DEMO',
+            orderAmountUSD: 100,
+            orderAmountRMB: 726,
+            profitRMB: 126,
+            profitUSD: 17.36,
+            profitRate: 17.36,
+            margin: 0.1736,
+            profitPolicy: 'live-publication',
+            settlementCurrency: 'CNY',
+            updatedAt: '2026-10-12T00:05:00Z',
+            updatedBy: 'demo-user',
+            version: 5
+        });
+        authoritative.meta = meta(5);
+        fetcher
+            .mockResolvedValueOnce(response({ ok: true, meta: meta(5) }))
+            .mockResolvedValueOnce(response(authoritative));
+
+        await client.saveData(working.data, working.exchangeRates, working.rateMetas);
+
+        expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/changes', '/api/data']);
+        expect(working.data.orders[0]).toMatchObject({
+            orderAmountUSD: 100,
+            orderAmountRMB: 726,
+            profitRMB: 126,
+            profitUSD: 17.36,
+            profitPolicy: 'live-publication',
+            settlementCurrency: 'CNY',
+            version: 5
+        });
+        expect(client.lastMeta.version).toBe(5);
+        expect(client.hasChanges()).toBe(false);
+    });
+
+    test('financial reconciliation preserves user input edits made during both write and follow-up read', async () => {
+        client.setSessionContext({ user: { permissions: ['finance.write'] } });
+        Object.assign(working.data.orders[0], {
+            companyId: 'CO-DEMO',
+            orderAmountUSD: 100,
+            orderAmountRMB: 720
+        });
+        const postEntered = deferred();
+        const postPending = deferred();
+        const readEntered = deferred();
+        const readPending = deferred();
+        fetcher
+            .mockImplementationOnce(() => {
+                postEntered.resolve();
+                return postPending.promise;
+            })
+            .mockImplementationOnce(() => {
+                readEntered.resolve();
+                return readPending.promise;
+            });
+
+        const saving = client.saveData(working.data, working.exchangeRates, working.rateMetas);
+        await postEntered.promise;
+        working.data.orders[0].orderAmountUSD = 200;
+        working.data.orders[0].remarks = 'edited during write';
+        postPending.resolve(response({ ok: true, meta: meta(5) }));
+        await readEntered.promise;
+        working.data.orders[0].freightCostUSD = 15;
+        const authoritative = fixture();
+        Object.assign(authoritative.data.orders[0], {
+            companyId: 'CO-DEMO',
+            orderAmountUSD: 100,
+            orderAmountRMB: 726,
+            profitRMB: 126,
+            settlementCurrency: 'CNY',
+            updatedAt: '2026-10-12T00:05:00Z'
+        });
+        authoritative.meta = meta(5);
+        readPending.resolve(response(authoritative));
+        await saving;
+
+        expect(working.data.orders[0]).toMatchObject({
+            orderAmountUSD: 200,
+            remarks: 'edited during write',
+            freightCostUSD: 15,
+            orderAmountRMB: 726,
+            profitRMB: 126
+        });
+        expect(client._diff(working.data, working.exchangeRates, working.rateMetas).changes).toEqual([
+            {
+                collection: 'orders',
+                id: 'O1',
+                value: { remarks: 'edited during write', orderAmountUSD: 200, freightCostUSD: 15 }
+            }
+        ]);
+    });
+
+    test('failed readback reports an applied conflict and prevents duplicate financial submission', async () => {
+        client.setSessionContext({ user: { permissions: ['finance.write'] } });
+        Object.assign(working.data.orders[0], {
+            companyId: 'CO-DEMO',
+            orderAmountUSD: 100,
+            orderAmountRMB: 720
+        });
+        fetcher
+            .mockResolvedValueOnce(response({ ok: true, meta: meta(5) }))
+            .mockRejectedValueOnce(new Error('readback unavailable'));
+
+        await expect(client.saveData(working.data, working.exchangeRates, working.rateMetas)).rejects.toMatchObject({
+            code: 'CONFLICT',
+            status: 409,
+            latestVersion: 5,
+            operationApplied: true,
+            refreshRequired: true
+        });
+        expect(client.lastMeta.version).toBe(5);
+        expect(client.hasChanges()).toBe(false);
+        await expect(client.saveData(working.data)).rejects.toMatchObject({
+            code: 'CONFLICT',
+            operationApplied: true
+        });
+        expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/changes', '/api/data']);
+    });
+
+    test('a newer readback version is an applied conflict instead of a baseline that can overwrite another user', async () => {
+        client.setSessionContext({ user: { permissions: ['finance.write'] } });
+        Object.assign(working.data.orders[0], {
+            companyId: 'CO-DEMO',
+            orderAmountUSD: 100,
+            orderAmountRMB: 720
+        });
+        const newer = fixture();
+        Object.assign(newer.data.orders[0], {
+            companyId: 'CO-DEMO',
+            orderAmountUSD: 100,
+            orderAmountRMB: 726,
+            remarks: 'another user changed this'
+        });
+        newer.meta = meta(6);
+        fetcher.mockResolvedValueOnce(response({ ok: true, meta: meta(5) })).mockResolvedValueOnce(response(newer));
+
+        await expect(client.saveData(working.data)).rejects.toMatchObject({
+            code: 'CONFLICT',
+            operationApplied: true,
+            refreshRequired: true,
+            latestVersion: 6
+        });
+        expect(client.lastMeta.version).toBe(5);
+        expect(working.data.orders[0]).toMatchObject({ remarks: 'base one', orderAmountRMB: 720 });
+        await expect(client.saveData(working.data)).rejects.toMatchObject({ code: 'CONFLICT', latestVersion: 6 });
+        expect(fetcher).toHaveBeenCalledTimes(2);
     });
 });
 

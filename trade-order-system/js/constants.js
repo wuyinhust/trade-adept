@@ -18,6 +18,11 @@ export const CONSTANTS = {
     SAVE_DEBOUNCE_MS: 500,
     LOAD_RETRY_DELAY_MS: 1000,
     EXCHANGE_API_TIMEOUT_MS: 8000,
+    // 同源汇率服务会返回供应商的下次发布时间；前端按该时间单次唤醒。
+    // 最小延迟避免上游失败或时钟偏差造成紧密重试。
+    EXCHANGE_REFRESH_MIN_DELAY_MS: 60 * 1000,
+    EXCHANGE_FAILURE_RETRY_MS: 5 * 60 * 1000,
+    MAX_TIMER_DELAY_MS: 2_147_483_647,
     ONE_HOUR_MS: 60 * 60 * 1000,
 
     // ===== 数据限制 =====

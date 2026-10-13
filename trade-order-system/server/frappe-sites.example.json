@@ -1,6 +1,14 @@
 {
-  "tenants": {
-    "grandware": {"origin": "http://127.0.0.1:3088", "site": "grandware.test"},
-    "example-company": {"origin": "http://127.0.0.1:3088", "site": "frontend"}
-  }
+    "tenants": {
+        "grandware": {
+            "origin": "http://127.0.0.1:3088",
+            "site": "grandware.test",
+            "gatewayHmacKey": "REPLACE_WITH_64_HEX_FROM_OPENSSL_RAND_HEX_32"
+        },
+        "example-company": {
+            "origin": "http://127.0.0.1:3088",
+            "site": "frontend",
+            "gatewayHmacKey": "REPLACE_WITH_A_DIFFERENT_64_HEX_SECRET"
+        }
+    }
 }

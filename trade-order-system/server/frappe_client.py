@@ -19,13 +19,59 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .errors import APIError
+from .exchange_rate import ExchangeRateService
 
 SESSION_TTL = 8 * 3600
+GATEWAY_ASSERTION_TTL = 180
 MAX_RESPONSE = 10 * 1024 * 1024
 DISPATCH = "/api/method/tradept_core.api.dispatch"
 TENANT_ID = re.compile(r"[a-zA-Z0-9_-]{1,100}")
 SITE_NAME = re.compile(r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,198}[a-zA-Z0-9])?")
 NATIVE_SID = re.compile(r"[a-zA-Z0-9_-]{16,200}")
+ORDER_RATE_FIELDS = {
+    "companyId", "orderAmountUSD", "factoryCostRMB", "freightCostUSD",
+    "insuranceCostUSD", "otherCostUSD",
+}
+NESTED_ORDER_RATE_FIELDS = {
+    "totalAmount", "prepayment", "paidAmount", "cost", "costUSD", "costRMB",
+    "paidCostRMB", "paidCostUSD", "costPaidUSD", "purchaseRate",
+    "paymentStatus", "costPaymentStatus",
+}
+GATEWAY_ASSERTION = "gatewayAssertion"
+
+
+def canonical_json(value):
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+
+def gateway_hmac_key(value):
+    """Decode one tenant key while rejecting examples and low-entropy placeholders."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        raise ValueError("Each tenant requires gatewayHmacKey from 32 random bytes (64 hex characters)")
+    key = bytes.fromhex(value)
+    if len(set(key)) < 16:
+        raise ValueError("gatewayHmacKey must be independently generated random data, not a default or placeholder")
+    return key
+
+
+def needs_live_exchange_rate(action, payload):
+    """Only pricing writes need a provider publication injected."""
+    if action == "convert_order":
+        return True
+    if action != "changes" or not isinstance(payload, dict) or payload.get("importPurpose") == "historical-reference":
+        return False
+    for change in payload.get("changes", []):
+        if not isinstance(change, dict) or change.get("collection") != "orders" or change.get("deleted") is True:
+            continue
+        value = change.get("value")
+        if not isinstance(value, dict):
+            continue
+        if ORDER_RATE_FIELDS.intersection(value):
+            return True
+        rows = value.get("factories")
+        if isinstance(rows, list) and any(isinstance(row, dict) and NESTED_ORDER_RATE_FIELDS.intersection(row) for row in rows):
+            return True
+    return False
 
 
 def secure_runtime(path):
@@ -92,7 +138,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 class FrappeGateway:
     """No account database, business cache, queue, or SQLite fallback."""
-    def __init__(self, runtime, configuration=None):
+    def __init__(self, runtime, configuration=None, exchange_rates=None):
         self.runtime = secure_runtime(runtime)
         path = Path(configuration) if configuration else self.runtime / "frappe-sites.json"
         if path.is_symlink() or (os.name != "nt" and path.stat().st_mode & 0o077):
@@ -100,20 +146,30 @@ class FrappeGateway:
         if path.stat().st_size > 1024 * 1024:
             raise ValueError("Site configuration is too large")
         config = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict) or set(config) != {"tenants"} or not isinstance(config["tenants"], dict):
+            raise ValueError("Routing configuration accepts only a tenants object")
         self.sites = {}
         native_sites = set()
+        gateway_keys = set()
         for tenant, site in config.get("tenants", {}).items():
-            if not TENANT_ID.fullmatch(tenant) or not isinstance(site, dict) or not SITE_NAME.fullmatch(site.get("site", "")):
+            if (not TENANT_ID.fullmatch(tenant) or not isinstance(site, dict)
+                    or set(site) != {"origin", "site", "gatewayHmacKey"}
+                    or not SITE_NAME.fullmatch(site.get("site", ""))):
                 raise ValueError("Each tenant needs a valid fixed Frappe site")
             origin = normalize_backend_origin(site.get("origin"))
             identity = (origin, site["site"])
             if identity in native_sites:
                 raise ValueError("Tenants must not share a Frappe site/database")
             native_sites.add(identity)
-            self.sites[tenant] = {"origin": origin, "site": site["site"]}
+            gateway_key = gateway_hmac_key(site.get("gatewayHmacKey"))
+            if gateway_key in gateway_keys:
+                raise ValueError("Each tenant requires an independent gatewayHmacKey")
+            gateway_keys.add(gateway_key)
+            self.sites[tenant] = {"origin": origin, "site": site["site"], "gatewayHmacKey": gateway_key}
         if not self.sites:
             raise ValueError("At least one Frappe site is required")
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
+        self.exchange_rates = exchange_rates if exchange_rates is not None else ExchangeRateService()
         secret_path = self.runtime / "routing-secret"
         try:
             descriptor = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -244,6 +300,30 @@ class FrappeGateway:
     def read(self, actor, action):
         return self._dispatch(actor["tenant"], actor["sid"], action)["result"]
 
+    def current_exchange_rate(self):
+        """Return the shared server-side publication used for conversions."""
+        return self.exchange_rates.get()
+
+    def _gateway_assertion(self, actor, action, payload, rate):
+        site = self._site(actor["tenant"])
+        now = int(time.time())
+        claims = {
+            "v": 1,
+            "site": site["site"],
+            "tenant": actor["tenant"],
+            "action": action,
+            "session": hashlib.sha256(actor["sid"].encode()).hexdigest(),
+            "expectedVersion": payload.get("expectedVersion"),
+            "idempotencyKey": payload.get("idempotencyKey"),
+            "payloadSha256": hashlib.sha256(canonical_json(payload).encode()).hexdigest(),
+            "rate": {"value": payload["liveExchangeRate"], "metadata": rate},
+            "iat": now,
+            "exp": now + GATEWAY_ASSERTION_TTL,
+            "nonce": secrets.token_hex(16),
+        }
+        signature = hmac.new(site["gatewayHmacKey"], canonical_json(claims).encode(), hashlib.sha256).hexdigest()
+        return {"claims": claims, "signature": signature}
+
     def write(self, actor, action, payload):
         # Native authorization and CSRF are checked for every transaction. The
         # facade never reads a version then performs multiple REST updates.
@@ -251,6 +331,26 @@ class FrappeGateway:
         csrf = context.get("csrfToken")
         if not csrf:
             raise APIError(502, "BACKEND_PROTOCOL_ERROR", "Business service did not return a CSRF token")
+        if not isinstance(payload, dict):
+            raise APIError(400, "INVALID_BODY", "Business payload must be an object")
+        # Browser-supplied assertion material is never forwarded. Assertions
+        # are minted only after the native session and tenant route are known.
+        payload = {
+            key: value for key, value in payload.items()
+            if key not in (GATEWAY_ASSERTION, "liveExchangeRate", "liveExchangeRateMeta")
+        }
+        if needs_live_exchange_rate(action, payload):
+            # Live rate fields are gateway assertions. Never let a browser
+            # choose, override, or replay them into a quote or accounting write.
+            rate = self.current_exchange_rate()
+            if rate.get("stale") is True:
+                raise APIError(503, "LIVE_RATE_STALE", "The latest USD/CNY publication is not available for a new financial calculation")
+            payload = {
+                **payload,
+                "liveExchangeRate": rate["adjustedRate"],
+                "liveExchangeRateMeta": dict(rate),
+            }
+            payload[GATEWAY_ASSERTION] = self._gateway_assertion(actor, action, payload, rate)
         return self._dispatch(actor["tenant"], actor["sid"], action, payload, csrf)["result"]
 
     def logout(self, token):

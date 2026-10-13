@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import hmac
 import json
 import math
+import re
+import time
 import uuid
 import frappe
 
@@ -12,13 +16,91 @@ from .schema import COLLECTIONS, DOCTYPES, dumps, loads
 from .validation import validate_order, validate_shipment, _date
 from . import repository as repo
 from . import native
+from . import administrator
 from .events import managed
 from .permissions import delegated_operation
 
-READ_ACTIONS = {"session", "data", "meta", "snapshots", "backend_status", "context"}
-WRITE_ACTIONS = {"changes", "restore", "convert_order", "submit_order", "receive_payment", "cancel_order"}
+READ_ACTIONS = {"session", "data", "meta", "snapshots", "backend_status", "context", "admin_state"}
+WRITE_ACTIONS = {"changes", "restore", "convert_order", "submit_order", "receive_payment", "cancel_order", "admin_update"}
 NATIVE_FIELDS = {"companyId", "customerId", "customerName", "customerOrderNo", "orderDate", "expectedShipDate", "actualShipDate", "shippingStatus", "factoryId", "factoryIds", "factoryName", "orderAmountUSD", "orderAmountRMB", "factoryCostRMB", "factoryCostUSD", "paidAmountUSD", "paymentStatus", "factoryPaidRMB", "factoryPaidStatus", "costPaidUSD", "costPaymentStatus", "erpItems"}
 RECEIPT_FIELDS = {"paidAmountUSD", "paymentStatus", "factoryPaidRMB", "factoryPaidStatus", "costPaidUSD", "costPaymentStatus"}
+GATEWAY_ASSERTION = "gatewayAssertion"
+GATEWAY_RESERVED_FIELDS = {GATEWAY_ASSERTION, "liveExchangeRate", "liveExchangeRateMeta"}
+GATEWAY_ASSERTION_FIELDS = {
+    "v", "site", "tenant", "action", "session", "expectedVersion",
+    "idempotencyKey", "payloadSha256", "rate", "iat", "exp", "nonce",
+}
+
+
+def _canonical_json(value):
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+
+def _contains_reserved_gateway_field(value):
+    if isinstance(value, dict):
+        return bool(GATEWAY_RESERVED_FIELDS.intersection(value)) or any(_contains_reserved_gateway_field(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_reserved_gateway_field(child) for child in value)
+    return False
+
+
+def _gateway_hmac_key():
+    config = getattr(frappe, "conf", None)
+    value = config.get("tradept_gateway_hmac_key") if hasattr(config, "get") else getattr(config, "tradept_gateway_hmac_key", None)
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        raise APIError(503, "GATEWAY_ASSERTION_CONFIG", "The site's Tradept gateway assertion key is not configured")
+    key = bytes.fromhex(value)
+    if len(set(key)) < 16:
+        raise APIError(503, "GATEWAY_ASSERTION_CONFIG", "The site's Tradept gateway assertion key is invalid")
+    return key
+
+
+def _verify_gateway_assertion(action, supplied, cfg, actor):
+    """Authenticate one live-rate payload from this site's fixed gateway."""
+    key = _gateway_hmac_key()
+    assertion = supplied.get(GATEWAY_ASSERTION)
+    if not isinstance(assertion, dict) or set(assertion) != {"claims", "signature"}:
+        raise APIError(403, "GATEWAY_ASSERTION_REQUIRED", "A trusted gateway assertion is required for a live-rate write")
+    claims, signature = assertion.get("claims"), assertion.get("signature")
+    if (not isinstance(claims, dict) or set(claims) != GATEWAY_ASSERTION_FIELDS
+            or not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{64}", signature)):
+        raise APIError(403, "GATEWAY_ASSERTION_INVALID", "The gateway assertion is invalid")
+    expected_signature = hmac.new(key, _canonical_json(claims).encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        raise APIError(403, "GATEWAY_ASSERTION_INVALID", "The gateway assertion is invalid")
+    clean = {key: value for key, value in supplied.items() if key != GATEWAY_ASSERTION}
+    try:
+        payload_hash = hashlib.sha256(_canonical_json(clean).encode()).hexdigest()
+        rate_claim = _canonical_json({
+            "value": clean.get("liveExchangeRate"),
+            "metadata": clean.get("liveExchangeRateMeta"),
+        })
+        signed_rate = _canonical_json(claims.get("rate"))
+    except (TypeError, ValueError):
+        raise APIError(403, "GATEWAY_ASSERTION_INVALID", "The gateway assertion is invalid") from None
+    sid = getattr(frappe.session, "sid", None)
+    if not isinstance(sid, str) or not sid:
+        raise APIError(403, "GATEWAY_ASSERTION_INVALID", "The native session cannot verify the gateway assertion")
+    now = int(time.time())
+    iat, exp = claims.get("iat"), claims.get("exp")
+    if type(iat) is not int or type(exp) is not int or exp <= now or iat > now + 30 or now - iat > 180 or exp - iat not in range(1, 181):
+        raise APIError(403, "GATEWAY_ASSERTION_EXPIRED", "The gateway assertion has expired")
+    bindings = (
+        type(claims.get("v")) is int and claims["v"] == 1,
+        claims.get("site") == frappe.local.site,
+        claims.get("tenant") == cfg.get("id"),
+        actor.get("tenantId") == cfg.get("id"),
+        claims.get("action") == action,
+        claims.get("session") == hashlib.sha256(sid.encode()).hexdigest(),
+        claims.get("expectedVersion") == clean.get("expectedVersion"),
+        claims.get("idempotencyKey") == clean.get("idempotencyKey"),
+        claims.get("payloadSha256") == payload_hash,
+        signed_rate == rate_claim,
+        isinstance(claims.get("nonce"), str) and bool(re.fullmatch(r"[0-9a-f]{32}", claims["nonce"])),
+    )
+    if not all(bindings):
+        raise APIError(403, "GATEWAY_ASSERTION_INVALID", "The gateway assertion does not match this request")
+    supplied.pop(GATEWAY_ASSERTION, None)
 
 
 def _identity(lock=False):
@@ -46,14 +128,18 @@ def _identity(lock=False):
 def _session(cfg, actor, rules, users):
     company_ids = rules.company_ids(cfg, actor)
     policy = rules._policy(cfg, actor)
+    pages = list(policy.get("pages", []))
+    can_manage = rules.permitted(cfg, actor, administrator.MANAGE_CAPABILITY) and policy.get("scope") == "tenant"
+    if can_manage:
+        pages.extend(("admin", "onboarding"))
     user = {key: value for key, value in actor.items() if key != "nativeUser"}
-    user.update(visibleCompanyIds=sorted(company_ids), permissions=policy.get("permissions", []), pages=policy.get("pages", []), scope=policy.get("scope", "self"), readScopes=policy.get("readScopes", {}), baseRole=policy.get("baseRole", actor["role"]))
+    user.update(visibleCompanyIds=sorted(company_ids), permissions=policy.get("permissions", []), pages=list(dict.fromkeys(pages)), scope=policy.get("scope", "self"), readScopes=policy.get("readScopes", {}), baseRole=policy.get("baseRole", actor["role"]))
     displayed = [{key: profile.get(key) for key in ("id", "name", "username", "role", "teamId", "visibleCompanyIds")} for profile in users.values()]
     teams = copy.deepcopy(cfg.get("teams", {}))
     if policy.get("scope") != "tenant":
         teams = {key: value for key, value in teams.items() if key == actor.get("teamId")}
         displayed = [value for value in displayed if value["id"] == actor["id"] or (actor.get("teamId") and value.get("teamId") == actor.get("teamId"))]
-    return {"user": user, "users": displayed, "teams": teams, "companies": [company for company in cfg["companies"] if company["id"] in company_ids], "roles": cfg["roles"], "tenant": {"id": cfg["id"], "name": cfg.get("name", cfg["id"]), "branding": cfg.get("branding", {})}, "backend": "erpnext", "singleSystem": True}
+    return {"user": user, "users": displayed, "teams": teams, "companies": [company for company in cfg["companies"] if company["id"] in company_ids], "roles": cfg["roles"], "tenant": {"id": cfg["id"], "name": cfg.get("name", cfg["id"]), "branding": cfg.get("branding", {})}, "onboarding": administrator.onboarding_state(cfg, users), "backend": "erpnext", "singleSystem": True}
 
 
 def _data(work, cfg, actor, rules):
@@ -169,6 +255,7 @@ def _changes(work, cfg, actor, rules, supplied):
                 raise APIError(400, "RATE_REQUIRED", "Metadata requires an existing current exchange rate")
             repo.save_rate(key, rates[key], metas.get(key), key in metas)
     writes = []
+    live_rate = None
     for change in changes:
         if not isinstance(change, dict) or change.get("collection") not in COLLECTIONS:
             raise APIError(400, "INVALID_COLLECTION", "Unknown change collection")
@@ -227,7 +314,10 @@ def _changes(work, cfg, actor, rules, supplied):
                 # retained historical cross-entity reference into a new link.
                 patch = {key: value for key, value in patch.items() if old.get(key) != value}
             native_order = bool(collection == "orders" and doc and doc.sales_order)
-            value = rules._prepare_patch(None, cfg, actor, collection, old, patch, historical=historical, native_order=native_order)
+            # Quote derivation happens below with the gateway publication. Do
+            # not let the generic patch helper fall back to a persisted company
+            # or Currency Exchange value while building the merged record.
+            value = rules._prepare_patch(None, cfg, actor, collection, old, patch, historical=historical, native_order=native_order, derive_order=False)
             value["id"] = rid
             for metadata in ("stage", "historicalReference", "nativeDocuments", "nativeDeliveryNote", "exchangeRateUsed"):
                 value.pop(metadata, None)
@@ -271,7 +361,14 @@ def _changes(work, cfg, actor, rules, supplied):
             except ValueError as error:
                 raise APIError(400, "BUSINESS_VALIDATION", str(error)) from None
             if not historical and collection == "orders" and rules._financial_changed(old, value) and not (doc and doc.sales_order):
-                rules._derive_order(cfg, value, rates)
+                settlement = company.get("settlementCurrency", "USD")
+                current_rates = {}
+                if settlement == "CNY":
+                    if live_rate is None:
+                        _verify_gateway_assertion("changes", supplied, cfg, actor)
+                        live_rate = native.live_rate_snapshot(supplied.get("liveExchangeRate"), supplied.get("liveExchangeRateMeta"))
+                    current_rates[value["companyId"]] = live_rate["adjustedRate"]
+                rules._derive_order(cfg, value, current_rates)
             if collection in ("shipments", "invoices"):
                 parent = next((parent for parent in data["orders"] if str(parent.get("id")) == str(value.get("orderId")) and not parent.get("deleted")), None)
                 if not parent or parent.get("companyId") != value.get("companyId") or not rules.record_allowed(None, cfg, actor, parent, collection="orders", payload=data):
@@ -301,7 +398,9 @@ def _changes(work, cfg, actor, rules, supplied):
                 value.pop("deliveryProgressPct", None)
                 value.pop("nativeDeliveryNote", None)
         repo.save_record(collection, value, legacy=historical and collection == "orders")
-    return repo.finish(work, actor, "historical-import" if historical else "changes", [{"collection": value["collection"], "id": str(value.get("id", "new")), "deleted": value.get("deleted") is True} for value in changes])
+    changed = [{"collection": value["collection"], "id": str(value.get("id", "new")), "deleted": value.get("deleted") is True} for value in changes]
+    summary = {"changes": changed, "exchangeRate": live_rate} if live_rate is not None else changed
+    return repo.finish(work, actor, "historical-import" if historical else "changes", summary)
 
 
 def _restore(work, cfg, actor, rules, supplied):
@@ -343,6 +442,10 @@ def _native_operation(action, work, cfg, actor, rules, supplied):
     order_id = supplied.get("orderId")
     if not isinstance(order_id, str) or not safe_record_id(order_id):
         raise APIError(400, "INVALID_ORDER", "Select a saved order")
+    rate_snapshot = None
+    if action == "convert_order":
+        _verify_gateway_assertion(action, supplied, cfg, actor)
+        rate_snapshot = native.live_rate_snapshot(supplied.get("liveExchangeRate"), supplied.get("liveExchangeRateMeta"))
     data = repo.payload()
     value = next((value for value in data["orders"] if value["id"] == order_id and not value.get("deleted")), None)
     if not value or not rules.record_allowed(None, cfg, actor, value, "edit", "orders", data):
@@ -371,14 +474,17 @@ def _native_operation(action, work, cfg, actor, rules, supplied):
         rules._validate_links(None, cfg, actor, data, "orders", value, {"companyId": value.get("companyId"), "erpItems": value.get("erpItems")}, False, value)
     with delegated_operation(action, cfg, actor, rules, value, data, doc):
         if action == "convert_order":
-            refs = native.convert(doc, value, cfg, supplied.get("idempotencyKey"))
+            refs = native.convert(doc, value, cfg, supplied.get("idempotencyKey"), rate_snapshot)
         elif action == "submit_order":
             refs = native.submit(doc, value, supplied.get("idempotencyKey"))
         elif action == "cancel_order":
             refs = native.cancel(doc, value, supplied.get("idempotencyKey"))
         else:
             refs = native.receive_payment(doc, value, supplied)
-    result = repo.finish(work, actor, action, {"orderId": order_id, "documents": refs})
+    summary = {"orderId": order_id, "documents": refs}
+    if rate_snapshot is not None:
+        summary["exchangeRate"] = rate_snapshot
+    result = repo.finish(work, actor, action, summary)
     result.update(orderId=order_id, nativeDocuments=refs)
     return result
 
@@ -403,6 +509,10 @@ def _run_action(action, supplied):
         return {"snapshots": [{"id": row.name, "version": row.revision, "createdAt": row.created_at_source, "createdBy": row.actor_id, "kind": row.kind} for row in rows]}
     if action == "backend_status":
         return _backend(cfg, actor, rules)
+    if action == "admin_state":
+        return administrator.state(work, cfg, actor, rules, users)
+    if action == "admin_update":
+        return administrator.update(work, cfg, actor, rules, supplied)
     if action == "changes":
         return _changes(work, cfg, actor, rules, supplied)
     if action == "restore":
@@ -438,6 +548,8 @@ def dispatch(action, payload=None):
         supplied = loads(payload, {})
         if not isinstance(supplied, dict):
             raise APIError(400, "INVALID_PAYLOAD", "The request payload must be an object")
+        if any(_contains_reserved_gateway_field(value) for key, value in supplied.items() if key not in GATEWAY_RESERVED_FIELDS):
+            raise APIError(400, "RESERVED_GATEWAY_FIELD", "Gateway assertion fields cannot be stored inside business records")
         result = _run_transaction(action, supplied)
     except APIError as error:
         if action in WRITE_ACTIONS:

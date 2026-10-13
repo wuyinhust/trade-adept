@@ -13,7 +13,7 @@ before_request = ["tradept_core.request_guard.check_request"]
 # standard ERP role grant must not expose native REST / Desk financial records.
 _guarded = (
     "Company", "Customer", "Supplier", "Contact", "Address", "Currency Exchange",
-    "User", "User Permission", "Role", "Role Profile", "Custom DocPerm",
+    "User", "User Permission", "Role", "Role Profile", "Custom DocPerm", "Department", "Email Account",
     "Sales Order", "Purchase Order", "Sales Invoice", "Purchase Invoice",
     "Delivery Note", "Purchase Receipt", "Payment Entry", "Journal Entry",
     "GL Entry", "Payment Ledger Entry", "Advance Payment Ledger Entry", "Stock Ledger Entry", "Account",
@@ -26,7 +26,7 @@ _guarded = (
 has_permission = {name: "tradept_core.permissions.native_permission" for name in _guarded}
 permission_query_conditions = {name: "tradept_core.permissions.native_query" for name in _guarded}
 
-_business_documents = ("Company", "Customer", "Supplier", "Contact", "Currency Exchange", "Sales Order", "Purchase Order", "Delivery Note", "Sales Invoice", "Purchase Invoice", "Purchase Receipt", "Payment Entry", "Trade Order Brief", "Trade Legacy Order", "Trade Shipment", "Trade Document")
+_business_documents = ("Company", "User", "Email Account", "Customer", "Supplier", "Contact", "Currency Exchange", "Sales Order", "Purchase Order", "Delivery Note", "Sales Invoice", "Purchase Invoice", "Purchase Receipt", "Payment Entry", "Trade Order Brief", "Trade Legacy Order", "Trade Shipment", "Trade Document")
 doc_events = {name: {
     "before_insert": "tradept_core.events.before_native_write",
     "before_save": "tradept_core.events.before_native_write",

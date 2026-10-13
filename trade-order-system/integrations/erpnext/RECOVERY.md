@@ -1,6 +1,6 @@
 # 统一本地测试环境恢复
 
-恢复复用 Lima `tradept-erp`、原 project `tradept-erp` 和持久 volumes。应用为自定义 `tradept-erpnext-unified:0.2.0` 镜像；ERPNext 16.32.3 / Frappe 16.31.0。两个独立站点为 `grandware.test` 与 `frontend`。公网 0.1.1 测试实例保持独立，不在此流程中更新。
+本文件记录 0.2.0 的本地恢复基线，复用 Lima `tradept-erp`、原 project `tradept-erp` 和持久 volumes；ERPNext 16.32.3 / Frappe 16.31.0，两个独立站点为 `grandware.test` 与 `frontend`。以下镜像、备份、资源观测值和旧公网状态均属于当时的历史记录。后续发布使用新镜像与原站点迁移，实际公网版本从 [运行标识](https://tradept-test.szkuohu.com/api/version) 回读；当前公网也已经使用两套独立 ERPNext 数据库。
 
 ## 当前实际位置
 

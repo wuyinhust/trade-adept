@@ -30,6 +30,40 @@ const FINANCIAL_FIELDS = new Set([
     'erpItems'
 ]);
 const NESTED_FINANCIAL_FIELDS = new Set(['totalAmount', 'prepayment', 'paidAmount', 'cost', 'costUSD', 'costRMB']);
+const ORDER_RATE_FIELDS = new Set([
+    'companyId',
+    'orderAmountUSD',
+    'factoryCostRMB',
+    'freightCostUSD',
+    'insuranceCostUSD',
+    'otherCostUSD'
+]);
+const NESTED_ORDER_RATE_FIELDS = new Set([
+    'totalAmount',
+    'prepayment',
+    'paidAmount',
+    'cost',
+    'costUSD',
+    'costRMB',
+    'paidCostRMB',
+    'paidCostUSD',
+    'costPaidUSD',
+    'purchaseRate',
+    'paymentStatus',
+    'costPaymentStatus'
+]);
+const AUTHORITATIVE_ORDER_FIELDS = new Set([
+    'orderAmountRMB',
+    'profitRMB',
+    'profitUSD',
+    'profitRate',
+    'margin',
+    'profitPolicy',
+    'settlementCurrency',
+    'updatedAt',
+    'updatedBy',
+    'version'
+]);
 const SERVER_FIELDS = new Set([
     'createdAt',
     'createdBy',
@@ -100,6 +134,20 @@ function recordsById(records = []) {
     return result;
 }
 
+function rateDerivedOrderIds(patch) {
+    const ids = new Set();
+    for (const change of patch.changes || []) {
+        if (change?.collection !== 'orders' || change.deleted === true || !change.value) continue;
+        const value = change.value;
+        const directRateInput = [...ORDER_RATE_FIELDS].some(field => Object.hasOwn(value, field));
+        const nestedRateInput =
+            Array.isArray(value.factories) &&
+            value.factories.some(row => row && [...NESTED_ORDER_RATE_FIELDS].some(field => Object.hasOwn(row, field)));
+        if (directRateInput || nestedRateInput) ids.add(String(change.id));
+    }
+    return ids;
+}
+
 /** Omitted fields do not mean deletion: a permission-filtered response may omit them. */
 function changedFields(current, baseline) {
     const patch = {};
@@ -112,10 +160,11 @@ function changedFields(current, baseline) {
 }
 
 export class BusinessAPIClient {
-    constructor({ baseUrl = '/api', fetcher = null, canReplaceData = () => true } = {}) {
+    constructor({ baseUrl = '/api', fetcher = null, canReplaceData = () => true, persistExchangeRates = true } = {}) {
         this.baseUrl = baseUrl.replace(/\/$/, '');
         this._fetcher = fetcher;
         this._canReplaceData = canReplaceData;
+        this._persistExchangeRates = persistExchangeRates;
         this._serial = Promise.resolve();
         this._baseline = null;
         this._working = null;
@@ -305,8 +354,11 @@ export class BusinessAPIClient {
                 }
             }
         }
-        const ratePatch = changedFields(exchangeRates, this._baseline.exchangeRates);
-        const metaPatch = changedFields(rateMetas, this._baseline.rateMetas);
+        // Unified Tradept reads the current market publication through the
+        // same-origin rate endpoint. Those in-memory values must never become
+        // an incidental Currency Exchange write when an unrelated order saves.
+        const ratePatch = this._persistExchangeRates ? changedFields(exchangeRates, this._baseline.exchangeRates) : {};
+        const metaPatch = this._persistExchangeRates ? changedFields(rateMetas, this._baseline.rateMetas) : {};
         return {
             changes,
             ...(Object.keys(ratePatch).length ? { exchangeRates: ratePatch } : {}),
@@ -333,15 +385,7 @@ export class BusinessAPIClient {
             if (!discardLocal && (this.hasChanges() || !this._canReplaceData())) {
                 throw apiError('读取期间产生了新的修改，已保留草稿', 'LOCAL_CHANGES');
             }
-            if (!result.data || !Number.isInteger(result.meta?.version) || result.meta.version < 0) {
-                throw apiError('业务数据缺少有效版本', 'INVALID_RESPONSE');
-            }
-            const normalized = {
-                data: Object.fromEntries(COLLECTIONS.map(key => [key, clone(result.data[key] || [])])),
-                exchangeRates: clone(result.exchangeRates || {}),
-                rateMetas: clone(result.rateMetas || {}),
-                meta: clone(result.meta)
-            };
+            const normalized = this._normalizeDataResult(result);
             this._baseline = clone(normalized);
             this._lastMeta = clone(normalized.meta);
             this._ready = true;
@@ -350,6 +394,18 @@ export class BusinessAPIClient {
             this.bindWorkingData(working.data, working.exchangeRates, working.rateMetas);
             return working;
         });
+    }
+
+    _normalizeDataResult(result, minimumVersion = 0) {
+        if (!result.data || !Number.isInteger(result.meta?.version) || result.meta.version < minimumVersion) {
+            throw apiError('业务数据缺少有效版本', 'INVALID_RESPONSE');
+        }
+        return {
+            data: Object.fromEntries(COLLECTIONS.map(key => [key, clone(result.data[key] || [])])),
+            exchangeRates: clone(result.exchangeRates || {}),
+            rateMetas: clone(result.rateMetas || {}),
+            meta: clone(result.meta)
+        };
     }
 
     async checkRemoteVersion() {
@@ -380,6 +436,37 @@ export class BusinessAPIClient {
         this._lastMeta = clone(meta);
     }
 
+    _reconcileRateDerivedOrders(normalized, data, orderIds) {
+        const authoritative = recordsById(normalized.data.orders);
+        const current = recordsById(data.orders || []);
+        const merges = [];
+        for (const id of orderIds) {
+            const source = authoritative.get(id);
+            if (!source) throw apiError('保存后的订单未出现在权威读取结果中', 'INVALID_RESPONSE');
+            const target = current.get(id);
+            if (!target || target.deleted === true) continue;
+            merges.push({ source, target });
+        }
+        this._baseline = clone(normalized);
+        this._lastMeta = clone(normalized.meta);
+        this._conflict = null;
+        for (const { source, target } of merges) {
+            for (const field of AUTHORITATIVE_ORDER_FIELDS) {
+                if (Object.hasOwn(source, field)) target[field] = clone(source[field]);
+            }
+        }
+    }
+
+    _operationAppliedConflict(meta, cause) {
+        const error = apiError('保存已生效，但未能核对服务器派生金额；请刷新数据后继续操作', 'CONFLICT', 409);
+        error.latestVersion = cause?.latestVersion ?? meta.version;
+        error.operationApplied = true;
+        error.refreshRequired = true;
+        error.cause = cause;
+        this._conflict = error;
+        return error;
+    }
+
     async saveData(data, exchangeRates, rateMetas) {
         // Preserve the reference, then sample it when its queued operation starts.
         // New edits made during an earlier network request remain observable.
@@ -405,6 +492,20 @@ export class BusinessAPIClient {
             }
             // Only acknowledge the submitted snapshot, never a newer mutable draft.
             this._acknowledge(patch, result.meta);
+            const orderIds = rateDerivedOrderIds(patch);
+            if (orderIds.size) {
+                try {
+                    const authoritative = this._normalizeDataResult(await this._request('/data'), result.meta.version);
+                    if (authoritative.meta.version !== result.meta.version) {
+                        const mismatch = apiError('保存后数据版本已被其他操作推进', 'CONFLICT', 409);
+                        mismatch.latestVersion = authoritative.meta.version;
+                        throw mismatch;
+                    }
+                    this._reconcileRateDerivedOrders(authoritative, data, orderIds);
+                } catch (cause) {
+                    throw this._operationAppliedConflict(result.meta, cause);
+                }
+            }
             return true;
         });
     }
@@ -418,6 +519,50 @@ export class BusinessAPIClient {
 
     async backendStatus() {
         return this._enqueue(() => this._request('/backend/status'));
+    }
+
+    async adminState() {
+        return this._enqueue(async () => clone(await this._request('/administrator')));
+    }
+
+    async adminUpdate(body) {
+        return this._enqueue(async () => {
+            if (this.hasChanges()) {
+                throw apiError('请先保存或处理当前业务草稿，再修改企业配置', 'LOCAL_CHANGES');
+            }
+            const expectedVersion = body?.expectedVersion;
+            if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+                throw apiError('企业配置缺少当前数据版本', 'EXPECTED_VERSION_REQUIRED');
+            }
+            if (this._baseline && this._baseline.meta.version !== expectedVersion) {
+                throw apiError('业务数据版本已更新，请刷新后再修改企业配置', 'CONFLICT', 409);
+            }
+            let result;
+            try {
+                result = await this._request('/administrator', { method: 'POST', body: clone(body) });
+            } catch (error) {
+                if (error.code === 'CONFLICT') this._conflict = error;
+                throw error;
+            }
+            if (!Number.isInteger(result.meta?.version) || result.meta.version <= expectedVersion) {
+                throw apiError('企业配置保存确认缺少有效新版本', 'INVALID_RESPONSE');
+            }
+            if (this._baseline) this._baseline.meta = clone(result.meta);
+            this._lastMeta = clone(result.meta);
+            return clone(result);
+        });
+    }
+
+    /**
+     * Read the shared live USD → CNY reference rate.
+     *
+     * The same-origin gateway owns upstream caching and only contacts the
+     * provider after its advertised next publication time. Calling this method
+     * when the settings page opens therefore does not create another upstream
+     * request while the current publication is still valid.
+     */
+    async getExchangeRate() {
+        return this._enqueue(async () => clone(await this._request('/exchange-rate')));
     }
 
     async importOrders(changes, { importPurpose = 'order-brief', expectedVersion } = {}) {

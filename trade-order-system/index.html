@@ -16,8 +16,9 @@
         <link rel="icon" type="image/png" sizes="1254x1254" href="assets/brand/tradept-icon.png" />
         <link rel="apple-touch-icon" href="assets/brand/tradept-icon.png" />
         <title>Tradept</title>
-        <link rel="stylesheet" href="css/style.css?v=0.2.0" />
-        <link rel="stylesheet" href="css/design-v1.css?v=0.2.0" />
+        <link rel="stylesheet" href="css/style.css?v=0.3.0" />
+        <link rel="stylesheet" href="css/design-v1.css?v=0.3.0&logo=dark-1&live-rate=1" />
+        <link rel="stylesheet" href="css/administrator.css?v=0.3.0&admin=1" />
         <script src="/vendor/chart.umd.min.js"></script>
         <script src="/vendor/xlsx.full.min.js"></script>
         <!-- CloudBase JS SDK（本地，避免 CDN 加载失败） -->
@@ -36,6 +37,14 @@
                         <span class="brand-mark brand-mark-login">
                             <span class="brand-logo">
                                 <img src="assets/brand/tradept-logo.png" alt="Tradept" width="2065" height="762" />
+                                <img
+                                    class="brand-logo-wordmark"
+                                    src="assets/brand/tradept-logo.png"
+                                    alt=""
+                                    aria-hidden="true"
+                                    width="2065"
+                                    height="762"
+                                />
                             </span>
                         </span>
                     </h1>
@@ -91,6 +100,14 @@
                         <a class="logo-text brand-mark" href="#/dashboard" aria-label="Tradept 总览">
                             <span class="brand-logo">
                                 <img src="assets/brand/tradept-logo.png" alt="Tradept" width="2065" height="762" />
+                                <img
+                                    class="brand-logo-wordmark"
+                                    src="assets/brand/tradept-logo.png"
+                                    alt=""
+                                    aria-hidden="true"
+                                    width="2065"
+                                    height="762"
+                                />
                             </span>
                         </a>
                         <span class="brand-caption">企业工作区</span>
@@ -141,6 +158,11 @@
                         <span class="nav-icon" data-icon="settings"></span>
                         <span class="nav-label">系统设置</span>
                     </a>
+                    <p class="sidebar-nav-label" id="adminNavLabel">管理</p>
+                    <a href="#/admin" class="nav-item" data-page="admin" id="nav-admin">
+                        <span class="nav-icon" data-icon="settings"></span>
+                        <span class="nav-label">管理中心</span>
+                    </a>
                 </nav>
                 <div class="sidebar-footer">
                     <div class="sidebar-theme-toggle">
@@ -172,8 +194,8 @@
                         style="cursor: pointer"
                     >
                         <div class="rate-label">USD / CNY</div>
-                        <div class="rate-value" id="exchangeRateDisplay">7.25</div>
-                        <div class="rate-source" id="rateSourceText"></div>
+                        <div class="rate-value" id="exchangeRateDisplay">—</div>
+                        <div class="rate-source" id="rateSourceText">正在获取实时行情</div>
                     </div>
                 </div>
             </aside>
@@ -257,27 +279,28 @@
         <script type="importmap">
             {
                 "imports": {
-                    "./js/app.js": "./js/app.js?v=0.2.0",
-                    "./js/data.js": "./js/data.js?v=0.2.0",
-                    "./js/exchange.js": "./js/exchange.js?v=0.2.0",
-                    "./js/profit.js": "./js/profit.js?v=0.2.0",
-                    "./js/dashboard.js": "./js/dashboard.js?v=0.2.0",
-                    "./js/orders.js": "./js/orders.js?v=0.2.0",
-                    "./js/workspace-settings.js": "./js/workspace-settings.js?v=0.2.0",
-                    "./js/auth.js": "./js/auth.js?v=0.2.0",
-                    "./js/utils.js": "./js/utils.js?v=0.2.0",
-                    "./js/constants.js": "./js/constants.js?v=0.2.0",
-                    "./js/cloud.js": "./js/cloud.js?v=0.2.0",
-                    "./js/factories.js": "./js/factories.js?v=0.2.0",
-                    "./js/order-import.js": "./js/order-import.js?v=0.2.0",
-                    "./js/ui.js": "./js/ui.js?v=0.2.0",
-                    "./js/customers.js": "./js/customers.js?v=0.2.0",
-                    "./js/shipping.js": "./js/shipping.js?v=0.2.0"
+                    "./js/app.js": "./js/app.js?v=0.3.0",
+                    "./js/data.js": "./js/data.js?v=0.3.0",
+                    "./js/exchange.js": "./js/exchange.js?v=0.3.0",
+                    "./js/profit.js": "./js/profit.js?v=0.3.0",
+                    "./js/dashboard.js": "./js/dashboard.js?v=0.3.0",
+                    "./js/orders.js": "./js/orders.js?v=0.3.0",
+                    "./js/workspace-settings.js": "./js/workspace-settings.js?v=0.3.0&live-rate=1",
+                    "./js/administrator.js": "./js/administrator.js?v=0.3.0&admin=1",
+                    "./js/auth.js": "./js/auth.js?v=0.3.0",
+                    "./js/utils.js": "./js/utils.js?v=0.3.0",
+                    "./js/constants.js": "./js/constants.js?v=0.3.0",
+                    "./js/cloud.js": "./js/cloud.js?v=0.3.0",
+                    "./js/factories.js": "./js/factories.js?v=0.3.0",
+                    "./js/order-import.js": "./js/order-import.js?v=0.3.0",
+                    "./js/ui.js": "./js/ui.js?v=0.3.0",
+                    "./js/customers.js": "./js/customers.js?v=0.3.0",
+                    "./js/shipping.js": "./js/shipping.js?v=0.3.0"
                 }
             }
         </script>
 
         <!-- ES Modules 入口 (v41 动态 import 懒加载) -->
-        <script type="module" src="js/backend-bootstrap.js?v=0.2.0"></script>
+        <script type="module" src="js/backend-bootstrap.js?v=0.3.0"></script>
     </body>
 </html>

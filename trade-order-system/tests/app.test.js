@@ -32,6 +32,10 @@ jest.unstable_mockModule('../js/auth.js', () => ({
         },
         users: [],
         teams: { T1: { name: 'Team A' } },
+        onboarding: null,
+        canManageEnterprise() {
+            return false;
+        },
         getVisiblePages() {
             return ['dashboard', 'orders', 'customers', 'factories', 'profit', 'shipping', 'settings'];
         },
@@ -113,6 +117,7 @@ const { App } = await import('../js/app.js');
 const { DB } = await import('../js/data.js');
 const { Auth } = await import('../js/auth.js');
 const { Cloud } = await import('../js/cloud.js');
+const { Exchange } = await import('../js/exchange.js');
 
 // ==================== DOM Helper ====================
 function setupDom(elements) {
@@ -689,19 +694,18 @@ describe('App — Exchange Rate Display', () => {
     beforeEach(() => {
         setupDom({
             exchangeRateDisplay: 'span',
-            rateSourceText: 'span',
-            exchangeRateInput: 'input'
+            rateSourceText: 'span'
         });
+        DB.companies = [];
+        DB._businessAPI = null;
+        Exchange._lastRateResult = null;
+        DB.getExchangeRate = () => 7.25;
+        DB.getRateMeta = () => ({ updateTime: null, source: 'manual', isAuto: false });
     });
 
     test('updateExchangeRateDisplay shows current rate', () => {
         App.updateExchangeRateDisplay();
-        expect(document.getElementById('exchangeRateDisplay').textContent).toBe('7.25');
-    });
-
-    test('updateExchangeRateDisplay sets input value', () => {
-        App.updateExchangeRateDisplay();
-        expect(document.getElementById('exchangeRateInput').value).toBe('7.25');
+        expect(document.getElementById('exchangeRateDisplay').textContent).toBe('7.2500');
     });
 
     test('updateExchangeRateDisplay handles missing elements', () => {
@@ -716,8 +720,29 @@ describe('App — Exchange Rate Display', () => {
             isAuto: true
         });
         App.updateExchangeRateDisplay();
-        expect(document.getElementById('rateSourceText').textContent).toContain('🔄');
+        expect(document.getElementById('rateSourceText').textContent).toContain('实时行情');
         expect(document.getElementById('exchangeRateDisplay').title).toContain('Bank of China');
+    });
+
+    test('updateExchangeRateDisplay never presents a missing live rate as a number', () => {
+        DB.companies = [{ id: 'CN', settlementCurrency: 'CNY' }];
+        DB.getExchangeRate = () => Number.NaN;
+        DB.getRateMeta = () => ({ stale: true });
+        App.updateExchangeRateDisplay();
+        expect(document.getElementById('exchangeRateDisplay').textContent).toBe('—');
+        expect(document.getElementById('rateSourceText').textContent).toBe('实时汇率不可用');
+    });
+
+    test('BusinessAPI without a runtime publication never falls back to a stored rate', () => {
+        DB._businessAPI = {};
+        DB.companies = [{ id: 'USD', settlementCurrency: 'USD' }];
+        DB.getExchangeRate = () => 7.25;
+        Exchange._lastRateResult = null;
+
+        App.updateExchangeRateDisplay();
+
+        expect(document.getElementById('exchangeRateDisplay').textContent).toBe('—');
+        expect(document.getElementById('rateSourceText').textContent).toBe('实时汇率不可用');
     });
 });
 
@@ -834,7 +859,7 @@ describe('App — Router', () => {
             sidebarOverlay: 'div'
         });
         // Add nav items with nav-item class
-        ['dashboard', 'orders', 'customers', 'factories', 'profit', 'shipping', 'settings'].forEach(page => {
+        ['dashboard', 'orders', 'customers', 'factories', 'profit', 'shipping', 'settings', 'admin'].forEach(page => {
             const nav = document.createElement('a');
             nav.id = 'nav-' + page;
             nav.dataset.page = page;
@@ -850,6 +875,8 @@ describe('App — Router', () => {
         global.Profit = { render: jest.fn() };
         global.Shipping = { render: jest.fn() };
         global.Settings = { render: jest.fn() };
+        global.AdminCenter = { render: jest.fn() };
+        global.Onboarding = { render: jest.fn() };
 
         // Mock dynamic import — resolves instantly in tests
         App._pageModules = {};
@@ -864,6 +891,8 @@ describe('App — Router', () => {
         delete global.Profit;
         delete global.Shipping;
         delete global.Settings;
+        delete global.AdminCenter;
+        delete global.Onboarding;
     });
 
     test('setupRouter adds hashchange listener', () => {
@@ -921,6 +950,22 @@ describe('App — Router', () => {
         window.location.hash = '#/settings';
         await App.router();
         expect(global.Settings.render).toHaveBeenCalled();
+    });
+
+    test('router forces a tenant administrator into unfinished onboarding', async () => {
+        const originalPages = Auth.getVisiblePages;
+        const originalManage = Auth.canManageEnterprise;
+        Auth.onboarding = { status: 'required' };
+        Auth.canManageEnterprise = () => true;
+        Auth.getVisiblePages = () => ['dashboard', 'admin', 'onboarding'];
+        window.location.hash = '#/dashboard';
+
+        await App.router();
+
+        expect(window.location.hash).toBe('#/onboarding');
+        Auth.onboarding = null;
+        Auth.canManageEnterprise = originalManage;
+        Auth.getVisiblePages = originalPages;
     });
 
     test('router redirects to dashboard for unauthorized page', () => {

@@ -13,45 +13,77 @@ const mockAuth = {
         { id: 'U005', username: 'Michale', name: 'Michale', role: 'salesperson', teamId: 'TEAM-A' },
         { id: 'U003', username: 'Vivian', name: 'Vivian', role: 'manager', teamId: 'TEAM-A' }
     ],
-    canSeeAll() { return false; },
-    getVisibleCompanyIds() { return null; },
-    filterOrders(orders) { return orders; },
-    filterShipments(shipments) { return shipments; },
-    filterInvoices(invoices) { return invoices; },
-    filterCustomers(customers) { return customers; }
+    canSeeAll() {
+        return false;
+    },
+    getVisibleCompanyIds() {
+        return null;
+    },
+    filterOrders(orders) {
+        return orders;
+    },
+    filterShipments(shipments) {
+        return shipments;
+    },
+    filterInvoices(invoices) {
+        return invoices;
+    },
+    filterCustomers(customers) {
+        return customers;
+    }
 };
 
 const mockExchange = {
-    isDomestic(cid) { return cid === 'CO-GR' || cid === 'CO-WY'; },
+    isDomestic(cid) {
+        return cid === 'CO-GR' || cid === 'CO-WY';
+    },
     recalcAllOrders() {},
     calcOrderProfit(usd, fc, fr, ins, other, cid) {
-        const rate = cid === 'CO-GW' || cid === 'CO-LK' ? 7.80 : 7.25;
+        const rate = cid === 'CO-GW' || cid === 'CO-LK' ? 7.8 : 7.25;
         if (cid === 'CO-GR' || cid === 'CO-WY') {
-            return (usd * rate) - fc - fr - other + (fc / 1.13) * (ins / 100);
+            return usd * rate - fc - fr - other + (fc / 1.13) * (ins / 100);
         }
         return usd - fc - other;
     },
-    fetchRate() { return Promise.resolve({ success: false }); },
-    autoFetchIfStale() { return Promise.resolve(); },
+    fetchRate() {
+        return Promise.resolve({ success: false });
+    },
+    autoFetchIfStale() {
+        return Promise.resolve();
+    },
     usdToRmb(usd, cid) {
-        const r = cid === 'CO-GW' || cid === 'CO-LK' ? 7.80 : 7.25;
+        const r = cid === 'CO-GW' || cid === 'CO-LK' ? 7.8 : 7.25;
         return usd * r;
     },
     rmbToUsd(rmb, cid) {
-        const r = cid === 'CO-GW' || cid === 'CO-LK' ? 7.80 : 7.25;
+        const r = cid === 'CO-GW' || cid === 'CO-LK' ? 7.8 : 7.25;
         return rmb / r;
     }
 };
 
 const mockCloud = {
-    init() { return Promise.resolve({ ok: true, uid: 'test' }); },
-    loadData() { return Promise.resolve(null); },
-    saveData() { return Promise.resolve(true); },
-    checkRemoteVersion() { return Promise.resolve(null); },
-    testPermission() { return Promise.resolve({ ok: true }); },
-    getLastMeta() { return { version: 0, updatedAt: null }; },
+    init() {
+        return Promise.resolve({ ok: true, uid: 'test' });
+    },
+    loadData() {
+        return Promise.resolve(null);
+    },
+    saveData() {
+        return Promise.resolve(true);
+    },
+    checkRemoteVersion() {
+        return Promise.resolve(null);
+    },
+    testPermission() {
+        return Promise.resolve({ ok: true });
+    },
+    getLastMeta() {
+        return { version: 0, updatedAt: null };
+    },
     resetSession() {},
-    _drainQueue() { return Promise.resolve(); },
+    _drainQueue() {
+        return Promise.resolve();
+    },
     _saveQueue: [],
     _saveRunning: false,
     _cleanupOldDocs() {}
@@ -71,10 +103,10 @@ jest.unstable_mockModule('../js/app.js', () => ({ App: mockApp }));
 
 const mockToast = jest.fn();
 jest.unstable_mockModule('../js/utils.js', () => ({
-    escapeHtml: (s) => String(s || ''),
+    escapeHtml: s => String(s || ''),
     handleError: () => {},
     toast: mockToast,
-    safeCall: async (fn) => fn(),
+    safeCall: async fn => fn(),
     validate: {
         required(data, fields) {
             for (const f of fields) {
@@ -83,12 +115,25 @@ jest.unstable_mockModule('../js/utils.js', () => ({
             }
             return null;
         },
-        positive(v) { return parseFloat(v) > 0; },
-        numeric(v) { return !isNaN(parseFloat(v)) && isFinite(v); },
-        email(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v)); },
-        phoneCN(v) { return /^1[3-9]\d{9}$/.test(String(v)); },
-        length(v, min, max) { const s = String(v||''); return s.length >= min && s.length <= max; },
-        checkAll() { return []; }
+        positive(v) {
+            return parseFloat(v) > 0;
+        },
+        numeric(v) {
+            return !isNaN(parseFloat(v)) && isFinite(v);
+        },
+        email(v) {
+            return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v));
+        },
+        phoneCN(v) {
+            return /^1[3-9]\d{9}$/.test(String(v));
+        },
+        length(v, min, max) {
+            const s = String(v || '');
+            return s.length >= min && s.length <= max;
+        },
+        checkAll() {
+            return [];
+        }
     },
     EventBus: { on() {}, off() {}, emit() {} }
 }));
@@ -100,8 +145,17 @@ const { CONSTANTS } = await import('../js/constants.js');
 
 function resetDB() {
     DB.currentCompanyId = 'CO-GR';
+    DB.companies = [
+        { id: 'CO-GR', name: '国润', shortName: '国润' },
+        { id: 'CO-WY', name: '为语', shortName: '为语' },
+        { id: 'CO-GW', name: 'Grandware HK', shortName: 'Grandware' },
+        { id: 'CO-LK', name: 'Likeing HK', shortName: 'Likeing' }
+    ];
+    DB._businessAPI = null;
+    DB.liveExchangeRates = {};
+    DB.liveRateMetas = {};
     DB.data = { customers: [], orders: [], shipments: [], invoices: [], factories: [] };
-    DB.exchangeRates = { 'CO-GR': 7.25, 'CO-WY': 7.25, 'CO-GW': 7.80, 'CO-LK': 7.80 };
+    DB.exchangeRates = { 'CO-GR': 7.25, 'CO-WY': 7.25, 'CO-GW': 7.8, 'CO-LK': 7.8 };
     DB.rateMetas = {
         'CO-GR': { source: 'manual', updateTime: null, isAuto: false },
         'CO-WY': { source: 'manual', updateTime: null, isAuto: false },
@@ -115,33 +169,63 @@ function resetDB() {
     mockAuth.currentUser = null;
     mockAuth.canSeeAll = () => false;
     mockAuth.getVisibleCompanyIds = () => null;
-    mockAuth.filterOrders = (o) => o;
-    mockAuth.filterCustomers = (c) => c;
-    mockAuth.filterShipments = (s) => s;
-    mockAuth.filterInvoices = (i) => i;
+    mockAuth.filterOrders = o => o;
+    mockAuth.filterCustomers = c => c;
+    mockAuth.filterShipments = s => s;
+    mockAuth.filterInvoices = i => i;
     mockToast.mockClear();
 }
 
 function makeOrder(overrides = {}) {
     return {
-        id: 'O1', companyOperationNo: 'GR25D001', companyId: 'CO-GR', customerId: 'C1',
-        customerName: 'Test Customer', orderAmountUSD: 10000, factoryCostRMB: 50000,
-        freightCostUSD: 500, insuranceCostUSD: 0, otherCostUSD: 200,
-        orderAmountRMB: 72500, profitRMB: 15000, profitRate: 20.69,
-        orderDate: '2025-01-15', status: '已确认', paymentStatus: '已收全款',
-        shippingStatus: '已出运', paidAmountUSD: 10000,
-        productName: 'Widget', productCategory: 'Electronics',
-        salespersonId: 'U005', ...overrides
+        id: 'O1',
+        companyOperationNo: 'GR25D001',
+        companyId: 'CO-GR',
+        customerId: 'C1',
+        customerName: 'Test Customer',
+        orderAmountUSD: 10000,
+        factoryCostRMB: 50000,
+        freightCostUSD: 500,
+        insuranceCostUSD: 0,
+        otherCostUSD: 200,
+        orderAmountRMB: 72500,
+        profitRMB: 15000,
+        profitRate: 20.69,
+        orderDate: '2025-01-15',
+        status: '已确认',
+        paymentStatus: '已收全款',
+        shippingStatus: '已出运',
+        paidAmountUSD: 10000,
+        productName: 'Widget',
+        productCategory: 'Electronics',
+        salespersonId: 'U005',
+        ...overrides
     };
 }
 
 function makeCustomer(overrides = {}) {
     return {
-        id: 'C1', company: 'Test Corp', contact: 'John Doe', country: 'USA',
-        position: 'Manager', email: 'john@test.com', phone: '13800138000',
-        companyId: 'CO-GR', salespersonId: 'U005', contacts: [
-            { id: 'CT1', name: 'John Doe', email: 'john@test.com', phone: '13800138000', position: 'Manager', mobilePhone: '', homeAddress: '' }
-        ], ...overrides
+        id: 'C1',
+        company: 'Test Corp',
+        contact: 'John Doe',
+        country: 'USA',
+        position: 'Manager',
+        email: 'john@test.com',
+        phone: '13800138000',
+        companyId: 'CO-GR',
+        salespersonId: 'U005',
+        contacts: [
+            {
+                id: 'CT1',
+                name: 'John Doe',
+                email: 'john@test.com',
+                phone: '13800138000',
+                position: 'Manager',
+                mobilePhone: '',
+                homeAddress: ''
+            }
+        ],
+        ...overrides
     };
 }
 
@@ -199,7 +283,7 @@ describe('DB — Exchange Rates', () => {
     });
 
     test('getExchangeRate returns specified company rate', () => {
-        expect(DB.getExchangeRate('CO-GW')).toBe(7.80);
+        expect(DB.getExchangeRate('CO-GW')).toBe(7.8);
     });
 
     test('getExchangeRate falls back to default for unknown', () => {
@@ -227,9 +311,39 @@ describe('DB — Exchange Rates', () => {
     });
 
     test('saveExchangeRate with custom meta', () => {
-        DB.saveExchangeRate(7.50, 'CO-GW', { source: 'API', isAuto: true });
-        expect(DB.exchangeRates['CO-GW']).toBe(7.50);
+        DB.saveExchangeRate(7.5, 'CO-GW', { source: 'API', isAuto: true });
+        expect(DB.exchangeRates['CO-GW']).toBe(7.5);
         expect(DB.rateMetas['CO-GW'].isAuto).toBe(true);
+    });
+
+    test('BusinessAPI calculations prefer runtime rates for CNY companies only', () => {
+        DB._businessAPI = {};
+        DB.companies = [
+            { id: 'CN-A', name: 'China A', settlementCurrency: 'CNY' },
+            { id: 'US-B', name: 'US B', settlementCurrency: 'USD' }
+        ];
+        DB.currentCompanyId = 'CN-A';
+        DB.exchangeRates = { 'CN-A': 6.5, 'US-B': 1 };
+        DB.liveExchangeRates = { 'CN-A': 7.26, 'US-B': 9.99 };
+        DB.liveRateMetas = {
+            'CN-A': { source: 'open.er-api.com', fetchedAt: '2026-10-12T01:00:00.000Z', stale: false }
+        };
+
+        expect(DB.getExchangeRate('CN-A')).toBe(7.26);
+        expect(DB.getExchangeRate('US-B')).toBe(1);
+        expect(DB.getRateMeta('CN-A')).toMatchObject({ source: 'open.er-api.com', stale: false });
+    });
+
+    test('BusinessAPI never falls back to a persisted static rate for a CNY company', () => {
+        DB._businessAPI = {};
+        DB.companies = [{ id: 'CN-A', name: 'China A', settlementCurrency: 'CNY' }];
+        DB.currentCompanyId = 'CN-A';
+        DB.exchangeRates = { 'CN-A': 7.25 };
+        DB.liveExchangeRates = {};
+        DB._overlayLiveExchangeData();
+
+        expect(DB.getExchangeRate('CN-A')).toBeNaN();
+        expect(DB.exchangeRates['CN-A']).toBeNaN();
     });
 });
 
@@ -361,10 +475,7 @@ describe('DB — Orders CRUD', () => {
     });
 
     test('getOrders filters by status', () => {
-        DB.data.orders = [
-            makeOrder({ id: 'O1', status: '已确认' }),
-            makeOrder({ id: 'O2', status: '已取消' })
-        ];
+        DB.data.orders = [makeOrder({ id: 'O1', status: '已确认' }), makeOrder({ id: 'O2', status: '已取消' })];
         const result = DB.getOrders({ status: '已取消' });
         expect(result).toHaveLength(1);
         expect(result[0].id).toBe('O2');
@@ -447,9 +558,14 @@ describe('DB — Orders CRUD', () => {
     test('addOrder creates order with correct fields', () => {
         mockAuth.currentUser = mockAuth.users.find(u => u.id === 'U005');
         const order = DB.addOrder({
-            customerId: 'C1', companyOperationNo: 'GR25M001',
-            companyId: 'CO-GR', orderAmountUSD: 1000, factoryCostRMB: 5000,
-            freightCostUSD: 100, insuranceCostUSD: 13, otherCostUSD: 50
+            customerId: 'C1',
+            companyOperationNo: 'GR25M001',
+            companyId: 'CO-GR',
+            orderAmountUSD: 1000,
+            factoryCostRMB: 5000,
+            freightCostUSD: 100,
+            insuranceCostUSD: 13,
+            otherCostUSD: 50
         });
         expect(order.id).toMatch(/^ORD-[0-9a-f-]{36}$/);
         expect(order.companyOperationNo).toBe('GR25M001');
@@ -471,8 +587,16 @@ describe('DB — Orders CRUD', () => {
     });
 
     test('updateOrder modifies existing order', () => {
-        DB.data.orders = [makeOrder({ id: 'O1', orderAmountUSD: 5000, factoryCostRMB: 25000,
-            freightCostUSD: 200, insuranceCostUSD: 0, otherCostUSD: 100 })];
+        DB.data.orders = [
+            makeOrder({
+                id: 'O1',
+                orderAmountUSD: 5000,
+                factoryCostRMB: 25000,
+                freightCostUSD: 200,
+                insuranceCostUSD: 0,
+                otherCostUSD: 100
+            })
+        ];
         const updated = DB.updateOrder('O1', { status: '已订船', orderAmountUSD: 6000 });
         expect(updated.status).toBe('已订船');
         expect(updated.orderAmountUSD).toBe(6000);
@@ -521,18 +645,12 @@ describe('DB — Customers CRUD', () => {
     });
 
     test('getCustomers searches by contact', () => {
-        DB.data.customers = [
-            makeCustomer({ id: 'C1', contact: 'John' }),
-            makeCustomer({ id: 'C2', contact: 'Jane' })
-        ];
+        DB.data.customers = [makeCustomer({ id: 'C1', contact: 'John' }), makeCustomer({ id: 'C2', contact: 'Jane' })];
         expect(DB.getCustomers({ search: 'jane' })).toHaveLength(1);
     });
 
     test('getCustomerOrders returns orders for customer', () => {
-        DB.data.orders = [
-            makeOrder({ id: 'O1', customerId: 'C1' }),
-            makeOrder({ id: 'O2', customerId: 'C2' })
-        ];
+        DB.data.orders = [makeOrder({ id: 'O1', customerId: 'C1' }), makeOrder({ id: 'O2', customerId: 'C2' })];
         expect(DB.getCustomerOrders('C1')).toHaveLength(1);
     });
 
@@ -591,10 +709,7 @@ describe('DB — Factories CRUD', () => {
 
     test('getFactoryOrders returns orders for factory', () => {
         DB.data.factories = [{ id: 'F1', name: 'Test' }];
-        DB.data.orders = [
-            makeOrder({ id: 'O1', factoryIds: ['F1'] }),
-            makeOrder({ id: 'O2', factoryIds: ['F2'] })
-        ];
+        DB.data.orders = [makeOrder({ id: 'O1', factoryIds: ['F1'] }), makeOrder({ id: 'O2', factoryIds: ['F2'] })];
         expect(DB.getFactoryOrders('F1')).toHaveLength(1);
     });
 
@@ -611,7 +726,15 @@ describe('DB — Factories CRUD', () => {
 
     test('updateFactory modifies factory', () => {
         DB.data.factories = [{ id: 'F1', name: 'Old' }];
-        const updated = DB.updateFactory('F1', { name: 'New', contact: '', phone: '', mobilePhone: '', products: '', address: '', bankInfo: '' });
+        const updated = DB.updateFactory('F1', {
+            name: 'New',
+            contact: '',
+            phone: '',
+            mobilePhone: '',
+            products: '',
+            address: '',
+            bankInfo: ''
+        });
         expect(updated.name).toBe('New');
     });
 
@@ -659,10 +782,7 @@ describe('DB — Shipments CRUD', () => {
             { id: 'S1', orderId: 'O1', status: '已出运', etd: '2025-01-01' },
             { id: 'S2', orderId: 'O2', status: '待出运', etd: '2025-03-01' }
         ];
-        DB.data.orders = [
-            makeOrder({ id: 'O1', overseasPort: '' }),
-            makeOrder({ id: 'O2', overseasPort: '' })
-        ];
+        DB.data.orders = [makeOrder({ id: 'O1', overseasPort: '' }), makeOrder({ id: 'O2', overseasPort: '' })];
         const result = DB.getShipments({ status: '待出运' });
         expect(result).toHaveLength(1);
     });
@@ -742,7 +862,13 @@ describe('DB — getDashboardStats', () => {
 
     test('calculates correct totals', () => {
         DB.data.orders = [
-            makeOrder({ id: 'O1', orderAmountUSD: 10000, orderAmountRMB: 72500, factoryCostRMB: 50000, profitRMB: 15000 }),
+            makeOrder({
+                id: 'O1',
+                orderAmountUSD: 10000,
+                orderAmountRMB: 72500,
+                factoryCostRMB: 50000,
+                profitRMB: 15000
+            }),
             makeOrder({ id: 'O2', orderAmountUSD: 5000, orderAmountRMB: 36250, factoryCostRMB: 25000, profitRMB: 7500 })
         ];
         DB.data.customers = [makeCustomer({ id: 'C1' })];
@@ -820,10 +946,7 @@ describe('DB — getProfitAnalysis', () => {
     });
 
     test('filters by customerId', () => {
-        DB.data.orders = [
-            makeOrder({ id: 'O1', customerId: 'C1' }),
-            makeOrder({ id: 'O2', customerId: 'C2' })
-        ];
+        DB.data.orders = [makeOrder({ id: 'O1', customerId: 'C1' }), makeOrder({ id: 'O2', customerId: 'C2' })];
         const analysis = DB.getProfitAnalysis({ customerId: 'C1' });
         expect(analysis.orders).toHaveLength(1);
     });
@@ -898,11 +1021,17 @@ describe('DB — Local Backup', () => {
 
     test('_recoverFromLocal merges missing factories', () => {
         DB.data.factories = [{ id: 'F1', name: 'Cloud Factory' }];
-        localStorage.setItem(DB._BACKUP_KEY, JSON.stringify({
-            data: {
-                factories: [{ id: 'F1', name: 'Cloud Factory' }, { id: 'F2', name: 'Local Factory' }]
-            }
-        }));
+        localStorage.setItem(
+            DB._BACKUP_KEY,
+            JSON.stringify({
+                data: {
+                    factories: [
+                        { id: 'F1', name: 'Cloud Factory' },
+                        { id: 'F2', name: 'Local Factory' }
+                    ]
+                }
+            })
+        );
         const merged = DB._recoverFromLocal();
         expect(merged).toBe(true);
         expect(DB.data.factories).toHaveLength(2);
@@ -910,9 +1039,12 @@ describe('DB — Local Backup', () => {
 
     test('_recoverFromLocal merges missing customers', () => {
         DB.data.customers = [makeCustomer({ id: 'C1' })];
-        localStorage.setItem(DB._BACKUP_KEY, JSON.stringify({
-            data: { customers: [{ id: 'C1' }, { id: 'C2', company: 'Local' }] }
-        }));
+        localStorage.setItem(
+            DB._BACKUP_KEY,
+            JSON.stringify({
+                data: { customers: [{ id: 'C1' }, { id: 'C2', company: 'Local' }] }
+            })
+        );
         const merged = DB._recoverFromLocal();
         expect(merged).toBe(true);
         expect(DB.data.customers).toHaveLength(2);
@@ -920,9 +1052,12 @@ describe('DB — Local Backup', () => {
 
     test('_recoverFromLocal merges missing orders', () => {
         DB.data.orders = [makeOrder({ id: 'O1' })];
-        localStorage.setItem(DB._BACKUP_KEY, JSON.stringify({
-            data: { orders: [{ id: 'O1' }, { id: 'O2', orderAmountUSD: 500 }] }
-        }));
+        localStorage.setItem(
+            DB._BACKUP_KEY,
+            JSON.stringify({
+                data: { orders: [{ id: 'O1' }, { id: 'O2', orderAmountUSD: 500 }] }
+            })
+        );
         const merged = DB._recoverFromLocal();
         expect(merged).toBe(true);
         expect(DB.data.orders).toHaveLength(2);
@@ -940,16 +1075,16 @@ describe('DB — _applyExchangeData', () => {
     beforeEach(() => resetDB());
 
     test('applies legacy single exchange rate to all companies', () => {
-        DB._applyExchangeData({ exchangeRate: 6.50 });
-        expect(DB.exchangeRates['CO-GR']).toBe(6.50);
-        expect(DB.exchangeRates['CO-WY']).toBe(6.50);
-        expect(DB.exchangeRates['CO-GW']).toBe(6.50);
-        expect(DB.exchangeRates['CO-LK']).toBe(6.50);
+        DB._applyExchangeData({ exchangeRate: 6.5 });
+        expect(DB.exchangeRates['CO-GR']).toBe(6.5);
+        expect(DB.exchangeRates['CO-WY']).toBe(6.5);
+        expect(DB.exchangeRates['CO-GW']).toBe(6.5);
+        expect(DB.exchangeRates['CO-LK']).toBe(6.5);
     });
 
     test('applies per-company exchange rates', () => {
-        DB._applyExchangeData({ exchangeRates: { 'CO-GR': 7.30, 'CO-GW': 7.85 } });
-        expect(DB.exchangeRates['CO-GR']).toBe(7.30);
+        DB._applyExchangeData({ exchangeRates: { 'CO-GR': 7.3, 'CO-GW': 7.85 } });
+        expect(DB.exchangeRates['CO-GR']).toBe(7.3);
         expect(DB.exchangeRates['CO-GW']).toBe(7.85);
         // unchanged
         expect(DB.exchangeRates['CO-WY']).toBe(7.25);
@@ -980,10 +1115,10 @@ describe('DB — _applyExchangeData', () => {
 
     test('both exchangeRates and rateMetas applied together', () => {
         DB._applyExchangeData({
-            exchangeRates: { 'CO-GR': 7.10 },
+            exchangeRates: { 'CO-GR': 7.1 },
             rateMetas: { 'CO-GR': { source: 'API', updateTime: '2026-07-31T12:00:00Z', isAuto: true } }
         });
-        expect(DB.exchangeRates['CO-GR']).toBe(7.10);
+        expect(DB.exchangeRates['CO-GR']).toBe(7.1);
         expect(DB.rateMetas['CO-GR'].source).toBe('API');
         expect(DB.rateMetas['CO-GR'].isAuto).toBe(true);
     });
@@ -996,12 +1131,20 @@ describe('DB — getDashboardStats edge cases', () => {
 
     test('handles HK company profit rate calculation', () => {
         DB.currentCompanyId = 'CO-GW';
-        DB.data.orders = [makeOrder({
-            id: 'HK1', companyId: 'CO-GW', orderAmountUSD: 10000, factoryCostRMB: 50000,
-            orderAmountRMB: 78000, profitRMB: 15000, profitRate: 150,
-            status: '已确认', orderDate: '2025-06-15'
-        })];
-        mockAuth.filterCustomers = (c) => c;
+        DB.data.orders = [
+            makeOrder({
+                id: 'HK1',
+                companyId: 'CO-GW',
+                orderAmountUSD: 10000,
+                factoryCostRMB: 50000,
+                orderAmountRMB: 78000,
+                profitRMB: 15000,
+                profitRate: 150,
+                status: '已确认',
+                orderDate: '2025-06-15'
+            })
+        ];
+        mockAuth.filterCustomers = c => c;
 
         const stats = DB.getDashboardStats();
         // HK: avgProfitRate = totalProfitRMB / totalRevenueUSD * 100
@@ -1009,10 +1152,14 @@ describe('DB — getDashboardStats edge cases', () => {
     });
 
     test('calculates factory unpaid amount', () => {
-        DB.data.orders = [makeOrder({
-            id: 'O2', factoryCostRMB: 50000, factoryPaidRMB: 30000
-        })];
-        mockAuth.filterCustomers = (c) => c;
+        DB.data.orders = [
+            makeOrder({
+                id: 'O2',
+                factoryCostRMB: 50000,
+                factoryPaidRMB: 30000
+            })
+        ];
+        mockAuth.filterCustomers = c => c;
 
         const stats = DB.getDashboardStats();
         expect(stats.totalFactoryCostRMB).toBe(50000);
@@ -1021,10 +1168,14 @@ describe('DB — getDashboardStats edge cases', () => {
     });
 
     test('calculates unpaid revenue USD', () => {
-        DB.data.orders = [makeOrder({
-            id: 'O3', orderAmountUSD: 10000, paidAmountUSD: 7000
-        })];
-        mockAuth.filterCustomers = (c) => c;
+        DB.data.orders = [
+            makeOrder({
+                id: 'O3',
+                orderAmountUSD: 10000,
+                paidAmountUSD: 7000
+            })
+        ];
+        mockAuth.filterCustomers = c => c;
 
         const stats = DB.getDashboardStats();
         expect(stats.totalRevenueUSD).toBe(10000);
@@ -1034,11 +1185,18 @@ describe('DB — getDashboardStats edge cases', () => {
 
     test('upcomingShipments includes overseasPort from order', () => {
         DB.data.orders = [makeOrder({ id: 'O1', overseasPort: 'Los Angeles' })];
-        DB.data.shipments = [{
-            id: 'SHP-0001', orderId: 'O1', status: '待出运',
-            etd: '2026-08-15', blNumber: 'BL001', customerName: 'Test', containerNo: 'CONT1'
-        }];
-        mockAuth.filterShipments = (s) => s;
+        DB.data.shipments = [
+            {
+                id: 'SHP-0001',
+                orderId: 'O1',
+                status: '待出运',
+                etd: '2026-08-15',
+                blNumber: 'BL001',
+                customerName: 'Test',
+                containerNo: 'CONT1'
+            }
+        ];
+        mockAuth.filterShipments = s => s;
 
         const stats = DB.getDashboardStats();
         expect(stats.upcomingShipments).toHaveLength(1);
@@ -1047,21 +1205,33 @@ describe('DB — getDashboardStats edge cases', () => {
 
     test('upcomingShipments excludes non-matching status', () => {
         DB.data.orders = [makeOrder({ id: 'O1' })];
-        DB.data.shipments = [{
-            id: 'SHP-0001', orderId: 'O1', status: '已签收', etd: '2026-06-01',
-            blNumber: 'BL001', customerName: 'Test', containerNo: 'CONT1'
-        }];
-        mockAuth.filterShipments = (s) => s;
+        DB.data.shipments = [
+            {
+                id: 'SHP-0001',
+                orderId: 'O1',
+                status: '已签收',
+                etd: '2026-06-01',
+                blNumber: 'BL001',
+                customerName: 'Test',
+                containerNo: 'CONT1'
+            }
+        ];
+        mockAuth.filterShipments = s => s;
 
         const stats = DB.getDashboardStats();
         expect(stats.upcomingShipments).toHaveLength(0);
     });
 
     test('handles zero revenue edge case (avgProfitRate = 0)', () => {
-        DB.data.orders = [makeOrder({
-            id: 'O1', orderAmountUSD: 0, orderAmountRMB: 0, profitRMB: 0
-        })];
-        mockAuth.filterCustomers = (c) => c;
+        DB.data.orders = [
+            makeOrder({
+                id: 'O1',
+                orderAmountUSD: 0,
+                orderAmountRMB: 0,
+                profitRMB: 0
+            })
+        ];
+        mockAuth.filterCustomers = c => c;
 
         const stats = DB.getDashboardStats();
         // All zero → avgProfitRate should be 0 (no division by zero)
@@ -1075,9 +1245,28 @@ describe('DB — getOrders extended search', () => {
     beforeEach(() => {
         resetDB();
         DB.data.orders = [
-            makeOrder({ id: 'O1', productName: 'Smart Watch', customerOrderNo: 'PO-001', companyOperationNo: 'GR25D001', contactPerson: 'Alice' }),
-            makeOrder({ id: 'O2', productName: 'Laptop', customerOrderNo: 'PO-002', companyOperationNo: 'GR25D002', contactPerson: 'Bob' }),
-            makeOrder({ id: 'O3', productName: 'Smart Phone', customerOrderNo: 'INV-003', companyOperationNo: 'GR25D003', contactPerson: 'Charlie', status: '已取消' })
+            makeOrder({
+                id: 'O1',
+                productName: 'Smart Watch',
+                customerOrderNo: 'PO-001',
+                companyOperationNo: 'GR25D001',
+                contactPerson: 'Alice'
+            }),
+            makeOrder({
+                id: 'O2',
+                productName: 'Laptop',
+                customerOrderNo: 'PO-002',
+                companyOperationNo: 'GR25D002',
+                contactPerson: 'Bob'
+            }),
+            makeOrder({
+                id: 'O3',
+                productName: 'Smart Phone',
+                customerOrderNo: 'INV-003',
+                companyOperationNo: 'GR25D003',
+                contactPerson: 'Charlie',
+                status: '已取消'
+            })
         ];
     });
 
@@ -1282,8 +1471,8 @@ describe('DB — saveExchangeRate edge cases', () => {
     beforeEach(() => resetDB());
 
     test('saves with no meta → auto-generates manual meta', () => {
-        DB.saveExchangeRate(7.50, 'CO-GR');
-        expect(DB.exchangeRates['CO-GR']).toBe(7.50);
+        DB.saveExchangeRate(7.5, 'CO-GR');
+        expect(DB.exchangeRates['CO-GR']).toBe(7.5);
         expect(DB.rateMetas['CO-GR'].source).toBe('手动设置');
         expect(DB.rateMetas['CO-GR'].isAuto).toBe(false);
         expect(DB.rateMetas['CO-GR'].updateTime).toBeTruthy();
@@ -1296,8 +1485,8 @@ describe('DB — saveExchangeRate edge cases', () => {
 
     test('saves with null companyId uses currentCompanyId', () => {
         DB.currentCompanyId = 'CO-WY';
-        DB.saveExchangeRate(6.80);
-        expect(DB.exchangeRates['CO-WY']).toBe(6.80);
+        DB.saveExchangeRate(6.8);
+        expect(DB.exchangeRates['CO-WY']).toBe(6.8);
         expect(DB.exchangeRates['CO-GR']).toBe(7.25); // unchanged
     });
 });
@@ -1338,8 +1527,22 @@ describe('DB — Shipments extended', () => {
 
     test('addShipment generates unique IDs', () => {
         DB.data.orders = [makeOrder({ id: 'O1' }), makeOrder({ id: 'O2' })];
-        const s1 = DB.addShipment({ orderId: 'O1', status: '待出运', etd: '2026-08-01', blNumber: 'BL001', customerName: 'Test', containerNo: 'C1' });
-        const s2 = DB.addShipment({ orderId: 'O2', status: '已出运', etd: '2026-08-02', blNumber: 'BL002', customerName: 'Test2', containerNo: 'C2' });
+        const s1 = DB.addShipment({
+            orderId: 'O1',
+            status: '待出运',
+            etd: '2026-08-01',
+            blNumber: 'BL001',
+            customerName: 'Test',
+            containerNo: 'C1'
+        });
+        const s2 = DB.addShipment({
+            orderId: 'O2',
+            status: '已出运',
+            etd: '2026-08-02',
+            blNumber: 'BL002',
+            customerName: 'Test2',
+            containerNo: 'C2'
+        });
         expect(s1.id).toMatch(/^SHP-[0-9a-f-]{36}$/);
         expect(s2.id).toMatch(/^SHP-[0-9a-f-]{36}$/);
         expect(s1.id).not.toBe(s2.id);
@@ -1352,14 +1555,28 @@ describe('DB — Shipments extended', () => {
 
     test('getShipments searches by orderId', () => {
         DB.data.shipments = [
-            { id: 'SHP-0001', orderId: 'GR25D001', status: '待出运', blNumber: 'BL001', customerName: 'Alpha', containerNo: 'CONT1' },
-            { id: 'SHP-0002', orderId: 'GR25D002', status: '已出运', blNumber: 'BL002', customerName: 'Beta', containerNo: 'CONT2' }
+            {
+                id: 'SHP-0001',
+                orderId: 'GR25D001',
+                status: '待出运',
+                blNumber: 'BL001',
+                customerName: 'Alpha',
+                containerNo: 'CONT1'
+            },
+            {
+                id: 'SHP-0002',
+                orderId: 'GR25D002',
+                status: '已出运',
+                blNumber: 'BL002',
+                customerName: 'Beta',
+                containerNo: 'CONT2'
+            }
         ];
         DB.data.orders = [
             { id: 'GR25D001', overseasPort: '' },
             { id: 'GR25D002', overseasPort: '' }
         ];
-        mockAuth.filterShipments = (s) => s;
+        mockAuth.filterShipments = s => s;
 
         const result = DB.getShipments({ search: 'GR25D001' });
         expect(result).toHaveLength(1);
@@ -1368,11 +1585,25 @@ describe('DB — Shipments extended', () => {
 
     test('getShipments searches by blNumber', () => {
         DB.data.shipments = [
-            { id: 'SHP-0001', orderId: 'O1', status: '待出运', blNumber: 'ABC123', customerName: 'Test', containerNo: 'CONT1' },
-            { id: 'SHP-0002', orderId: 'O2', status: '待出运', blNumber: 'XYZ789', customerName: 'Test', containerNo: 'CONT2' }
+            {
+                id: 'SHP-0001',
+                orderId: 'O1',
+                status: '待出运',
+                blNumber: 'ABC123',
+                customerName: 'Test',
+                containerNo: 'CONT1'
+            },
+            {
+                id: 'SHP-0002',
+                orderId: 'O2',
+                status: '待出运',
+                blNumber: 'XYZ789',
+                customerName: 'Test',
+                containerNo: 'CONT2'
+            }
         ];
         DB.data.orders = [{ id: 'O1' }, { id: 'O2' }];
-        mockAuth.filterShipments = (s) => s;
+        mockAuth.filterShipments = s => s;
 
         const result = DB.getShipments({ search: 'xyz' });
         expect(result).toHaveLength(1);
@@ -1381,11 +1612,25 @@ describe('DB — Shipments extended', () => {
 
     test('getShipments searches by containerNo', () => {
         DB.data.shipments = [
-            { id: 'SHP-0001', orderId: 'O1', status: '待出运', blNumber: 'BL1', customerName: 'Test', containerNo: 'TGBU1234567' },
-            { id: 'SHP-0002', orderId: 'O2', status: '待出运', blNumber: 'BL2', customerName: 'Test', containerNo: 'MSCU7654321' }
+            {
+                id: 'SHP-0001',
+                orderId: 'O1',
+                status: '待出运',
+                blNumber: 'BL1',
+                customerName: 'Test',
+                containerNo: 'TGBU1234567'
+            },
+            {
+                id: 'SHP-0002',
+                orderId: 'O2',
+                status: '待出运',
+                blNumber: 'BL2',
+                customerName: 'Test',
+                containerNo: 'MSCU7654321'
+            }
         ];
         DB.data.orders = [{ id: 'O1' }, { id: 'O2' }];
-        mockAuth.filterShipments = (s) => s;
+        mockAuth.filterShipments = s => s;
 
         const result = DB.getShipments({ search: 'mscu' });
         expect(result).toHaveLength(1);
@@ -1394,11 +1639,25 @@ describe('DB — Shipments extended', () => {
 
     test('getShipments searches by customerName', () => {
         DB.data.shipments = [
-            { id: 'SHP-0001', orderId: 'O1', status: '待出运', blNumber: 'BL1', customerName: 'Alpha Corp', containerNo: 'C1' },
-            { id: 'SHP-0002', orderId: 'O2', status: '待出运', blNumber: 'BL2', customerName: 'Beta Inc', containerNo: 'C2' }
+            {
+                id: 'SHP-0001',
+                orderId: 'O1',
+                status: '待出运',
+                blNumber: 'BL1',
+                customerName: 'Alpha Corp',
+                containerNo: 'C1'
+            },
+            {
+                id: 'SHP-0002',
+                orderId: 'O2',
+                status: '待出运',
+                blNumber: 'BL2',
+                customerName: 'Beta Inc',
+                containerNo: 'C2'
+            }
         ];
         DB.data.orders = [{ id: 'O1' }, { id: 'O2' }];
-        mockAuth.filterShipments = (s) => s;
+        mockAuth.filterShipments = s => s;
 
         const result = DB.getShipments({ search: 'beta' });
         expect(result).toHaveLength(1);
@@ -1411,7 +1670,7 @@ describe('DB — Shipments extended', () => {
             { id: 'SHP-0002', orderId: 'O2', status: '已出运', blNumber: 'BL2', customerName: 'B', containerNo: 'C2' }
         ];
         DB.data.orders = [{ id: 'O1' }, { id: 'O2' }];
-        mockAuth.filterShipments = (s) => s;
+        mockAuth.filterShipments = s => s;
 
         const result = DB.getShipments({ status: '已出运' });
         expect(result).toHaveLength(1);
@@ -1425,22 +1684,48 @@ describe('DB — Invoices extended', () => {
     beforeEach(() => resetDB());
 
     test('addInvoice generates ID with docType suffix', () => {
-        const inv = DB.addInvoice({ orderId: 'O1', docType: 'invoice', docNumber: 'INV-001', customerName: 'Test', date: '2026-07-01' });
+        const inv = DB.addInvoice({
+            orderId: 'O1',
+            docType: 'invoice',
+            docNumber: 'INV-001',
+            customerName: 'Test',
+            date: '2026-07-01'
+        });
         expect(inv.id).toMatch(/^DOC-[A-Z0-9]{8}-invoice$/);
     });
 
     test('addInvoice with packing list type', () => {
-        const inv = DB.addInvoice({ orderId: 'O1', docType: 'packing', docNumber: 'PK-001', customerName: 'Test', date: '2026-07-01' });
+        const inv = DB.addInvoice({
+            orderId: 'O1',
+            docType: 'packing',
+            docNumber: 'PK-001',
+            customerName: 'Test',
+            date: '2026-07-01'
+        });
         expect(inv.id).toContain('packing');
     });
 
     test('getInvoices filters by docType', () => {
         DB.data.invoices = [
-            { id: 'DOC-0001-invoice', docType: 'invoice', orderId: 'O1', docNumber: 'INV-1', customerName: 'Test', date: '2026-07-01' },
-            { id: 'DOC-0002-packing', docType: 'packing', orderId: 'O1', docNumber: 'PK-1', customerName: 'Test', date: '2026-07-01' }
+            {
+                id: 'DOC-0001-invoice',
+                docType: 'invoice',
+                orderId: 'O1',
+                docNumber: 'INV-1',
+                customerName: 'Test',
+                date: '2026-07-01'
+            },
+            {
+                id: 'DOC-0002-packing',
+                docType: 'packing',
+                orderId: 'O1',
+                docNumber: 'PK-1',
+                customerName: 'Test',
+                date: '2026-07-01'
+            }
         ];
         DB.data.orders = [{ id: 'O1' }];
-        mockAuth.filterInvoices = (i) => i;
+        mockAuth.filterInvoices = i => i;
 
         const result = DB.getInvoices({ docType: 'invoice' });
         expect(result).toHaveLength(1);
@@ -1449,11 +1734,25 @@ describe('DB — Invoices extended', () => {
 
     test('getInvoices searches by docNumber', () => {
         DB.data.invoices = [
-            { id: 'D1', docType: 'invoice', orderId: 'O1', docNumber: 'INV-ABC', customerName: 'Test', date: '2026-07-01' },
-            { id: 'D2', docType: 'invoice', orderId: 'O2', docNumber: 'INV-XYZ', customerName: 'Test', date: '2026-07-02' }
+            {
+                id: 'D1',
+                docType: 'invoice',
+                orderId: 'O1',
+                docNumber: 'INV-ABC',
+                customerName: 'Test',
+                date: '2026-07-01'
+            },
+            {
+                id: 'D2',
+                docType: 'invoice',
+                orderId: 'O2',
+                docNumber: 'INV-XYZ',
+                customerName: 'Test',
+                date: '2026-07-02'
+            }
         ];
         DB.data.orders = [{ id: 'O1' }, { id: 'O2' }];
-        mockAuth.filterInvoices = (i) => i;
+        mockAuth.filterInvoices = i => i;
 
         const result = DB.getInvoices({ search: 'xyz' });
         expect(result).toHaveLength(1);
@@ -1462,11 +1761,25 @@ describe('DB — Invoices extended', () => {
 
     test('getInvoices searches by customerName', () => {
         DB.data.invoices = [
-            { id: 'D1', docType: 'invoice', orderId: 'O1', docNumber: 'INV1', customerName: 'Alpha Corp', date: '2026-07-01' },
-            { id: 'D2', docType: 'invoice', orderId: 'O2', docNumber: 'INV2', customerName: 'Beta Inc', date: '2026-07-02' }
+            {
+                id: 'D1',
+                docType: 'invoice',
+                orderId: 'O1',
+                docNumber: 'INV1',
+                customerName: 'Alpha Corp',
+                date: '2026-07-01'
+            },
+            {
+                id: 'D2',
+                docType: 'invoice',
+                orderId: 'O2',
+                docNumber: 'INV2',
+                customerName: 'Beta Inc',
+                date: '2026-07-02'
+            }
         ];
         DB.data.orders = [{ id: 'O1' }, { id: 'O2' }];
-        mockAuth.filterInvoices = (i) => i;
+        mockAuth.filterInvoices = i => i;
 
         const result = DB.getInvoices({ search: 'alpha' });
         expect(result).toHaveLength(1);

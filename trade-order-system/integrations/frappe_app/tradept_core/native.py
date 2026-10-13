@@ -5,7 +5,8 @@ Historical references are deliberately excluded from native ledger conversion.
 """
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import math
 import frappe
@@ -48,11 +49,65 @@ def stage(doc):
 
 
 PLAN_FIELDS = {"factoryId", "productType", "inspectionDate", "estimatedShipDate"}
+LIVE_RATE_SOURCES = {"open.er-api.com", "api.exchangerate-api.com"}
+LIVE_RATE_ADJUSTMENT = Decimal("-0.02")
 
 
 def production_plan(rows):
     """Only foreign-trade production milestones persist beside native PO data."""
     return [{key: value for key, value in row.items() if key in PLAN_FIELDS} for row in rows]
+
+
+def _live_timestamp(value, name, required=True):
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or not value or len(value) > 40:
+        raise APIError(400, "INVALID_LIVE_RATE", name + " must be an ISO timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError:
+        raise APIError(400, "INVALID_LIVE_RATE", name + " must be an ISO timestamp") from None
+    if parsed.tzinfo is None:
+        raise APIError(400, "INVALID_LIVE_RATE", name + " must include a timezone")
+    return value
+
+
+def live_rate_snapshot(rate, metadata):
+    """Validate and reduce the gateway assertion used for one native conversion."""
+    if type(rate) not in (float, int) or not math.isfinite(rate) or not 5 < rate < 10:
+        raise APIError(503, "LIVE_RATE_REQUIRED", "A current USD/CNY publication is required before converting the order")
+    if not isinstance(metadata, dict):
+        raise APIError(503, "LIVE_RATE_REQUIRED", "A current USD/CNY publication is required before converting the order")
+    try:
+        raw = Decimal(str(metadata.get("rawRate")))
+        adjustment = Decimal(str(metadata.get("adjustment")))
+        adjusted = Decimal(str(metadata.get("adjustedRate")))
+        supplied = Decimal(str(rate))
+    except (InvalidOperation, TypeError, ValueError):
+        raise APIError(400, "INVALID_LIVE_RATE", "The live exchange-rate assertion is invalid") from None
+    expected = (raw + adjustment).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    if (not raw.is_finite() or not adjusted.is_finite() or not supplied.is_finite()
+            or adjustment != LIVE_RATE_ADJUSTMENT or adjusted != expected or supplied != adjusted
+            or metadata.get("base") != "USD" or metadata.get("quote") != "CNY"
+            or metadata.get("provider") != "ExchangeRate-API" or metadata.get("source") not in LIVE_RATE_SOURCES
+            or type(metadata.get("cached")) is not bool or type(metadata.get("stale")) is not bool):
+        raise APIError(400, "INVALID_LIVE_RATE", "The live exchange-rate assertion is invalid")
+    if metadata["stale"]:
+        raise APIError(503, "LIVE_RATE_STALE", "A stale USD/CNY publication cannot be used for a new financial calculation")
+    return {
+        "base": "USD",
+        "quote": "CNY",
+        "rawRate": float(raw),
+        "adjustment": float(adjustment),
+        "adjustedRate": float(adjusted),
+        "provider": "ExchangeRate-API",
+        "source": metadata["source"],
+        "publishedAt": _live_timestamp(metadata.get("publishedAt"), "publishedAt", required=False),
+        "fetchedAt": _live_timestamp(metadata.get("fetchedAt"), "fetchedAt"),
+        "nextUpdateAt": _live_timestamp(metadata.get("nextUpdateAt"), "nextUpdateAt"),
+        "cached": metadata["cached"],
+        "stale": metadata["stale"],
+    }
 
 
 def _rate(company, currency, values):
@@ -69,11 +124,12 @@ def _rate(company, currency, values):
     raise APIError(400, "UNSUPPORTED_CURRENCY_PAIR", "Configure an explicit conversion for this currency pair")
 
 
-def convert(doc, value, cfg, key):
+def convert(doc, value, cfg, key, rate_snapshot=None):
     if doc.sales_order:
         return documents(value["id"])
     if doc.doctype == "Trade Legacy Order":
         raise APIError(409, "HISTORICAL_REFERENCE_ONLY", "Historical Excel balances remain references; create a new native order for new business")
+    rate_snapshot = live_rate_snapshot(rate_snapshot.get("adjustedRate") if isinstance(rate_snapshot, dict) else None, rate_snapshot)
     company_name = repo.native_company(value.get("companyId"))
     if not company_name:
         raise APIError(400, "COMPANY_REQUIRED", "Select a configured legal entity")
@@ -84,7 +140,10 @@ def convert(doc, value, cfg, key):
     lines = value.get("erpItems")
     if not isinstance(lines, list) or not lines:
         raise APIError(400, "NATIVE_ITEMS_REQUIRED", "Native sales and purchase orders require real Item codes and explicit quantities/rates")
-    values, _ = repo.rates()
+    # This value is frozen into ERPNext's native conversion_rate fields. The
+    # provider publication remains an audit snapshot and never restates an
+    # existing Sales Order or Purchase Order later.
+    values = {company.custom_tradept_record_id: rate_snapshot["adjustedRate"]}
     grouped, sales, seen = {}, [], set()
     for line in lines:
         if not isinstance(line, dict) or not line.get("id") or line["id"] in seen:

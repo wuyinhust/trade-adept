@@ -1,8 +1,13 @@
 """Fast domain/contract checks; real Frappe acceptance is run separately."""
 import copy
+from contextlib import nullcontext
+import hashlib
+import hmac
 import importlib
+import json
 from pathlib import Path
 import sys
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -12,6 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tradept_core.domain import APIError, DEFAULT_ROLES, Rules, validate_embedded_ids
 from tradept_core.schema import ORDER, CUSTOMER, FACTORY_LINE, SHIPMENT, encode, decode, child_encode, child_decode, dumps
 from tradept_core.validation import validate_order, validate_shipment
+
+
+TEST_GATEWAY_KEY = bytes(range(32)).hex()
 
 
 class Row(SimpleNamespace):
@@ -24,7 +32,7 @@ def fake_frappe():
         pass
     class QueryDeadlockError(Exception):
         pass
-    return SimpleNamespace(whitelist=lambda **kwargs: lambda fn: fn, flags=Row(), session=Row(user="user@example.invalid"), local=Row(site="isolated.test", response={}, request=Row(method="POST")), db=Mock(), get_doc=Mock(), get_all=Mock(), sessions=Row(get_csrf_token=lambda: "native-test-token"), ValidationError=ValidationError, QueryDeadlockError=QueryDeadlockError, PermissionError=PermissionError, utils=Row(strip_html=lambda s: s, today=lambda: "2026-10-12"))
+    return SimpleNamespace(whitelist=lambda **kwargs: lambda fn: fn, flags=Row(), session=Row(user="user@example.invalid", sid="native-session-id-for-tests"), local=Row(site="isolated.test", response={}, request=Row(method="POST")), conf=Row(tradept_gateway_hmac_key=TEST_GATEWAY_KEY), db=Mock(), get_doc=Mock(), get_all=Mock(), sessions=Row(get_csrf_token=lambda: "native-test-token"), ValidationError=ValidationError, QueryDeadlockError=QueryDeadlockError, PermissionError=PermissionError, utils=Row(strip_html=lambda s: s, today=lambda: "2026-10-12"))
 
 
 class RuleTests(unittest.TestCase):
@@ -153,6 +161,7 @@ class NativeContractTests(unittest.TestCase):
         cls.events = importlib.import_module("tradept_core.events")
         cls.guard = importlib.import_module("tradept_core.request_guard")
         cls.attribution = importlib.import_module("tradept_core.attribution")
+        cls.administrator = importlib.import_module("tradept_core.administrator")
 
     @classmethod
     def tearDownClass(cls):
@@ -162,7 +171,40 @@ class NativeContractTests(unittest.TestCase):
         self.frappe.local.response = {}
         self.frappe.local.request.method = "POST"
         self.frappe.db.reset_mock()
+        self.frappe.db.exists.reset_mock()
         self.frappe.flags = Row()
+
+    def gateway_assertion(self, action, payload, tenant="a", site="isolated.test", issued_at=None):
+        issued_at = int(time.time()) if issued_at is None else issued_at
+        claims = {
+            "v": 1,
+            "site": site,
+            "tenant": tenant,
+            "action": action,
+            "session": hashlib.sha256(self.frappe.session.sid.encode()).hexdigest(),
+            "expectedVersion": payload.get("expectedVersion"),
+            "idempotencyKey": payload.get("idempotencyKey"),
+            "payloadSha256": hashlib.sha256(self.api._canonical_json(payload).encode()).hexdigest(),
+            "rate": {"value": payload.get("liveExchangeRate"), "metadata": payload.get("liveExchangeRateMeta")},
+            "iat": issued_at,
+            "exp": issued_at + 180,
+            "nonce": "0123456789abcdef0123456789abcdef",
+        }
+        signature = hmac.new(bytes.fromhex(TEST_GATEWAY_KEY), self.api._canonical_json(claims).encode(), hashlib.sha256).hexdigest()
+        return {"claims": claims, "signature": signature}
+
+    def sign_gateway_payload(self, action, payload, **kwargs):
+        payload[self.api.GATEWAY_ASSERTION] = self.gateway_assertion(action, payload, **kwargs)
+        return payload
+
+    @staticmethod
+    def live_rate(stale=False):
+        return {
+            "base": "USD", "quote": "CNY", "rawRate": 7.25, "adjustment": -0.02,
+            "adjustedRate": 7.23, "provider": "ExchangeRate-API", "source": "open.er-api.com",
+            "publishedAt": "2026-10-12T00:00:00Z", "fetchedAt": "2026-10-12T00:05:00Z",
+            "nextUpdateAt": "2026-10-13T00:00:00Z", "cached": False, "stale": stale,
+        }
 
     def test_write_cas_rejects_stale_revision(self):
         with self.assertRaises(APIError) as caught:
@@ -173,6 +215,347 @@ class NativeContractTests(unittest.TestCase):
     def test_write_cas_requires_integer(self):
         with self.assertRaises(APIError):
             self.api._expected(Row(revision=2), True)
+
+    def test_existing_workspace_skips_new_enterprise_wizard_without_recreating_data(self):
+        cfg = {
+            "id": "grandware", "name": "Grandware", "companies": [{"id": "C1"}],
+            "roles": copy.deepcopy(DEFAULT_ROLES),
+        }
+        progress = self.administrator._onboarding(cfg, {"U": {"id": "U", "role": "admin"}})
+        self.assertEqual(progress["status"], "complete")
+        self.assertTrue(progress["requiredReady"])
+        self.assertEqual(progress["completedSteps"], list(self.administrator.ONBOARDING_STEPS))
+
+    def test_new_enterprise_wizard_remains_required_until_first_company_exists(self):
+        cfg = {
+            "id": "new-company", "name": "New Company", "companies": [],
+            "roles": copy.deepcopy(DEFAULT_ROLES),
+            "onboarding": {"status": "in_progress", "completedSteps": ["enterprise"]},
+        }
+        progress = self.administrator._onboarding(cfg, {"U": {"id": "U", "role": "admin"}})
+        self.assertEqual(progress["status"], "in_progress")
+        self.assertFalse(progress["requiredReady"])
+        self.assertFalse(progress["checks"]["company"])
+
+    def test_onboarding_moves_to_the_next_unfinished_step(self):
+        cfg = {
+            "id": "new-company", "name": "New Company", "companies": [],
+            "roles": copy.deepcopy(DEFAULT_ROLES),
+            "onboarding": {"status": "in_progress", "currentStep": "enterprise", "completedSteps": []},
+        }
+        updated = self.administrator._onboarding_update(
+            cfg, {"U": {"id": "U", "role": "admin"}},
+            {"currentStep": "enterprise", "completedSteps": ["enterprise"]},
+        )
+        self.assertEqual(updated["currentStep"], "company")
+
+    def test_session_exposes_onboarding_and_management_pages_only_to_tenant_manager(self):
+        cfg = {
+            "id": "tenant", "name": "New Enterprise", "companies": [],
+            "roles": copy.deepcopy(DEFAULT_ROLES), "teams": {},
+            "onboarding": {"status": "required", "completedSteps": []},
+        }
+        administrator = {"id": "A", "tenantId": "tenant", "role": "admin", "visibleCompanyIds": []}
+        salesperson = {"id": "S", "tenantId": "tenant", "role": "salesperson", "visibleCompanyIds": []}
+        users = {"A": administrator, "S": salesperson}
+        rules = Rules(cfg, users)
+
+        admin_session = self.api._session(cfg, administrator, rules, users)
+        sales_session = self.api._session(cfg, salesperson, rules, users)
+
+        self.assertEqual(admin_session["onboarding"]["status"], "required")
+        self.assertIn("admin", admin_session["user"]["pages"])
+        self.assertIn("onboarding", admin_session["user"]["pages"])
+        self.assertNotIn("admin", sales_session["user"]["pages"])
+        self.assertNotIn("onboarding", sales_session["user"]["pages"])
+
+    def test_api_routes_administrator_state_and_update_through_locked_action(self):
+        work = Row(revision=4)
+        cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES), "companies": []}
+        actor = {"id": "A", "role": "admin", "tenantId": "tenant", "visibleCompanyIds": []}
+        users = {"A": actor}
+        rules = Rules(cfg, users)
+        identity = (work, cfg, actor, rules, users)
+        with patch.object(self.api, "_identity", return_value=identity) as identify, \
+                patch.object(self.administrator, "state", return_value={"meta": {"version": 4}}) as read, \
+                patch.object(self.administrator, "update", return_value={"meta": {"version": 5}}) as write:
+            self.assertEqual(self.api._run_action("admin_state", {}), {"meta": {"version": 4}})
+            self.assertEqual(self.api._run_action("admin_update", {"expectedVersion": 4}), {"meta": {"version": 5}})
+        self.assertEqual(identify.call_args_list[0].args, (False,))
+        self.assertEqual(identify.call_args_list[1].args, (True,))
+        read.assert_called_once_with(work, cfg, actor, rules, users)
+        write.assert_called_once_with(work, cfg, actor, rules, {"expectedVersion": 4})
+
+    def test_current_administrator_cannot_remove_own_management_capability(self):
+        cfg = {"roles": copy.deepcopy(DEFAULT_ROLES)}
+        actor = {"id": "U", "role": "admin"}
+        with self.assertRaises(APIError) as caught:
+            self.administrator._role(cfg, actor, {
+                "key": "admin", "label": "Administrator", "scope": "tenant",
+                "permissions": ["read"], "pages": ["dashboard"],
+            })
+        self.assertEqual(caught.exception.code, "CURRENT_ADMIN_REQUIRED")
+
+    def test_management_role_must_use_tenant_scope(self):
+        cfg = {"roles": copy.deepcopy(DEFAULT_ROLES)}
+        with self.assertRaises(APIError) as caught:
+            self.administrator._role(cfg, {"id": "U", "role": "salesperson"}, {
+                "key": "custom-admin", "label": "Custom admin", "scope": "team",
+                "permissions": ["read", "accounts.configure"], "pages": ["dashboard", "admin"],
+            })
+        self.assertEqual(caught.exception.code, "ADMIN_SCOPE_REQUIRED")
+
+    def test_management_role_view_always_exposes_its_admin_page(self):
+        roles = self.administrator._roles({"roles": {
+            "owner": {"scope": "tenant", "permissions": {"read": True, "accounts.configure": True}, "pages": ["dashboard"]}
+        }})
+        self.assertEqual(roles[0]["permissions"], ["read", "accounts.configure"])
+        self.assertIn("admin", roles[0]["pages"])
+
+    def test_email_ports_are_bounded_before_native_email_configuration(self):
+        self.assertEqual(self.administrator._port("993", "IMAP"), 993)
+        with self.assertRaises(APIError):
+            self.administrator._port(70000, "SMTP")
+
+    def test_company_order_prefix_must_be_unique(self):
+        cfg = {"companies": [{"id": "C1", "orderPrefix": "GW"}]}
+        with self.assertRaises(APIError) as caught:
+            self.administrator._company(cfg, {"id": "U"}, {
+                "id": "C2", "name": "Second", "country": "China", "jurisdiction": "CN",
+                "settlementCurrency": "CNY", "orderPrefix": "gw",
+            })
+        self.assertEqual(caught.exception.code, "DUPLICATE_ORDER_PREFIX")
+
+    def test_current_administrator_cannot_assign_self_a_non_management_role(self):
+        cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES), "companies": []}
+        current = {"id": "U", "nativeUser": "admin@example.invalid", "role": "admin"}
+        with patch.object(self.administrator, "_configured_profiles", return_value={"U": current}):
+            with self.assertRaises(APIError) as caught:
+                self.administrator._member(cfg, current, {
+                    "id": "U", "email": "admin@example.invalid", "username": "admin",
+                    "name": "Admin", "role": "salesperson", "visibleCompanyIds": [],
+                })
+        self.assertEqual(caught.exception.code, "CURRENT_ADMIN_REQUIRED")
+
+    def test_disabled_member_remains_visible_for_reactivation_in_administrator(self):
+        profile = {
+            "id": "U2", "name": "Disabled User", "username": "disabled",
+            "role": "salesperson", "tenantId": "tenant", "visibleCompanyIds": [],
+        }
+        with patch.object(self.frappe, "get_all", return_value=[Row(user="disabled@example.invalid", profile=dumps(profile))]), \
+                patch.object(self.frappe.db, "get_value", return_value=0):
+            configured = self.administrator._configured_profiles()
+            members = self.administrator._members({"id": "tenant"}, configured)
+        self.assertEqual(members[0]["id"], "U2")
+        self.assertFalse(members[0]["enabled"])
+
+    def test_editing_a_role_preserves_its_existing_collection_boundary(self):
+        cfg = {"roles": {"limited": {
+            "scope": "self", "permissions": ["read"], "pages": ["orders"],
+            "collections": ["orders"], "readScopes": {"factories": "entities"},
+        }}}
+        with patch.object(self.frappe.db, "exists", return_value=True):
+            changed = self.administrator._role(cfg, {"role": "admin"}, {
+                "key": "limited", "label": "Limited Sales", "scope": "team",
+                "permissions": ["read", "edit"], "pages": ["orders"],
+            })
+        self.assertEqual(changed["collections"], ["orders"])
+        self.assertEqual(changed["readScopes"], {"factories": "entities"})
+        self.assertFalse(Rules(cfg, {}).permitted(cfg, {"role": "limited"}, "read", "customers"))
+
+    def test_new_member_cannot_take_over_an_existing_native_user(self):
+        cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES), "companies": []}
+        with patch.object(self.administrator, "_configured_profiles", return_value={}), \
+                patch.object(self.frappe.db, "exists", return_value=True):
+            with self.assertRaises(APIError) as caught:
+                self.administrator._member(cfg, {"id": "A", "role": "admin"}, {
+                    "id": "new-member", "email": "existing@example.com", "username": "new-user",
+                    "name": "New member", "role": "salesperson", "temporaryPassword": "private-temp-password",
+                })
+        self.assertEqual(caught.exception.code, "MEMBER_EMAIL_EXISTS")
+
+    def test_new_company_form_rejects_reusing_an_existing_stable_id(self):
+        cfg = {"companies": [{"id": "C1", "name": "Original", "settlementCurrency": "CNY"}]}
+        with self.assertRaises(APIError) as caught:
+            self.administrator._company(cfg, {}, {"id": "C1", "create": True, "name": "Duplicate"})
+        self.assertEqual(caught.exception.code, "ADMIN_DUPLICATE")
+        self.assertEqual(cfg["companies"][0]["name"], "Original")
+
+    def test_child_department_promotes_its_native_parent_to_group(self):
+        class Doc(Row):
+            def set(self, field, value):
+                setattr(self, field, value)
+            def save(self, **kwargs):
+                return self
+        parent = Doc(name="Sales - EX", is_group=0)
+        child = Doc(name="Sales East - EX", is_group=0)
+        cfg = {"companies": [{"id": "C1"}], "departments": {"D1": {
+            "id": "D1", "name": "Sales", "visibleCompanyIds": ["C1"], "nativeNames": {"C1": parent.name},
+        }}}
+        def get_value(doctype, filters, field):
+            if field == "is_group":
+                return parent.is_group
+            return "All Departments" if isinstance(filters, dict) and "parent_department" in filters else None
+        with patch.object(self.administrator, "_configured_profiles", return_value={}), \
+                patch.object(self.administrator.repo, "native_company", return_value="Example"), \
+                patch.object(self.frappe, "get_meta", create=True, return_value=Row(has_field=lambda field: True)), \
+                patch.object(self.frappe, "new_doc", create=True, return_value=child), \
+                patch.object(self.frappe, "get_doc", return_value=parent), \
+                patch.object(self.frappe.db, "exists", side_effect=lambda kind, name: kind == "DocType" or name == parent.name), \
+                patch.object(self.frappe.db, "get_value", side_effect=get_value):
+            changed = self.administrator._department(cfg, {
+                "id": "D2", "name": "Sales East", "parentId": "D1", "visibleCompanyIds": ["C1"],
+            })
+        self.assertEqual(parent.is_group, 1)
+        self.assertEqual(child.parent_department, parent.name)
+        self.assertEqual(changed["nativeNames"], {"C1": child.name})
+
+    def test_email_uses_native_server_login_and_imap_fields(self):
+        class Doc(Row):
+            def set(self, field, value):
+                setattr(self, field, value)
+            def append(self, field, value):
+                setattr(self, field, [*(self.get(field) or []), value])
+            def save(self, **kwargs):
+                return self
+        native = Doc(name="Sales Mail", imap_folder=[])
+        profiles = {"U": {"id": "U", "nativeUser": "sales@example.com"}}
+        with patch.object(self.administrator, "_configured_profiles", return_value=profiles), \
+                patch.object(self.administrator, "_sync_mailbox_members") as sync, \
+                patch.object(self.administrator, "_clear_email_defaults"), \
+                patch.object(self.frappe, "get_meta", create=True, return_value=Row(has_field=lambda field: True)), \
+                patch.object(self.frappe, "new_doc", create=True, return_value=native), \
+                patch.object(self.frappe.db, "exists", side_effect=lambda kind, filters: kind == "DocType"):
+            changed = self.administrator._email_account({}, {
+                "label": "Sales Mail", "emailId": "sales@example.com", "loginId": "smtp-user",
+                "incomingServer": "imap.example.com", "smtpServer": "smtp.example.com", "service": "Outlook",
+                "password": "private-mail-password", "allowedUserIds": ["U"],
+            })
+        self.assertEqual(native.email_server, "imap.example.com")
+        self.assertEqual(native.service, "Outlook.com")
+        self.assertEqual(native.login_id_is_different, 1)
+        self.assertEqual(native.imap_folder, [{"folder_name": "INBOX"}])
+        self.assertEqual(native.awaiting_password, 0)
+        self.assertNotIn("password", changed)
+        sync.assert_called_once_with(native, profiles, ["U"])
+
+    def test_existing_hk_company_without_country_can_edit_prefix_using_native_identity(self):
+        migration = Row(_company=Mock(return_value=Row(name="HK Trading Limited")))
+        cfg = {"companies": [{
+            "id": "HK1", "name": "Legacy Display", "jurisdiction": "HK",
+            "settlementCurrency": "USD", "orderPrefix": "HK",
+        }]}
+        native_identity = {"company_name": "HK Trading Limited", "country": "Hong Kong", "default_currency": "USD"}
+        with patch.object(self.administrator.repo, "native_company", return_value="HK Trading Limited"), \
+                patch.object(self.frappe.db, "get_value", return_value=native_identity), \
+                patch.dict(sys.modules, {"tradept_core.migration": migration}):
+            viewed = self.administrator._company_details(cfg["companies"][0])
+            changed = self.administrator._company(cfg, {}, {
+                "id": "HK1", "name": viewed["name"], "orderPrefix": "HKT",
+            })
+        self.assertEqual(viewed["country"], "Hong Kong")
+        self.assertEqual(changed["name"], "HK Trading Limited")
+        self.assertEqual(changed["country"], "Hong Kong")
+        self.assertEqual(changed["orderPrefix"], "HKT")
+        self.assertEqual(cfg["companies"][0]["nativeCompanyName"], "HK Trading Limited")
+        migration._company.assert_called_once()
+
+    def test_existing_company_name_change_is_rejected_before_native_save(self):
+        cfg = {"companies": [{"id": "C1", "name": "Original", "country": "China", "jurisdiction": "CN", "settlementCurrency": "CNY"}]}
+        with patch.object(self.administrator.repo, "native_company", return_value=None):
+            with self.assertRaises(APIError) as caught:
+                self.administrator._company(cfg, {}, {"id": "C1", "name": "Renamed"})
+        self.assertEqual(caught.exception.code, "COMPANY_NAME_LOCKED")
+        self.assertEqual(cfg["companies"][0]["name"], "Original")
+
+    def test_email_default_switch_explicitly_authorizes_only_prior_default_save(self):
+        previous = Mock()
+        with patch.object(self.frappe, "get_all", return_value=[Row(name="Previous Mail"), Row(name="New Mail")]), \
+                patch.object(self.frappe, "get_doc", return_value=previous) as load:
+            self.administrator._clear_email_defaults(Row(name="New Mail"), {
+                "enable_incoming": 1, "default_incoming": 1, "enable_outgoing": 0, "default_outgoing": 1,
+            })
+        load.assert_called_once_with("Email Account", "Previous Mail")
+        previous.set.assert_called_once_with("default_incoming", 0)
+        previous.save.assert_called_once_with(ignore_permissions=True)
+
+    def test_mailbox_access_updates_native_user_emails_and_revokes_removed_members(self):
+        class User(Row):
+            def set(self, field, value):
+                setattr(self, field, value)
+            def append(self, field, value):
+                getattr(self, field).append(value)
+            def save(self, **kwargs):
+                return self
+        added = User(user_emails=[{"email_account": "Other Mail"}])
+        removed = User(user_emails=[{"email_account": "Sales Mail"}, {"email_account": "Other Mail"}])
+        users = {"a@example.com": added, "b@example.com": removed}
+        mailbox = Row(name="Sales Mail", email_id="sales@example.com", enable_outgoing=1, awaiting_password=0, auth_method="Basic")
+        with patch.object(self.frappe, "get_meta", create=True, return_value=Row(has_field=lambda field: True)), \
+                patch.object(self.frappe, "get_doc", side_effect=lambda doctype, name: users[name]):
+            self.administrator._sync_mailbox_members(mailbox, {
+                "A": {"nativeUser": "a@example.com"}, "B": {"nativeUser": "b@example.com"},
+            }, ["A"])
+        self.assertEqual(added.user_emails[0], {"email_account": "Other Mail"})
+        self.assertEqual(added.user_emails[1]["email_account"], "Sales Mail")
+        self.assertEqual(removed.user_emails, [{"email_account": "Other Mail"}])
+
+    def test_regular_management_edits_do_not_restart_completed_onboarding(self):
+        cfg = {
+            "id": "tenant", "name": "Existing", "companies": [{"id": "C1"}],
+            "roles": copy.deepcopy(DEFAULT_ROLES),
+        }
+        changed = self.administrator._onboarding_update(cfg, {"A": {"role": "admin"}}, {
+            "currentStep": "enterprise", "completedSteps": ["enterprise"],
+        })
+        self.assertEqual(changed["status"], "complete")
+
+    def test_mailbox_delegation_preserves_actor_and_restores_authenticated_request_on_failure(self):
+        user = self.frappe.session.user
+        actor = {"id": "A", "nativeUser": user, "tenantId": "tenant", "role": "admin"}
+        cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES)}
+        rules = Rules(cfg, {"A": actor})
+        sid = self.frappe.session.sid
+        data = self.frappe.session.data = {"csrf_token": "original-csrf"}
+        form = self.frappe.local.form_dict = {"cmd": "tradept_core.api.dispatch"}
+        cache = self.frappe.local.role_permissions = {"Email Account": False}
+        self.frappe.flags.tradept_managed_write = True
+        with patch.object(self.permissions, "is_workbench_user", return_value=True), \
+                patch.object(self.frappe, "set_user", create=True) as set_user:
+            with self.assertRaises(ValueError):
+                with self.permissions.delegated_email_configuration(cfg, actor, rules):
+                    self.assertEqual(self.frappe.session.user, "Administrator")
+                    self.assertEqual(self.permissions.delegated_actor(), user)
+                    self.assertEqual(self.frappe.local.role_permissions, {})
+                    created = Row(is_new=lambda: True, get_all_children=lambda: [])
+                    with patch.object(self.events, "_tracked", return_value=False):
+                        self.events.before_native_write(created)
+                    self.assertEqual(created.owner, user)
+                    self.assertEqual(created.modified_by, user)
+                    raise ValueError("native mailbox validation failure")
+            set_user.assert_not_called()
+        self.assertEqual(self.frappe.session.user, user)
+        self.assertEqual(self.frappe.session.sid, sid)
+        self.assertIs(self.frappe.session.data, data)
+        self.assertIs(self.frappe.local.form_dict, form)
+        self.assertIs(self.frappe.local.role_permissions, cache)
+        self.assertTrue(self.frappe.flags.tradept_managed_write)
+        self.assertIsNone(self.permissions.delegated_actor())
+
+    def test_mailbox_service_context_denies_unprovisioned_or_non_management_accounts(self):
+        user = self.frappe.session.user
+        cfg = {"id": "tenant", "roles": copy.deepcopy(DEFAULT_ROLES)}
+        rules = Rules(cfg, {})
+        with patch.object(self.permissions, "is_workbench_user", return_value=True):
+            for actor in (
+                {"nativeUser": "different@example.com", "tenantId": "tenant", "role": "admin"},
+                {"nativeUser": user, "tenantId": "other", "role": "admin"},
+                {"nativeUser": user, "tenantId": "tenant", "role": "salesperson"},
+            ):
+                with self.assertRaises(APIError):
+                    with self.permissions.delegated_email_configuration(cfg, actor, rules):
+                        self.fail("Unauthorized mailbox service identity")
+                self.assertEqual(self.frappe.session.user, user)
 
     def test_deadlock_restarts_whole_action_and_rechecks_real_revision(self):
         attempts = []
@@ -474,6 +857,7 @@ class NativeContractTests(unittest.TestCase):
         self.frappe.db.set_value.assert_called_once_with("Advance Payment Ledger Entry", "new-advance", {"owner": "real-actor", "modified_by": "real-actor"}, update_modified=False)
         hooks = importlib.import_module("tradept_core.hooks")
         self.assertTrue(set(self.attribution.LEDGER_TYPES).issubset(hooks.has_permission))
+        self.assertTrue({"Department", "Email Account"}.issubset(hooks.has_permission))
 
     def test_unprovisioned_native_signup_has_no_business_permission(self):
         self.frappe.db.exists.return_value = False
@@ -555,6 +939,46 @@ class NativeContractTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "HISTORICAL_STAGE_CONFLICT")
         save.assert_not_called()
 
+    def test_current_brief_financials_use_gateway_rate_instead_of_persisted_rate(self):
+        cfg = {
+            "id": "a",
+            "companies": [{"id": "C1", "jurisdiction": "CN", "profitPolicy": "grandware-v40", "settlementCurrency": "CNY"}],
+            "roles": copy.deepcopy(DEFAULT_ROLES),
+            "teams": {},
+        }
+        actor = {"id": "U", "role": "admin", "tenantId": "a", "visibleCompanyIds": ["C1"]}
+        rules = Rules(cfg, {"U": actor})
+        data = {key: [] for key in ("customers", "factories", "orders", "shipments", "invoices")}
+        data["customers"] = [{"id": "C", "companyId": "C1", "createdBy": "U"}]
+        value = {
+            "companyId": "C1", "customerId": "C", "companyOperationNo": "N1",
+            "customerOrderNo": "PO-1", "contactPerson": "Buyer", "loadingPort": "Shanghai",
+            "paymentTerms": "T/T", "orderDate": "2026-10-12", "orderAmountUSD": 1000,
+            "factoryCostRMB": 4000, "freightCostUSD": 100, "insuranceCostUSD": 13,
+            "otherCostUSD": 20,
+        }
+        meta = {
+            "base": "USD", "quote": "CNY", "rawRate": 7.25, "adjustment": -0.02,
+            "adjustedRate": 7.23, "provider": "ExchangeRate-API", "source": "open.er-api.com",
+            "publishedAt": "2026-10-12T00:00:00Z", "fetchedAt": "2026-10-12T00:05:00Z",
+            "nextUpdateAt": "2026-10-13T00:00:00Z", "cached": False, "stale": False,
+        }
+        supplied = {
+            "expectedVersion": 0, "changes": [{"collection": "orders", "id": "N1", "value": value}],
+            "liveExchangeRate": 7.23, "liveExchangeRateMeta": meta,
+        }
+        self.sign_gateway_payload("changes", supplied)
+        with patch.object(self.api.repo, "payload", return_value=data), \
+                patch.object(self.api.repo, "rates", return_value=({"C1": 9}, {})), \
+                patch.object(self.api.repo, "find", return_value=None), \
+                patch.object(self.api.repo, "save_record") as save, \
+                patch.object(self.api.repo, "finish", return_value={"ok": True}) as finish:
+            self.api._changes(Row(revision=0), cfg, actor, rules, supplied)
+        saved = save.call_args.args[1]
+        self.assertEqual(saved["orderAmountRMB"], 7230)
+        self.assertNotEqual(saved["orderAmountRMB"], 9000)
+        self.assertEqual(finish.call_args.args[3]["exchangeRate"]["adjustedRate"], 7.23)
+
     def test_native_role_and_company_permission_are_current_authority(self):
         cfg = {"id": "a", "roles": {"admin": copy.deepcopy(DEFAULT_ROLES["admin"]), "auditor": {**copy.deepcopy(DEFAULT_ROLES["finance"]), "baseRole": "finance"}}, "companies": [{"id": "C1"}], "teams": {}}
         actor = {"id": "U", "tenantId": "a", "nativeUser": self.frappe.session.user, "role": "admin", "visibleCompanyIds": ["C1", "C2"]}
@@ -596,6 +1020,145 @@ class NativeContractTests(unittest.TestCase):
             self.native.convert(Row(sales_order=None, doctype="Trade Legacy Order"), {"id": "OLD"}, {}, "k")
         self.assertEqual(caught.exception.code, "HISTORICAL_REFERENCE_ONLY")
         self.frappe.get_doc.assert_not_called()
+
+    def test_live_rate_snapshot_accepts_gateway_publication_and_rejects_tampering(self):
+        metadata = {
+            "base": "USD", "quote": "CNY", "rawRate": 7.25, "adjustment": -0.02,
+            "adjustedRate": 7.23, "provider": "ExchangeRate-API", "source": "open.er-api.com",
+            "publishedAt": "2026-10-12T00:00:00Z", "fetchedAt": "2026-10-12T00:05:00Z",
+            "nextUpdateAt": "2026-10-13T00:00:00Z", "cached": True, "stale": False,
+        }
+        self.assertEqual(self.native.live_rate_snapshot(7.23, metadata)["adjustedRate"], 7.23)
+        for patch_value in ({"source": "browser"}, {"adjustedRate": 7.24}, {"fetchedAt": "no timezone"}):
+            with self.assertRaises(APIError) as caught:
+                self.native.live_rate_snapshot(7.23, {**metadata, **patch_value})
+            self.assertEqual(caught.exception.code, "INVALID_LIVE_RATE")
+        with self.assertRaises(APIError) as caught:
+            self.native.live_rate_snapshot(7.23, {**metadata, "stale": True})
+        self.assertEqual((caught.exception.status, caught.exception.code), (503, "LIVE_RATE_STALE"))
+
+    def test_gateway_assertion_binds_request_identity_and_rate(self):
+        actor = {"id": "U", "tenantId": "a"}
+        def supplied():
+            value = {
+                "expectedVersion": 4, "orderId": "O", "idempotencyKey": "convert-O",
+                "liveExchangeRate": 7.23, "liveExchangeRateMeta": self.live_rate(),
+            }
+            return self.sign_gateway_payload("convert_order", value)
+
+        valid = supplied()
+        self.api._verify_gateway_assertion("convert_order", valid, {"id": "a"}, actor)
+        self.assertNotIn("gatewayAssertion", valid)
+
+        for name, mutate in (
+            ("payload", lambda value: value.update(orderId="OTHER")),
+            ("version", lambda value: value.update(expectedVersion=5)),
+            ("idempotency", lambda value: value.update(idempotencyKey="other")),
+            ("rate", lambda value: value.update(liveExchangeRate=7.24)),
+        ):
+            value = supplied()
+            mutate(value)
+            with self.subTest(binding=name), self.assertRaises(APIError) as caught:
+                self.api._verify_gateway_assertion("convert_order", value, {"id": "a"}, actor)
+            self.assertEqual(caught.exception.code, "GATEWAY_ASSERTION_INVALID")
+
+        for name, value, action, cfg in (
+            ("action", self.sign_gateway_payload("changes", {"expectedVersion": 4, "orderId": "O", "idempotencyKey": "convert-O", "liveExchangeRate": 7.23, "liveExchangeRateMeta": self.live_rate()}), "convert_order", {"id": "a"}),
+            ("tenant", self.sign_gateway_payload("convert_order", {"expectedVersion": 4, "orderId": "O", "idempotencyKey": "convert-O", "liveExchangeRate": 7.23, "liveExchangeRateMeta": self.live_rate()}, tenant="other"), "convert_order", {"id": "a"}),
+            ("site", self.sign_gateway_payload("convert_order", {"expectedVersion": 4, "orderId": "O", "idempotencyKey": "convert-O", "liveExchangeRate": 7.23, "liveExchangeRateMeta": self.live_rate()}, site="other.test"), "convert_order", {"id": "a"}),
+        ):
+            with self.subTest(binding=name), self.assertRaises(APIError) as caught:
+                self.api._verify_gateway_assertion(action, value, cfg, actor)
+            self.assertEqual(caught.exception.code, "GATEWAY_ASSERTION_INVALID")
+
+        expired = {
+            "expectedVersion": 4, "orderId": "O", "idempotencyKey": "convert-O",
+            "liveExchangeRate": 7.23, "liveExchangeRateMeta": self.live_rate(),
+        }
+        self.sign_gateway_payload("convert_order", expired, issued_at=int(time.time()) - 181)
+        with self.assertRaises(APIError) as caught:
+            self.api._verify_gateway_assertion("convert_order", expired, {"id": "a"}, actor)
+        self.assertEqual(caught.exception.code, "GATEWAY_ASSERTION_EXPIRED")
+
+        session_bound = supplied()
+        with patch.object(self.frappe.session, "sid", "another-native-session"), self.assertRaises(APIError) as caught:
+            self.api._verify_gateway_assertion("convert_order", session_bound, {"id": "a"}, actor)
+        self.assertEqual(caught.exception.code, "GATEWAY_ASSERTION_INVALID")
+
+    def test_gateway_assertion_fails_closed_without_site_key(self):
+        supplied = {
+            "expectedVersion": 1, "orderId": "O", "idempotencyKey": "convert-O",
+            "liveExchangeRate": 7.23, "liveExchangeRateMeta": self.live_rate(),
+        }
+        self.sign_gateway_payload("convert_order", supplied)
+        with patch.object(self.frappe, "conf", Row()), self.assertRaises(APIError) as caught:
+            self.api._verify_gateway_assertion("convert_order", supplied, {"id": "a"}, {"id": "U", "tenantId": "a"})
+        self.assertEqual((caught.exception.status, caught.exception.code), (503, "GATEWAY_ASSERTION_CONFIG"))
+
+    def test_direct_dispatch_cannot_forge_live_rate_but_accepts_gateway_assertion(self):
+        cfg = {"id": "a"}
+        actor = {"id": "U", "tenantId": "a"}
+        rules = Mock(permitted=Mock(return_value=True), record_allowed=Mock(return_value=True), _validate_links=Mock())
+        work = Row(revision=4)
+        base = {
+            "expectedVersion": 4, "orderId": "O", "idempotencyKey": "convert-O",
+            "liveExchangeRate": 7.23, "liveExchangeRateMeta": self.live_rate(),
+        }
+        with patch.object(self.api, "_identity", return_value=(work, cfg, actor, rules, {})), \
+                patch.object(self.api.native, "live_rate_snapshot") as validate:
+            forged = self.api.dispatch("convert_order", json.dumps(base))
+        self.assertEqual(forged["result"]["code"], "GATEWAY_ASSERTION_REQUIRED")
+        validate.assert_not_called()
+
+        signed = self.sign_gateway_payload("convert_order", copy.deepcopy(base))
+        order = {"id": "O", "companyId": "C", "erpItems": []}
+        refs = [{"doctype": "Sales Order", "name": "SO", "docstatus": 0}]
+        with patch.object(self.api, "_identity", return_value=(work, cfg, actor, rules, {})), \
+                patch.object(self.api.repo, "payload", return_value={"orders": [order]}), \
+                patch.object(self.api.repo, "find", return_value=Row(sales_order=None)), \
+                patch.object(self.api.native, "convert", return_value=refs), \
+                patch.object(self.api, "delegated_operation", return_value=nullcontext()), \
+                patch.object(self.api.repo, "finish", return_value={"ok": True, "meta": {"version": 5}}) as finish:
+            accepted = self.api.dispatch("convert_order", json.dumps(signed))
+        self.assertTrue(accepted["result"]["ok"])
+        self.assertNotIn("gatewayAssertion", finish.call_args.args[3])
+
+    def test_gateway_assertion_fields_cannot_be_persisted_as_order_extensions(self):
+        payload = {
+            "expectedVersion": 1,
+            "changes": [{"collection": "orders", "id": "O", "value": {"remarks": "ok", "gatewayAssertion": {"claims": "browser"}}}],
+        }
+        with patch.object(self.api, "_identity") as identity:
+            result = self.api.dispatch("changes", json.dumps(payload))
+        self.assertEqual(result["result"]["code"], "RESERVED_GATEWAY_FIELD")
+        identity.assert_not_called()
+
+    def test_convert_uses_and_audits_gateway_rate_snapshot(self):
+        supplied = {
+            "expectedVersion": 4, "orderId": "O", "idempotencyKey": "convert-O",
+            "liveExchangeRate": 7.23,
+            "liveExchangeRateMeta": {
+                "base": "USD", "quote": "CNY", "rawRate": 7.25, "adjustment": -0.02,
+                "adjustedRate": 7.23, "provider": "ExchangeRate-API", "source": "open.er-api.com",
+                "publishedAt": "2026-10-12T00:00:00Z", "fetchedAt": "2026-10-12T00:05:00Z",
+                "nextUpdateAt": "2026-10-13T00:00:00Z", "cached": False, "stale": False,
+            },
+        }
+        self.sign_gateway_payload("convert_order", supplied)
+        order = {"id": "O", "companyId": "C", "erpItems": []}
+        rules = Mock(permitted=Mock(return_value=True), record_allowed=Mock(return_value=True), _validate_links=Mock())
+        refs = [{"doctype": "Sales Order", "name": "SO", "docstatus": 0}]
+        with patch.object(self.api.repo, "payload", return_value={"orders": [order]}), \
+                patch.object(self.api.repo, "find", return_value=Row(sales_order=None)), \
+                patch.object(self.api.native, "convert", return_value=refs) as convert, \
+                patch.object(self.api, "delegated_operation", return_value=nullcontext()), \
+                patch.object(self.api.repo, "finish", return_value={"ok": True, "meta": {"version": 5}}) as finish:
+            result = self.api._native_operation("convert_order", Row(revision=4), {"id": "a"}, {"id": "U", "tenantId": "a"}, rules, supplied)
+        snapshot = convert.call_args.args[4]
+        self.assertEqual(snapshot["adjustedRate"], 7.23)
+        self.assertEqual(finish.call_args.args[3]["exchangeRate"], snapshot)
+        self.assertNotIn("gatewayAssertion", finish.call_args.args[3])
+        self.assertEqual(result["nativeDocuments"], refs)
 
     def test_operation_keys_bound_to_action_and_order(self):
         self.assertNotEqual(self.native.operation_key("payment", "A", "same"), self.native.operation_key("payment", "B", "same"))

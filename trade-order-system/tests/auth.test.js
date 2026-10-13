@@ -618,5 +618,18 @@ describe('Auth module', () => {
             expect(Auth.canEdit()).toBe(true);
             expect(Auth.canDeleteOrder(authorized[0])).toBe(false);
         });
+        test('enterprise management is a separate server-authorized page', () => {
+            Auth._serverDataAuthorized = true;
+            Auth.currentUser = {
+                id: 'owner',
+                role: 'owner',
+                scope: 'tenant',
+                visibleCompanyIds: [],
+                permissions: ['read', 'accounts.configure'],
+                pages: ['dashboard', 'settings']
+            };
+            expect(Auth.getVisiblePages()).toEqual(['dashboard', 'admin', 'onboarding']);
+            expect(Auth.canManageEnterprise()).toBe(true);
+        });
     });
 });

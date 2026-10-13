@@ -10,7 +10,12 @@ const cloud = {
     _drainQueue: async () => {},
     _saveQueue: []
 };
-const exchange = { isDomestic: () => true, calcOrderProfit: () => 0 };
+const exchange = {
+    isDomestic: () => true,
+    calcOrderProfit: () => 0,
+    fetchRate: jest.fn(async () => ({ success: false, error: '测试环境未配置实时汇率' })),
+    startAutoRefresh: jest.fn()
+};
 const auth = { currentUser: user, users: [], getVisibleCompanyIds: () => null };
 jest.unstable_mockModule('../js/cloud.js', () => ({ Cloud: cloud }));
 jest.unstable_mockModule('../js/auth.js', () => ({ Auth: auth }));

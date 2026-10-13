@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timezone
 from .schema import COLLECTIONS, dumps
 DEFAULT_ROLES = {
-    "admin": {"scope": "tenant", "permissions": ["read", "create", "edit", "delete", "assign", "finance.read", "finance.write", "rates.write", "snapshots.read", "snapshots.restore", "accounts.configure"], "pages": ["dashboard", "orders", "customers", "factories", "shipping", "profit", "settings"]},
+    "admin": {"scope": "tenant", "permissions": ["read", "create", "edit", "delete", "assign", "finance.read", "finance.write", "rates.write", "snapshots.read", "snapshots.restore", "accounts.configure"], "pages": ["dashboard", "orders", "customers", "factories", "shipping", "profit", "settings", "admin"]},
     "finance": {"scope": "tenant", "permissions": ["read", "create", "edit", "assign", "finance.read", "finance.write", "rates.write"], "pages": ["dashboard", "orders", "customers", "factories", "shipping", "profit", "settings"]},
     "manager": {"scope": "team", "permissions": ["read", "create", "edit", "delete"], "pages": ["dashboard", "orders", "customers", "factories", "shipping"]},
     "salesperson": {"scope": "self", "permissions": ["read", "create", "edit", "delete"], "pages": ["dashboard", "orders", "customers", "factories", "shipping"]},
@@ -105,7 +105,7 @@ class Rules:
             value = redact(value)
         return value
 
-    def _prepare_patch(self, db, cfg, actor, collection, old, patch, historical=False, native_order=False):
+    def _prepare_patch(self, db, cfg, actor, collection, old, patch, historical=False, native_order=False, derive_order=True):
         if not isinstance(patch, dict):
             raise APIError(400, "INVALID_PATCH", "Record value must be an object")
         patch = copy.deepcopy(patch)
@@ -197,7 +197,7 @@ class Rules:
             raw_changed = self._financial_changed(old, value)
             # A public nested-array edit that preserves all costs does not
             # rewrite historical derived amounts under a different formula.
-            if raw_changed and not historical and not native_order:
+            if raw_changed and not historical and not native_order and derive_order:
                 self._derive_order(cfg, value)
         return value
 

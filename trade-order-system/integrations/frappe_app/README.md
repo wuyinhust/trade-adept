@@ -7,17 +7,20 @@ mirror. Every mutation uses the site's native database transaction.
 
 ## Authoritative records
 
-| Business information | Authoritative record |
-| --- | --- |
-| Account, password, session, configured role, company grant | Frappe User / Role / User Permission |
-| Legal entity | ERPNext Company |
-| Customer, supplier, contact | ERPNext Customer / Supplier / Contact |
-| Company-specific current FX | ERPNext Currency Exchange, with company custom link |
-| Order inquiry before real production items are known | Trade Order Brief, typed operational fields and child rows |
-| Historical Excel-era order without SKU/payment evidence | Trade Legacy Order, explicitly non-accounting reference |
-| Complete new order, purchasing, receipts | Native Sales Order / Purchase Order / Payment Entry |
-| Foreign-trade milestones and CI/PL | Trade Shipment / Trade Document (CI/PL do not invent accounting invoices) |
-| Revision, restore archive, audit, source hash | Trade Workspace / Trade Snapshot / Trade Audit / Trade Import Receipt |
+| Business information                                       | Authoritative record                                                               |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Account, password, session, configured role, company grant | Frappe User / Role / User Permission                                               |
+| Legal entity                                               | ERPNext Company                                                                    |
+| Department hierarchy                                       | ERPNext Department, with Tradept membership and company-scope metadata             |
+| Enterprise mailbox and credentials                         | Frappe Email Account; Tradept configuration stores only allowed member IDs         |
+| Customer, supplier, contact                                | ERPNext Customer / Supplier / Contact                                              |
+| Current USD/CNY quote                                      | Authenticated gateway ExchangeRate-API cache; never a persisted current-rate table |
+| Order inquiry before real production items are known       | Trade Order Brief, typed operational fields and child rows                         |
+| Historical Excel-era order without SKU/payment evidence    | Trade Legacy Order, explicitly non-accounting reference                            |
+| Complete new order, purchasing, receipts                   | Native Sales Order / Purchase Order / Payment Entry                                |
+| Foreign-trade milestones and CI/PL                         | Trade Shipment / Trade Document (CI/PL do not invent accounting invoices)          |
+| Revision, restore archive, audit, source hash              | Trade Workspace / Trade Snapshot / Trade Audit / Trade Import Receipt              |
+| Enterprise profile, role policy, onboarding progress       | Versioned Trade Workspace configuration and Trade Audit                            |
 
 Unknown extension fields are retained on their individual record. A single
 live tenant JSON aggregate is never used. Snapshot JSON is an historical
@@ -30,8 +33,11 @@ Grandware's `grandware-v40` calculation remains an explicit company policy.
 Generic entities use `generic-native`: sales minus purchases and actual expense
 inputs in the settlement currency. After conversion, the DTO reads native
 amounts, receipts, items and statuses; it does not copy those balances back to
-the brief. Native order FX comes from the frozen Sales Order conversion rate,
-so a later current-rate edit cannot restate existing order profit.
+the brief. Native order FX comes from the gateway publication frozen into the
+Sales Order and Purchase Order conversion rates. The audit records its provider
+publication, fetch and next-update timestamps, so a later market refresh cannot
+restate existing order profit. Imported `Currency Exchange` rows remain
+historical compatibility data and are not current-rate authority.
 
 ## Installation
 
@@ -48,6 +54,13 @@ Installation creates dynamic custom DocTypes and native custom fields
 idempotently. It does not create a business workspace, demo products, receipts
 or ledger postings. `required_apps` is ERPNext. Run bench migrations after
 updating the package and restart the web workers to reload Python modules.
+
+For a new enterprise, provision one isolated site with a minimal configuration:
+the tenant ID and name, `companies: []`, `onboarding.status: "required"`, and one
+administrator profile using the default `admin` role. The administrator then
+creates the first Company, departments, members and mailbox through Tradept.
+The empty company array is accepted only while onboarding is required or in
+progress; a completed or imported workspace must contain at least one Company.
 
 ## Reviewed import and existing native fixtures
 
@@ -112,10 +125,22 @@ import snapshot for audit. Do not run the retired connector concurrently.
 HTTP response contains `message: {result: <DTO>, csrfToken: <native CSRF token>}`.
 The same native `sid` session is used for login, reads and writes. The facade
 unwraps `message.result`; it must send the native CSRF token with POST requests.
+Each site must also set a distinct 32-byte secret in `site_config.json`:
 
-Reads: `session`, `context`, `data`, `meta`, `snapshots`, `backend_status`.
+```sh
+openssl rand -hex 32
+bench --site grandware.test set-config tradept_gateway_hmac_key '<64 hex characters>'
+```
+
+Paste that same tenant-specific value into the gateway route's
+`gatewayHmacKey`. Generate a different value for every site. Missing, malformed,
+placeholder, reused, or mismatched keys fail closed for writes that need live
+FX. Coordinate both sides when rotating the key.
+
+Reads: `session`, `context`, `data`, `meta`, `snapshots`, `backend_status`,
+`admin_state`.
 Writes: `changes`, `restore`, `convert_order`, `submit_order`, `receive_payment`,
-`cancel_order`.
+`cancel_order`, `admin_update`.
 Writes require POST, an integer `expectedVersion`, and a current configured
 account. `SELECT ... FOR UPDATE` locks the workspace revision before checking
 CAS. Standard Frappe request commit/rollback owns the transaction; these modules
@@ -124,6 +149,11 @@ An API failure returns `{error,code,latestVersion?}` with its real HTTP status.
 Native deadlock or snapshot-conflict errors restart the entire action after
 rollback, up to three attempts. Each attempt rechecks authorization, current
 CAS and native idempotency; exhausted contention returns `503 DATABASE_BUSY`.
+Administration writes use the same CAS lock, revision, audit and transaction
+boundary as business writes. They require a tenant-scope role with
+`accounts.configure`. Company, Department, User, User Permission, Role and
+Email Account changes are written to their native records. Mailbox and temporary
+user passwords are write-only and are never returned to the browser.
 The four native document operations use a temporary service permission identity
 only after validating the configured actor, financial permission, record scope
 and every linked document's company. The real SID, session data, CSRF and form
@@ -134,6 +164,17 @@ After a successful native operation, attribution also covers its child rows,
 voucher-linked GL, Payment Ledger and Advance Payment Ledger rows and native parent updates that bypass
 document hooks. Only newly inserted creators and this operation's modifiers
 are stamped; existing creators and all posting/financial values are retained.
+
+Current-USD/CNY writes additionally require a short-lived HMAC assertion from
+the fixed gateway. It binds the site, tenant, native session, action, CAS
+version, idempotency key, canonical hash of the complete payload, complete rate
+snapshot, issue/expiry times, and a random nonce. Frappe validates the assertion
+before rate validation, financial derivation, or conversion. Direct calls to
+`dispatch`, including calls with a valid SID and CSRF token, cannot supply their
+own rate. Assertion fields are never copied into business records, responses,
+or audit snapshots; audit retains only the verified rate publication. A stale
+publication remains readable for the settings display but returns
+`503 LIVE_RATE_STALE` for new financial calculations and conversion.
 
 `changes` uses `{expectedVersion,changes:[{collection,id,value|deleted}],
 exchangeRates?,rateMetas?}`. Collection DTOs remain compatible with the existing

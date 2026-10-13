@@ -20,8 +20,10 @@ def main():
         runtime = secure_runtime(args.runtime)
         if args.command == "init":
             data = json.loads(args.sites.read_text(encoding="utf-8"))
-            if set(data) != {"tenants"} or any(set(site) != {"origin", "site"} for site in data["tenants"].values()):
-                raise ValueError("Routing accepts only tenants with origin and site; credentials belong to Frappe")
+            if (not isinstance(data, dict) or set(data) != {"tenants"}
+                    or not isinstance(data["tenants"], dict)
+                    or any(not isinstance(site, dict) or set(site) != {"origin", "site", "gatewayHmacKey"} for site in data["tenants"].values())):
+                raise ValueError("Routing accepts only tenants with origin, site and gatewayHmacKey; credentials belong to Frappe")
             temporary = runtime / "frappe-sites.pending.json"
             descriptor = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:

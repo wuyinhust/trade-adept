@@ -17,6 +17,7 @@ const Auth = {
     users: [],
     teams: {},
     roles: {},
+    onboarding: null,
     _provider: null,
     _serverDataAuthorized: false,
     configureProvider(provider) {
@@ -95,6 +96,7 @@ const Auth = {
     async logout() {
         if (this._provider) await this._provider.logout();
         this.currentUser = null;
+        this.onboarding = null;
         sessionStorage.removeItem(this.SESSION_KEY);
         // 清理云端会话
         Cloud.resetSession();
@@ -144,9 +146,12 @@ const Auth = {
     },
     canSeeSettings() {
         if (this._serverDataAuthorized) {
-            return ['rates.write', 'snapshots.read', 'accounts.configure'].some(cap => this.hasCapability(cap));
+            return ['rates.write', 'snapshots.read'].some(cap => this.hasCapability(cap));
         }
         return !!(this.isAdmin() || this.isFinance());
+    },
+    canManageEnterprise() {
+        return this.hasCapability('accounts.configure') === true && this.currentUser?.scope === 'tenant';
     },
 
     /** 是否能修改订单 */
@@ -314,11 +319,17 @@ const Auth = {
     /** 获取页面可访问列表 */
     getVisiblePages() {
         if (!this.currentUser) return [];
-        if (Array.isArray(this.currentUser.pages)) return this.currentUser.pages;
-        const pages = ['dashboard', 'orders', 'customers', 'factories', 'shipping'];
-        if (this.canSeeProfit()) pages.push('profit');
-        if (this.canSeeSettings()) pages.push('settings');
-        return pages;
+        let pages = Array.isArray(this.currentUser.pages)
+            ? [...this.currentUser.pages]
+            : ['dashboard', 'orders', 'customers', 'factories', 'shipping'];
+        if (!Array.isArray(this.currentUser.pages) && this.canSeeProfit()) pages.push('profit');
+        if (!Array.isArray(this.currentUser.pages) && this.canSeeSettings()) pages.push('settings');
+        pages = pages.filter(
+            page => (page !== 'profit' || this.canSeeProfit()) && (page !== 'settings' || this.canSeeSettings())
+        );
+        if (this.canManageEnterprise()) pages.push('admin', 'onboarding');
+        else pages = pages.filter(page => !['admin', 'onboarding'].includes(page));
+        return [...new Set(pages)];
     },
 
     /** 检查是否可以查看某个订单 */

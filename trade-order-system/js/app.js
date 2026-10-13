@@ -23,7 +23,9 @@ const App = {
         factories: './factories.js',
         profit: './profit.js',
         shipping: './shipping.js',
-        settings: './workspace-settings.js'
+        settings: './workspace-settings.js',
+        admin: './administrator.js',
+        onboarding: './administrator.js'
     },
     _pendingSearch: null,
 
@@ -442,7 +444,7 @@ const App = {
     // ==================== 侧边栏可见性 ====================
     updateSidebarVisibility() {
         const visible = Auth.getVisiblePages();
-        const allNavs = ['dashboard', 'orders', 'customers', 'factories', 'profit', 'shipping', 'settings'];
+        const allNavs = ['dashboard', 'orders', 'customers', 'factories', 'profit', 'shipping', 'settings', 'admin'];
 
         allNavs.forEach(page => {
             const nav = document.getElementById('nav-' + page);
@@ -450,6 +452,8 @@ const App = {
                 nav.style.display = visible.includes(page) ? '' : 'none';
             }
         });
+        const adminLabel = document.getElementById('adminNavLabel');
+        if (adminLabel) adminLabel.style.display = visible.includes('admin') ? '' : 'none';
     },
 
     // ==================== 路由 ====================
@@ -470,6 +474,16 @@ const App = {
             } catch (_) {
                 /* Keep malformed routes inert. */
             }
+        }
+
+        if (
+            Auth.onboarding &&
+            Auth.onboarding.status !== 'complete' &&
+            Auth.canManageEnterprise() &&
+            !['onboarding', 'admin'].includes(page)
+        ) {
+            window.location.hash = '#/onboarding';
+            return;
         }
 
         // 权限检查：不允许访问的页面重定向到总览
@@ -494,7 +508,9 @@ const App = {
             factories: '工厂管理',
             profit: '利润分析',
             shipping: '物流单证',
-            settings: '系统设置'
+            settings: '系统设置',
+            admin: '管理中心',
+            onboarding: '企业初始化'
         };
         document.getElementById('pageTitle').textContent = titles[page] || '总览';
 
@@ -521,13 +537,15 @@ const App = {
                 factories: () => Factories.render(content, param),
                 profit: () => Profit.render(content),
                 shipping: () => Shipping.render(content, param),
-                settings: () => Settings.render(content)
+                settings: () => Settings.render(content),
+                admin: () => window.AdminCenter.render(content),
+                onboarding: () => window.Onboarding.render(content)
             };
 
             const renderFn = moduleMap[page] || moduleMap.dashboard;
-            renderFn();
+            await renderFn();
             content.dataset.page = page;
-            if (page !== 'dashboard' && !param) {
+            if (!['dashboard', 'admin', 'onboarding'].includes(page) && !param) {
                 this.renderPageIntro(content, page, titles[page]);
             }
             UI.decorate(content);
@@ -606,38 +624,56 @@ const App = {
 
     // ==================== 汇率显示 ====================
     updateExchangeRateDisplay() {
+        const businessMode = Boolean(DB._businessAPI);
+        const rateCompanyId = DB.companies?.find(company =>
+            company.settlementCurrency
+                ? company.settlementCurrency === 'CNY'
+                : businessMode && DB.usesLiveExchangeRate?.(company.id)
+        )?.id;
+        const fallbackResult = Exchange._lastRateResult || {};
+        const fallbackRate = businessMode
+            ? fallbackResult.adjustedRate
+            : (fallbackResult.adjustedRate ?? DB.getExchangeRate());
+        const rate = Number(rateCompanyId ? DB.getExchangeRate(rateCompanyId) : fallbackRate);
+        const meta = rateCompanyId
+            ? DB.getRateMeta(rateCompanyId)
+            : businessMode
+              ? { ...fallbackResult }
+              : { ...DB.getRateMeta(), ...fallbackResult };
         const el = document.getElementById('exchangeRateDisplay');
         if (el) {
-            const rate = DB.getExchangeRate();
-            el.textContent = rate.toFixed(2);
-            // 添加 title 提示汇率来源和下次刷新时间
-            const meta = DB.getRateMeta();
+            el.textContent = Number.isFinite(rate) && rate > 0 ? rate.toFixed(4) : '—';
             const parts = [];
-            if (meta.updateTime) {
-                const time = new Date(meta.updateTime).toLocaleString('zh-CN');
-                parts.push(`来源: ${meta.source}`, `更新于: ${time}`);
+            const provider = [meta.provider, meta.source].filter(Boolean).join(' · ');
+            if (provider) parts.push(`数据源: ${provider}`);
+            if (Number.isFinite(Number(meta.rawRate))) {
+                parts.push(`市场参考价: ${Number(meta.rawRate).toFixed(4)}`);
             }
-            if (window.Exchange && window.Exchange.isAutoRefreshActive()) {
-                const nextTime = window.Exchange.getNextRefreshTime();
-                if (nextTime) {
-                    parts.push(`下次自动刷新: ${new Date(nextTime).toLocaleString('zh-CN')}`);
-                }
+            if (meta.publishedAt) parts.push(`行情发布: ${new Date(meta.publishedAt).toLocaleString('zh-CN')}`);
+            const fetchedAt = meta.fetchedAt || meta.updateTime;
+            if (fetchedAt) parts.push(`系统获取: ${new Date(fetchedAt).toLocaleString('zh-CN')}`);
+            if (meta.stale) parts.push('状态: 上游暂不可用，使用最近一次缓存');
+            const nextTime = Exchange.getNextRefreshTime?.() || meta.systemNextCheckAt || meta.scheduledRefreshAt;
+            if (nextTime) {
+                parts.push(`系统下次检查: ${new Date(nextTime).toLocaleString('zh-CN')}`);
             }
             el.title = parts.join('\n');
         }
-        // 侧边栏来源小字
+
         const srcEl = document.getElementById('rateSourceText');
-        const meta = DB.getRateMeta();
-        if (srcEl && meta.updateTime) {
-            const time = new Date(meta.updateTime);
-            const timeStr = time.toLocaleDateString('zh-CN') + ' ' + time.toTimeString().slice(0, 5);
-            const prefix =
-                window.Exchange && window.Exchange.isAutoRefreshActive() ? '⏰ ' : meta.isAuto ? '🔄 ' : '✏️ ';
-            srcEl.textContent = prefix + timeStr;
+        if (srcEl) {
+            if (!Number.isFinite(rate) || rate <= 0) {
+                srcEl.textContent = '实时汇率不可用';
+            } else {
+                const stamp = meta.publishedAt || meta.fetchedAt || meta.updateTime;
+                const time = stamp ? new Date(stamp) : null;
+                const validTime = time && !Number.isNaN(time.getTime());
+                const timeStr = validTime
+                    ? `${time.toLocaleDateString('zh-CN')} ${time.toTimeString().slice(0, 5)}`
+                    : '当前会话';
+                srcEl.textContent = `${meta.stale ? '旧缓存' : '实时行情'} · ${timeStr}`;
+            }
         }
-        // 同时更新设置页的输入框
-        const rateInput = document.getElementById('exchangeRateInput');
-        if (rateInput) rateInput.value = DB.getExchangeRate();
     },
 
     // ==================== 模态框 ====================

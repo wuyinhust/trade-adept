@@ -6,7 +6,10 @@ import { Exchange } from './exchange.js';
 import { BusinessAPIClient, workspaceDraftKey } from './api-client.js';
 import { escapeHtml, toast } from './utils.js';
 
-const api = new BusinessAPIClient({ canReplaceData: () => !document.querySelector('#modalContainer .modal-overlay') });
+const api = new BusinessAPIClient({
+    canReplaceData: () => !document.querySelector('#modalContainer .modal-overlay'),
+    persistExchangeRates: false
+});
 const tenantInput = document.createElement('div');
 tenantInput.className = 'form-group';
 tenantInput.innerHTML =
@@ -15,17 +18,23 @@ document.getElementById('loginForm').prepend(tenantInput);
 const teamImage = document.querySelector('.login-footer-image');
 if (teamImage) teamImage.hidden = true;
 
-function applySession(session) {
+function applySession(session, { resetRuntime = true } = {}) {
+    if (resetRuntime) {
+        Exchange.stopAutoRefresh();
+        DB.liveExchangeRates = {};
+        DB.liveRateMetas = {};
+        DB._cloudReady = false;
+    }
     Auth._serverDataAuthorized = true;
     Auth.users = session.users || [];
     Auth.teams = session.teams || {};
     Auth.roles = session.roles || {};
     Auth.currentUser = session.user;
+    Auth.onboarding = session.onboarding || null;
     DB.companies = session.companies || [];
     DB.COMPANY_KEY = `trade_company_${session.user.tenantId}`;
     DB.currentCompanyId = sessionStorage.getItem(`trade_company_${session.user.tenantId}`) || DB.companies[0]?.id;
     DB._BACKUP_KEY = workspaceDraftKey(session, location.origin);
-    DB._cloudReady = false;
     const tenant = session.tenant || {};
     App.workspaceName = tenant.branding?.workspaceName || tenant.name || 'Tradept';
     document.title = `${tenant.name || session.user.tenantId} · Tradept`;
@@ -33,6 +42,30 @@ function applySession(session) {
     const image = document.querySelector('.login-footer-image');
     if (image) image.hidden = true;
     return session.user;
+}
+
+async function refreshSession() {
+    const beforeCompanyIds = (DB.companies || [])
+        .map(company => company.id)
+        .sort()
+        .join('|');
+    const user = applySession(await api.session(), { resetRuntime: false });
+    const meta = api.getLastMeta();
+    DB._cloudVersion = meta.version;
+    DB._cloudUpdatedAt = meta.updatedAt;
+    App.renderCompanySelect();
+    App.updateCompanyDisplay();
+    App.updateUserDisplay();
+    App.updateSidebarVisibility();
+    const afterCompanyIds = (DB.companies || [])
+        .map(company => company.id)
+        .sort()
+        .join('|');
+    if (beforeCompanyIds !== afterCompanyIds) {
+        await Exchange.fetchRate({ updateDisplay: false });
+    }
+    App.updateExchangeRateDisplay();
+    return user;
 }
 
 Auth.configureProvider({
@@ -50,6 +83,9 @@ Auth.configureProvider({
     },
     logout: async () => {
         await api.logout();
+        Exchange.stopAutoRefresh();
+        DB.liveExchangeRates = {};
+        DB.liveRateMetas = {};
         DB._cloudReady = DB._cloudConnected = false;
         Auth._serverDataAuthorized = false;
         document.title = 'Tradept · 登录工作区';
@@ -60,7 +96,6 @@ Auth.configureProvider({
 DB._businessAPI = api;
 DB._preserveImportedValues = true;
 Cloud.configure(api, () => Auth.currentUser);
-Exchange.startAutoRefresh = () => Exchange.stopAutoRefresh();
 App._pageModulePaths.settings = './workspace-settings.js';
 
 const originalCloudStatus = App.updateCloudStatus;
@@ -129,5 +164,5 @@ App.handleLogout = async function () {
     conflictBar.hidden = true;
 };
 
-window.Workspace = { api, escapeHtml };
+window.Workspace = { api, escapeHtml, refreshSession };
 await App.init();

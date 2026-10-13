@@ -11,7 +11,15 @@ mockSave = jest.fn(() => Promise.resolve(true));
 mockHandleError = jest.fn();
 mockDB = {
     currentCompanyId: 'CO-GR',
-    exchangeRates: { 'CO-GR': 7.25, 'CO-WY': 7.25, 'CO-GW': 7.80, 'CO-LK': 7.80 },
+    companies: [
+        { id: 'CO-GR', settlementCurrency: 'CNY' },
+        { id: 'CO-WY', settlementCurrency: 'CNY' },
+        { id: 'CO-GW', settlementCurrency: 'USD' },
+        { id: 'CO-LK', settlementCurrency: 'USD' }
+    ],
+    _businessAPI: null,
+    exchangeRates: { 'CO-GR': 7.25, 'CO-WY': 7.25, 'CO-GW': 7.8, 'CO-LK': 7.8 },
+    liveExchangeRates: {},
     rateMetas: {
         'CO-GR': { source: 'manual', updateTime: null, isAuto: false },
         'CO-WY': { source: 'manual', updateTime: null, isAuto: false },
@@ -24,7 +32,12 @@ mockDB = {
     },
     getRateMeta(cid) {
         const id = cid || this.currentCompanyId;
+        if (this._businessAPI && this.liveRateMetas[id]) return this.liveRateMetas[id];
         return this.rateMetas[id] || { source: 'manual', updateTime: null, isAuto: false };
+    },
+    _overlayLiveExchangeData() {
+        Object.assign(this.exchangeRates, this.liveExchangeRates);
+        Object.assign(this.rateMetas, this.liveRateMetas);
     },
     save: mockSave,
     data: { orders: [] }
@@ -32,7 +45,17 @@ mockDB = {
 
 /** Reset mockDB to fresh state for tests */
 function setupMocks(exchangeRates, rateMetas, orders) {
-    mockDB.exchangeRates = exchangeRates || { 'CO-GR': 7.25, 'CO-WY': 7.25, 'CO-GW': 7.80, 'CO-LK': 7.80 };
+    mockDB.currentCompanyId = 'CO-GR';
+    mockDB.companies = [
+        { id: 'CO-GR', settlementCurrency: 'CNY' },
+        { id: 'CO-WY', settlementCurrency: 'CNY' },
+        { id: 'CO-GW', settlementCurrency: 'USD' },
+        { id: 'CO-LK', settlementCurrency: 'USD' }
+    ];
+    mockDB._businessAPI = null;
+    mockDB.liveExchangeRates = {};
+    mockDB.liveRateMetas = {};
+    mockDB.exchangeRates = exchangeRates || { 'CO-GR': 7.25, 'CO-WY': 7.25, 'CO-GW': 7.8, 'CO-LK': 7.8 };
     mockDB.rateMetas = rateMetas || {
         'CO-GR': { source: 'manual', updateTime: null, isAuto: false },
         'CO-WY': { source: 'manual', updateTime: null, isAuto: false },
@@ -45,15 +68,25 @@ function setupMocks(exchangeRates, rateMetas, orders) {
 }
 
 jest.unstable_mockModule('../js/data.js', () => ({
-    get DB() { return mockDB; }
+    get DB() {
+        return mockDB;
+    }
 }));
 
 jest.unstable_mockModule('../js/utils.js', () => ({
-    escapeHtml: (s) => String(s || ''),
+    escapeHtml: s => String(s || ''),
     handleError: (...args) => mockHandleError(...args),
     toast: () => {},
-    safeCall: async (fn) => fn(),
-    validate: { required: () => null, positive: () => true, numeric: () => true, email: () => true, phoneCN: () => true, length: () => true, checkAll: () => [] },
+    safeCall: async fn => fn(),
+    validate: {
+        required: () => null,
+        positive: () => true,
+        numeric: () => true,
+        email: () => true,
+        phoneCN: () => true,
+        length: () => true,
+        checkAll: () => []
+    },
     EventBus: { on() {}, off() {}, emit() {} }
 }));
 
@@ -62,6 +95,7 @@ const { CONSTANTS } = await import('../js/constants.js');
 
 describe('Exchange module', () => {
     beforeEach(() => {
+        Exchange.stopAutoRefresh();
         setupMocks();
         delete window.App;
     });
@@ -119,7 +153,7 @@ describe('Exchange module', () => {
         test('calculates domestic profit with tax rebate (CO-WY)', () => {
             const profit = Exchange.calcOrderProfit(2000, 8000, 300, 13, 200, 'CO-WY');
             // revenue 14500 - factory 8000 - freight 2175 - insurance 94.25 - other 1450 + rebate 920.35 = 3701.10
-            expect(profit).toBeCloseTo(3701.10, 0);
+            expect(profit).toBeCloseTo(3701.1, 0);
         });
 
         test('calculates HK profit without tax rebate (CO-GW)', () => {
@@ -157,12 +191,30 @@ describe('Exchange module', () => {
 
         test('recalculates profit for domestic and HK orders', () => {
             setupMocks(null, null, [
-                { id: 'O1', companyId: 'CO-GR', orderAmountUSD: 1000, factoryCostRMB: 5000,
-                  freightCostUSD: 200, insuranceCostUSD: 13, otherCostUSD: 100,
-                  orderAmountRMB: 0, profitRMB: 0, profitRate: 0 },
-                { id: 'O2', companyId: 'CO-GW', orderAmountUSD: 1000, factoryCostRMB: 500,
-                  freightCostUSD: 0, insuranceCostUSD: 0, otherCostUSD: 50,
-                  orderAmountRMB: 0, profitRMB: 0, profitRate: 0 }
+                {
+                    id: 'O1',
+                    companyId: 'CO-GR',
+                    orderAmountUSD: 1000,
+                    factoryCostRMB: 5000,
+                    freightCostUSD: 200,
+                    insuranceCostUSD: 13,
+                    otherCostUSD: 100,
+                    orderAmountRMB: 0,
+                    profitRMB: 0,
+                    profitRate: 0
+                },
+                {
+                    id: 'O2',
+                    companyId: 'CO-GW',
+                    orderAmountUSD: 1000,
+                    factoryCostRMB: 500,
+                    freightCostUSD: 0,
+                    insuranceCostUSD: 0,
+                    otherCostUSD: 50,
+                    orderAmountRMB: 0,
+                    profitRMB: 0,
+                    profitRate: 0
+                }
             ]);
             Exchange.recalcAllOrders();
             const orders = mockDB.data.orders;
@@ -174,9 +226,18 @@ describe('Exchange module', () => {
 
         test('profit rate is zero when denominator is zero', () => {
             setupMocks(null, null, [
-                { id: 'O4', companyId: 'CO-GR', orderAmountUSD: 0, factoryCostRMB: 0,
-                  freightCostUSD: 0, insuranceCostUSD: 0, otherCostUSD: 0,
-                  orderAmountRMB: 0, profitRMB: 0, profitRate: 0 }
+                {
+                    id: 'O4',
+                    companyId: 'CO-GR',
+                    orderAmountUSD: 0,
+                    factoryCostRMB: 0,
+                    freightCostUSD: 0,
+                    insuranceCostUSD: 0,
+                    otherCostUSD: 0,
+                    orderAmountRMB: 0,
+                    profitRMB: 0,
+                    profitRate: 0
+                }
             ]);
             Exchange.recalcAllOrders();
             expect(mockDB.data.orders[0].profitRate).toBe(0);
@@ -184,13 +245,61 @@ describe('Exchange module', () => {
 
         test('rounds values to 2 decimal places', () => {
             setupMocks(null, null, [
-                { id: 'O5', companyId: 'CO-GR', orderAmountUSD: 1234.56, factoryCostRMB: 5678.90,
-                  freightCostUSD: 123.45, insuranceCostUSD: 13, otherCostUSD: 67.89,
-                  orderAmountRMB: 0, profitRMB: 0, profitRate: 0 }
+                {
+                    id: 'O5',
+                    companyId: 'CO-GR',
+                    orderAmountUSD: 1234.56,
+                    factoryCostRMB: 5678.9,
+                    freightCostUSD: 123.45,
+                    insuranceCostUSD: 13,
+                    otherCostUSD: 67.89,
+                    orderAmountRMB: 0,
+                    profitRMB: 0,
+                    profitRate: 0
+                }
             ]);
             Exchange.recalcAllOrders();
             const o = mockDB.data.orders[0];
             expect(o.profitRMB.toString()).toMatch(/^\d+(\.\d{1,2})?$/);
+        });
+
+        test('keeps formal and historical orders frozen when the live rate changes', () => {
+            setupMocks(null, null, [
+                {
+                    id: 'FORMAL',
+                    stage: 'native',
+                    exchangeRateUsed: 6.8,
+                    companyId: 'CO-GR',
+                    orderAmountUSD: 1000,
+                    factoryCostRMB: 5000,
+                    freightCostUSD: 0,
+                    insuranceCostUSD: 0,
+                    otherCostUSD: 0,
+                    orderAmountRMB: 6800,
+                    profitRMB: 1800,
+                    profitRate: 26.47
+                },
+                {
+                    id: 'BRIEF',
+                    stage: 'brief',
+                    companyId: 'CO-GR',
+                    orderAmountUSD: 1000,
+                    factoryCostRMB: 5000,
+                    freightCostUSD: 0,
+                    insuranceCostUSD: 0,
+                    otherCostUSD: 0,
+                    orderAmountRMB: 0,
+                    profitRMB: 0,
+                    profitRate: 0
+                }
+            ]);
+
+            const changed = Exchange.recalcAllOrders({ persist: false });
+
+            expect(changed).toBe(1);
+            expect(mockDB.data.orders[0]).toMatchObject({ orderAmountRMB: 6800, profitRMB: 1800 });
+            expect(mockDB.data.orders[1].orderAmountRMB).toBe(7250);
+            expect(mockSave).not.toHaveBeenCalled();
         });
     });
 
@@ -226,10 +335,12 @@ describe('Exchange module', () => {
         });
 
         test('fetchRate resolves with success when API returns valid rate', async () => {
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.28 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.28 } })
+                })
+            );
             const result = await Exchange.fetchRate();
             expect(result.success).toBe(true);
             expect(result.rate).toBeCloseTo(7.26, 2);
@@ -239,12 +350,15 @@ describe('Exchange module', () => {
         });
 
         test('fetchRate tries second API if first fails', async () => {
-            global.fetch = jest.fn()
+            global.fetch = jest
+                .fn()
                 .mockImplementationOnce(() => Promise.reject(new Error('Network error')))
-                .mockImplementationOnce(() => Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve({ rates: { CNY: 7.30 } })
-                }));
+                .mockImplementationOnce(() =>
+                    Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ rates: { CNY: 7.3 } })
+                    })
+                );
             const result = await Exchange.fetchRate();
             expect(result.success).toBe(true);
             expect(result.source).toBe('Open Exchange Rates');
@@ -258,41 +372,211 @@ describe('Exchange module', () => {
         });
 
         test('fetchRate rejects invalid rates (out of bounds)', async () => {
-            global.fetch = jest.fn()
-                .mockImplementationOnce(() => Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve({ rates: { CNY: 1.5 } })
-                }))
-                .mockImplementationOnce(() => Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve({ rates: { CNY: 2.0 } })
-                }));
+            global.fetch = jest
+                .fn()
+                .mockImplementationOnce(() =>
+                    Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ rates: { CNY: 1.5 } })
+                    })
+                )
+                .mockImplementationOnce(() =>
+                    Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ rates: { CNY: 2.0 } })
+                    })
+                );
             const result = await Exchange.fetchRate();
             expect(result.success).toBe(false);
             expect(result.error).toContain('不可用');
         });
 
         test('fetchRate handles non-ok HTTP responses', async () => {
-            global.fetch = jest.fn()
+            global.fetch = jest
+                .fn()
                 .mockImplementationOnce(() => Promise.resolve({ ok: false }))
-                .mockImplementationOnce(() => Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve({ rates: { CNY: 7.25 } })
-                }));
+                .mockImplementationOnce(() =>
+                    Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ rates: { CNY: 7.25 } })
+                    })
+                );
             const result = await Exchange.fetchRate();
             expect(result.success).toBe(true);
         });
 
         test('fetchRate saves rate meta on success', async () => {
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.25 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.25 } })
+                })
+            );
             await Exchange.fetchRate();
             const meta = mockDB.rateMetas['CO-GR'];
             expect(meta.isAuto).toBe(true);
             expect(meta.source).toBe('实时汇率');
             expect(meta.updateTime).toBeTruthy();
+        });
+    });
+
+    describe('BusinessAPI live rate', () => {
+        const livePayload = overrides => ({
+            base: 'USD',
+            quote: 'CNY',
+            rawRate: 7.28,
+            adjustment: -0.02,
+            adjustedRate: 7.26,
+            provider: 'ExchangeRate-API',
+            source: 'open.er-api.com',
+            publishedAt: '2026-10-12T00:00:00.000Z',
+            fetchedAt: '2026-10-12T01:00:00.000Z',
+            nextUpdateAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+            cached: false,
+            stale: false,
+            ...overrides
+        });
+
+        beforeEach(() => {
+            mockDB.currentCompanyId = 'CN-A';
+            mockDB.companies = [
+                { id: 'CN-A', settlementCurrency: 'CNY' },
+                { id: 'USD-B', settlementCurrency: 'USD' }
+            ];
+            mockDB.exchangeRates = { 'CN-A': 6.5, 'USD-B': 1 };
+            mockDB.rateMetas = {};
+            mockDB._businessAPI = { getExchangeRate: jest.fn(() => Promise.resolve(livePayload())) };
+        });
+
+        afterEach(() => {
+            Exchange.stopAutoRefresh();
+            jest.useRealTimers();
+        });
+
+        test('uses the same-origin service and applies the effective rate only to CNY companies', async () => {
+            const result = await Exchange.fetchRate({ recalculate: false });
+
+            expect(mockDB._businessAPI.getExchangeRate).toHaveBeenCalledTimes(1);
+            expect(result).toMatchObject({
+                success: true,
+                rate: 7.26,
+                rawRate: 7.28,
+                adjustedRate: 7.26,
+                source: 'open.er-api.com',
+                cached: false,
+                stale: false
+            });
+            expect(mockDB.liveExchangeRates['CN-A']).toBe(7.26);
+            expect(mockDB.exchangeRates['CN-A']).toBe(7.26);
+            expect(mockDB.exchangeRates['USD-B']).toBe(1);
+            expect(mockDB.liveRateMetas['CN-A']).toMatchObject({
+                publishedAt: '2026-10-12T00:00:00.000Z',
+                fetchedAt: '2026-10-12T01:00:00.000Z',
+                provider: 'ExchangeRate-API',
+                source: 'open.er-api.com',
+                effectiveRate: 7.26,
+                stale: false
+            });
+            expect(mockSave).not.toHaveBeenCalled();
+        });
+
+        test('refreshes brief projections but leaves native order amounts frozen', async () => {
+            mockDB.data.orders = [
+                {
+                    id: 'NATIVE',
+                    stage: 'native',
+                    exchangeRateUsed: 6.5,
+                    companyId: 'CN-A',
+                    orderAmountUSD: 1000,
+                    factoryCostRMB: 5000,
+                    freightCostUSD: 0,
+                    insuranceCostUSD: 0,
+                    otherCostUSD: 0,
+                    orderAmountRMB: 6500,
+                    profitRMB: 1500,
+                    profitRate: 23.08
+                },
+                {
+                    id: 'BRIEF',
+                    stage: 'brief',
+                    companyId: 'CN-A',
+                    orderAmountUSD: 1000,
+                    factoryCostRMB: 5000,
+                    freightCostUSD: 0,
+                    insuranceCostUSD: 0,
+                    otherCostUSD: 0,
+                    orderAmountRMB: 0,
+                    profitRMB: 0,
+                    profitRate: 0
+                }
+            ];
+
+            await Exchange.fetchRate();
+
+            expect(mockDB.data.orders[0]).toMatchObject({ orderAmountRMB: 6500, profitRMB: 1500 });
+            expect(mockDB.data.orders[1].orderAmountRMB).toBe(7260);
+            expect(mockSave).not.toHaveBeenCalled();
+        });
+
+        test('rejects a response whose effective rate does not equal raw rate minus 0.02', async () => {
+            mockDB._businessAPI.getExchangeRate.mockResolvedValue(livePayload({ adjustedRate: 7.2 }));
+
+            const result = await Exchange.fetchRate({ recalculate: false });
+
+            expect(result.success).toBe(false);
+            expect(result.stale).toBe(true);
+            expect(mockDB.exchangeRates['CN-A']).toBe(6.5);
+            expect(mockDB.liveRateMetas['CN-A'].error).toContain('口径无效');
+        });
+
+        test('does not request again before nextUpdateAt', async () => {
+            await Exchange.fetchRate({ recalculate: false });
+            mockDB._businessAPI.getExchangeRate.mockClear();
+
+            const result = await Exchange.autoFetchIfStale();
+
+            expect(mockDB._businessAPI.getExchangeRate).not.toHaveBeenCalled();
+            expect(result).toMatchObject({ success: true, rate: 7.26, cached: true, rawRate: 7.28 });
+        });
+
+        test('schedules one refresh at nextUpdateAt instead of hourly polling', async () => {
+            jest.useFakeTimers();
+            const nextUpdateAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+            mockDB._businessAPI.getExchangeRate.mockResolvedValue(livePayload({ nextUpdateAt }));
+            await Exchange.fetchRate({ recalculate: false });
+            mockDB._businessAPI.getExchangeRate.mockClear();
+
+            Exchange.startAutoRefresh({ skipInitial: true });
+            expect(Exchange.getNextRefreshTime()).toBe(nextUpdateAt);
+            await jest.advanceTimersByTimeAsync(CONSTANTS.ONE_HOUR_MS);
+            expect(mockDB._businessAPI.getExchangeRate).not.toHaveBeenCalled();
+            await jest.advanceTimersByTimeAsync(CONSTANTS.ONE_HOUR_MS);
+            expect(mockDB._businessAPI.getExchangeRate).toHaveBeenCalledTimes(1);
+        });
+
+        test('backs off five minutes when a stale publication has an expired nextUpdateAt', async () => {
+            jest.useFakeTimers();
+            jest.setSystemTime(new Date('2026-10-12T08:00:00.000Z'));
+            const expiredProviderTime = '2026-10-12T07:00:00.000Z';
+            mockDB._businessAPI.getExchangeRate.mockResolvedValue(
+                livePayload({ cached: true, stale: true, nextUpdateAt: expiredProviderTime })
+            );
+
+            const first = await Exchange.fetchRate({ recalculate: false });
+            const expectedRetry = '2026-10-12T08:05:00.000Z';
+            expect(first.nextUpdateAt).toBe(expiredProviderTime);
+            expect(first.scheduledRefreshAt).toBe(expectedRetry);
+            expect(first.systemNextCheckAt).toBe(expectedRetry);
+            mockDB._businessAPI.getExchangeRate.mockClear();
+
+            Exchange.startAutoRefresh({ skipInitial: true });
+            expect(Exchange.getNextRefreshTime()).toBe(expectedRetry);
+            await jest.advanceTimersByTimeAsync(CONSTANTS.EXCHANGE_REFRESH_MIN_DELAY_MS);
+            expect(mockDB._businessAPI.getExchangeRate).not.toHaveBeenCalled();
+            await jest.advanceTimersByTimeAsync(
+                CONSTANTS.EXCHANGE_FAILURE_RETRY_MS - CONSTANTS.EXCHANGE_REFRESH_MIN_DELAY_MS
+            );
+            expect(mockDB._businessAPI.getExchangeRate).toHaveBeenCalledTimes(1);
         });
     });
 
@@ -309,10 +593,12 @@ describe('Exchange module', () => {
 
         test('fetches when there is no previous rate meta', async () => {
             mockDB.rateMetas = {};
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.28 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.28 } })
+                })
+            );
             await Exchange.autoFetchIfStale();
             // Should have fetched (rate was saved)
             expect(mockDB.exchangeRates['CO-GR']).toBeCloseTo(7.26, 2);
@@ -323,10 +609,12 @@ describe('Exchange module', () => {
                 updateTime: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
                 isAuto: true
             };
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.30 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.3 } })
+                })
+            );
             await Exchange.autoFetchIfStale();
             expect(mockDB.exchangeRates['CO-GR']).toBeCloseTo(7.28, 2);
         });
@@ -361,14 +649,20 @@ describe('Exchange module', () => {
     describe('_fetchRawRate', () => {
         let origFetch;
 
-        beforeEach(() => { origFetch = global.fetch; });
-        afterEach(() => { global.fetch = origFetch; });
+        beforeEach(() => {
+            origFetch = global.fetch;
+        });
+        afterEach(() => {
+            global.fetch = origFetch;
+        });
 
         test('returns rate data on success', async () => {
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.28 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.28 } })
+                })
+            );
             const result = await Exchange._fetchRawRate();
             expect(result).toBeTruthy();
             expect(result.rawRate).toBe(7.28);
@@ -383,15 +677,20 @@ describe('Exchange module', () => {
         });
 
         test('skips invalid rates and tries next API', async () => {
-            global.fetch = jest.fn()
-                .mockImplementationOnce(() => Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve({ rates: { CNY: 999 } }) // out of bounds
-                }))
-                .mockImplementationOnce(() => Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve({ rates: { CNY: 7.28 } })
-                }));
+            global.fetch = jest
+                .fn()
+                .mockImplementationOnce(() =>
+                    Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ rates: { CNY: 999 } }) // out of bounds
+                    })
+                )
+                .mockImplementationOnce(() =>
+                    Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve({ rates: { CNY: 7.28 } })
+                    })
+                );
             const result = await Exchange._fetchRawRate();
             expect(result).toBeTruthy();
             expect(result.source).toBe('Open Exchange Rates');
@@ -405,27 +704,33 @@ describe('Exchange module', () => {
             origFetch = global.fetch;
             setupMocks();
         });
-        afterEach(() => { global.fetch = origFetch; });
+        afterEach(() => {
+            global.fetch = origFetch;
+        });
 
         test('applies rate to all domestic companies', async () => {
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.35 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.35 } })
+                })
+            );
             await Exchange._autoRefreshAll();
             // Both domestic companies should have the new rate
             expect(mockDB.exchangeRates['CO-GR']).toBeCloseTo(7.33, 2);
             expect(mockDB.exchangeRates['CO-WY']).toBeCloseTo(7.33, 2);
             // HK companies should remain unchanged
-            expect(mockDB.exchangeRates['CO-GW']).toBe(7.80);
-            expect(mockDB.exchangeRates['CO-LK']).toBe(7.80);
+            expect(mockDB.exchangeRates['CO-GW']).toBe(7.8);
+            expect(mockDB.exchangeRates['CO-LK']).toBe(7.8);
         });
 
         test('sets meta for all domestic companies', async () => {
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.30 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.3 } })
+                })
+            );
             await Exchange._autoRefreshAll();
             expect(mockDB.rateMetas['CO-GR'].isAuto).toBe(true);
             expect(mockDB.rateMetas['CO-GR'].source).toBe('自动刷新');
@@ -435,14 +740,25 @@ describe('Exchange module', () => {
 
         test('recalculates all orders after refresh', async () => {
             setupMocks(null, null, [
-                { id: 'O1', companyId: 'CO-GR', orderAmountUSD: 1000, factoryCostRMB: 5000,
-                  freightCostUSD: 200, insuranceCostUSD: 13, otherCostUSD: 100,
-                  orderAmountRMB: 0, profitRMB: 0, profitRate: 0 }
+                {
+                    id: 'O1',
+                    companyId: 'CO-GR',
+                    orderAmountUSD: 1000,
+                    factoryCostRMB: 5000,
+                    freightCostUSD: 200,
+                    insuranceCostUSD: 13,
+                    otherCostUSD: 100,
+                    orderAmountRMB: 0,
+                    profitRMB: 0,
+                    profitRate: 0
+                }
             ]);
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.25 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.25 } })
+                })
+            );
             await Exchange._autoRefreshAll();
             expect(mockDB.data.orders[0].profitRMB).not.toBe(0);
         });
@@ -455,10 +771,12 @@ describe('Exchange module', () => {
         });
 
         test('updates _lastAutoRefresh timestamp', async () => {
-            global.fetch = jest.fn(() => Promise.resolve({
-                ok: true,
-                json: () => Promise.resolve({ rates: { CNY: 7.20 } })
-            }));
+            global.fetch = jest.fn(() =>
+                Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ rates: { CNY: 7.2 } })
+                })
+            );
             const before = Date.now();
             await Exchange._autoRefreshAll();
             expect(Exchange._lastAutoRefresh).toBeGreaterThanOrEqual(before);

@@ -13,6 +13,7 @@ import re
 from urllib.parse import unquote, urlsplit
 
 from .errors import APIError
+from .exchange_rate import ExchangeRateService
 from .frappe_client import FrappeGateway, SESSION_TTL
 
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
@@ -20,6 +21,25 @@ PREVIEW_ROOT = SOURCE_ROOT.parent / "local-preview"
 DEFAULT_RUNTIME = Path(os.environ.get("TRADE_RUNTIME_DIR", Path.home() / "Library" / "Application Support" / "Tradept" / "gateway"))
 COOKIE_NAME = "trade_session"
 MAX_BODY = 5 * 1024 * 1024
+
+
+def release_info():
+    """Expose only fixed source identity, never runtime or tenant configuration."""
+    version = json.loads((SOURCE_ROOT / "package.json").read_text())["version"]
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError("Invalid product version")
+    result = {"version": version, "environment": "test", "sourceCommit": None, "sourceManifestSHA256": None}
+    marker = SOURCE_ROOT / "release-build.json"
+    if marker.is_file():
+        supplied = json.loads(marker.read_text())
+        if supplied.get("version") != version:
+            raise ValueError("Runtime release marker differs from source version")
+        for field, length in (("sourceCommit", 40), ("sourceManifestSHA256", 64)):
+            value = supplied.get(field)
+            if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{" + str(length) + r"}", value):
+                raise ValueError("Runtime release marker requires verified source hashes")
+            result[field] = value
+    return result
 
 
 def normalize_public_origin(value):
@@ -125,9 +145,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._origin()
             path = urlsplit(self.path).path
+            if path == "/api/version":
+                self._json(200, self.server.release_info)
+                return
             if path.startswith("/api/"):
                 actor = self.gateway.actor(self._token())
-                routes = {"/api/session": "session", "/api/data": "data", "/api/meta": "meta", "/api/snapshots": "snapshots", "/api/backend/status": "backend_status", "/api/erpnext/status": "backend_status"}
+                if path == "/api/exchange-rate":
+                    self._json(200, self.server.exchange_rates.get())
+                    return
+                routes = {"/api/session": "session", "/api/data": "data", "/api/meta": "meta", "/api/snapshots": "snapshots", "/api/backend/status": "backend_status", "/api/erpnext/status": "backend_status", "/api/administrator": "admin_state"}
                 action = routes.get(path)
                 if not action:
                     raise APIError(404, "NOT_FOUND", "API endpoint not found")
@@ -153,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True}, self._session_cookie("", 0))
                 return
             actor = self.gateway.actor(self._token())
-            action = {"/api/changes": "changes", "/api/restore": "restore", "/api/orders/convert": "convert_order", "/api/orders/submit": "submit_order", "/api/orders/payment": "receive_payment", "/api/orders/cancel": "cancel_order"}.get(path)
+            action = {"/api/changes": "changes", "/api/restore": "restore", "/api/orders/convert": "convert_order", "/api/orders/submit": "submit_order", "/api/orders/payment": "receive_payment", "/api/orders/cancel": "cancel_order", "/api/administrator": "admin_update"}.get(path)
             if action is None:
                 raise APIError(404, "NOT_FOUND", "API endpoint not found")
             result = self.gateway.write(actor, action, body)
@@ -203,12 +229,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
 
-def create_server(runtime, port=3087, public_origin=None, configuration=None, gateway=None):
+def create_server(runtime, port=3087, public_origin=None, configuration=None, gateway=None, exchange_rates=None):
     public_origin = normalize_public_origin(public_origin)
-    gateway = gateway or FrappeGateway(runtime, configuration)
+    if exchange_rates is None:
+        exchange_rates = getattr(gateway, "exchange_rates", None)
+    if exchange_rates is None:
+        exchange_rates = ExchangeRateService()
+    gateway = gateway if gateway is not None else FrappeGateway(runtime, configuration, exchange_rates=exchange_rates)
+    # A supplied gateway and the HTTP endpoint must still share one cache;
+    # otherwise settings and order conversion could observe different rates.
+    gateway.exchange_rates = exchange_rates
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.gateway = gateway
+    server.exchange_rates = exchange_rates
     server.public_origin = public_origin
+    server.release_info = release_info()
     return server
 
 

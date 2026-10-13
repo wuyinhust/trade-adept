@@ -146,9 +146,19 @@ button:disabled {
     left: -2.165%;
     top: -19.826%;
 }
-:root[data-theme='dark'] .brand-mark {
-    background: #f5f8ff;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+.brand-logo img.brand-logo-wordmark {
+    display: none;
+    /* Reuse the image alpha for white lettering; leave the colored icon intact. */
+    filter: brightness(0) invert(1);
+    clip-path: inset(0 0 0 25%);
+}
+:root[data-theme='dark'] .brand-logo img.brand-logo-wordmark {
+    display: block;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .brand-logo img.brand-logo-wordmark {
+        display: block;
+    }
 }
 .brand-caption {
     display: block;
@@ -1347,6 +1357,213 @@ tbody .btn-danger {
     }
     .local-preview-toolbar strong {
         display: none;
+    }
+}
+
+/* Live exchange-rate settings */
+.live-rate-card {
+    overflow: hidden;
+}
+.live-rate-header {
+    align-items: center;
+}
+.live-rate-heading {
+    display: grid;
+    gap: 2px;
+}
+.live-rate-kicker {
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.1em;
+    line-height: 1.3;
+    text-transform: uppercase;
+}
+.live-rate-heading .card-title {
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.025em;
+}
+.live-rate-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.live-rate-header-actions .badge {
+    min-width: auto;
+    white-space: nowrap;
+}
+.live-rate-header-actions .badge-success {
+    color: var(--text-primary);
+}
+.live-rate-overview {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(220px, 0.65fr);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--bg-secondary);
+    overflow: hidden;
+}
+.live-rate-primary,
+.live-rate-reference {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    padding: 24px;
+}
+.live-rate-primary {
+    background: linear-gradient(135deg, var(--surface) 0%, var(--accent-bg) 145%);
+}
+.live-rate-reference {
+    border-left: 1px solid var(--border);
+}
+.live-rate-label {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 550;
+    letter-spacing: 0.025em;
+}
+.live-rate-value,
+.live-rate-reference-value {
+    margin-top: 6px;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.045em;
+    line-height: 1.08;
+}
+.live-rate-value {
+    font-size: clamp(36px, 5vw, 54px);
+    font-weight: 650;
+}
+.live-rate-reference-value {
+    font-size: clamp(26px, 3vw, 34px);
+    font-weight: 600;
+}
+.live-rate-caption {
+    margin-top: 8px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.55;
+}
+.live-rate-details {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    margin: 20px 0 0;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+}
+.live-rate-detail {
+    min-width: 0;
+    padding: 15px 17px;
+    border-top: 1px solid var(--border);
+}
+.live-rate-detail:nth-child(-n + 2) {
+    border-top: 0;
+}
+.live-rate-detail:nth-child(2n) {
+    border-left: 1px solid var(--border);
+}
+.live-rate-detail dt {
+    color: var(--text-secondary);
+    font-size: 10px;
+    line-height: 1.4;
+}
+.live-rate-detail dd {
+    margin: 5px 0 0;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+.live-rate-state {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin-top: 16px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    background: var(--success-bg);
+    color: var(--text-primary);
+    font-size: 11px;
+    line-height: 1.6;
+}
+.live-rate-state.is-stale {
+    background: var(--warning-bg);
+}
+.live-rate-state.is-error {
+    background: var(--danger-bg);
+}
+.live-rate-state-dot {
+    width: 7px;
+    height: 7px;
+    margin-top: 5px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent);
+    flex: none;
+}
+.live-rate-state.is-stale .live-rate-state-dot {
+    background: var(--warning);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 16%, transparent);
+}
+.live-rate-state.is-error .live-rate-state-dot {
+    background: var(--danger);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 16%, transparent);
+}
+.live-rate-state p {
+    margin: 0;
+}
+.live-rate-policy,
+.workspace-rate-policy {
+    margin-top: 12px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.65;
+}
+.workspace-company-rate strong {
+    font-variant-numeric: tabular-nums;
+}
+.live-rate-error {
+    padding: 20px;
+    border: 1px solid color-mix(in srgb, var(--danger) 24%, transparent);
+    border-radius: 14px;
+    background: var(--danger-bg);
+    color: var(--danger);
+}
+.live-rate-error p {
+    margin-top: 6px;
+}
+
+@media (max-width: 700px) {
+    .live-rate-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+    .live-rate-header-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+    .live-rate-overview,
+    .live-rate-details {
+        grid-template-columns: 1fr;
+    }
+    .live-rate-reference {
+        border-top: 1px solid var(--border);
+        border-left: 0;
+    }
+    .live-rate-detail,
+    .live-rate-detail:nth-child(-n + 2) {
+        border-top: 1px solid var(--border);
+    }
+    .live-rate-detail:first-child {
+        border-top: 0;
+    }
+    .live-rate-detail:nth-child(2n) {
+        border-left: 0;
     }
 }
 @media (prefers-reduced-motion: reduce) {
