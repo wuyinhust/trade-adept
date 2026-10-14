@@ -56,8 +56,10 @@ admin('department',{'id':'acceptance','name':'Installation acceptance'},version=
 admin('department',{'id':'stale','name':'Must reject'},version=revision,status=409)
 assert any(x['id']=='acceptance' for x in request('/api/administrator')['departments'])
 assert request('/api/data')
-# Recreate the running containers, not just restart a Python process.
+# Recreate the database and queues too, proving named volumes survive replacement.
+deploy.dc(state,'up','-d','--wait','--wait-timeout','300','--force-recreate','db','redis-cache','redis-queue')
 deploy.dc(state,'up','-d','--no-deps','--force-recreate',*deploy.SERVICES)
+assert deploy.run(['systemctl','is-enabled','tradept-private-smoke'],capture=True)=='enabled'
 time.sleep(15)
 request('/api/login',{'username':creds['username'],'password':creds['password']})
 assert any(x['id']=='acceptance' for x in request('/api/administrator')['departments'])
