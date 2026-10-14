@@ -49,7 +49,14 @@ sudo docker compose -p tradept-enterprise -f /opt/tradept-private/compose.json l
 
 `initialize.log` 可能含原生工具输出或凭据，仅本机受限查看。对外反馈先脱敏。升级前备份；本安装器当前只负责首次安装及同一版本的中断恢复，不要把新版本 checkout 覆盖正在运行的 source。
 
-Caddy 保存证书并自动续期；监测到期和 HTTPS，确认 80／443、DNS、出站连接一直满足验证条件。公网大陆域名在备案允许之前不开网站。等备案期间可经私有网络使用 `--tls internal` 演练，并仅向企业受管设备安装该次 Caddy CA；它不会自动成为浏览器信任的公网证书。正式公网部署使用默认 `public`，不要把内部证书测试通过当成公网证书已签发。
+Caddy 保存证书并自动续期；监测到期和 HTTPS，确认 80／443、DNS、出站连接一直满足验证条件。公网大陆域名在备案允许之前不开网站。等备案期间可经私有网络使用 `--tls internal` 演练，并仅向企业受管设备安装该次 Caddy CA；它不会自动成为浏览器信任的公网证书。内部模式签发后可导出公开 CA 证书，供 check 验证：
+
+```sh
+sudo docker compose -p tradept-enterprise -f /opt/tradept-private/compose.json \
+  cp https:/data/caddy/pki/authorities/local/root.crt /opt/tradept-private/internal-root.crt
+```
+
+正式公网部署使用默认 `public`，不要把内部证书测试通过当成公网证书已签发。
 
 ## 4. 测试范围
 

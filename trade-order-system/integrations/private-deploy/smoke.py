@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 import shutil
+import subprocess
 import deploy
 
 state=Path(sys.argv[1]); cfg=deploy.config(state)
@@ -66,7 +67,11 @@ deploy.dc(state,'stop','scheduler','queue-long','queue-short')
 deploy.dc(state,'exec','-T','backend','/home/frappe/frappe-bench/env/bin/python','-c',
           "from pathlib import Path; p=Path('sites/smoke.internal/public/files/install-proof.txt'); p.parent.mkdir(parents=True,exist_ok=True); p.write_text('Tradept restore proof')")
 deploy.dc(state,'exec','-T','backend','bench','--site',cfg['site'],'backup','--with-files')
-deploy.dc(state,'run','--rm','--no-deps','init','/home/frappe/frappe-bench/env/bin/python','/run/tradept/restore_probe.py')
+with (state/'restore.log').open('w') as log:
+    (state/'restore.log').chmod(0o600)
+    restored=subprocess.run(['docker','compose','-p',cfg['project'],'-f',str(state/'compose.json'),
+        'run','--rm','--no-deps','init','/home/frappe/frappe-bench/env/bin/python','/run/tradept/restore_probe.py'],stdout=log,stderr=subprocess.STDOUT)
+if restored.returncode:raise RuntimeError('Restore failed; see private restore.log')
 deploy.dc(state,'up','-d','--no-deps','scheduler','queue-long','queue-short')
 deploy.check(state)
 print('PASS: new site, trusted HTTPS, assets, actual administrator login, account-only setup, company, persistent data, 409 conflict, container recreation, backup and isolated restore.')

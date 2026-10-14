@@ -257,7 +257,8 @@ def check(state):
     context = ssl.create_default_context(cafile=str(state/'internal-root.crt') if cfg['tls']=='internal' else None)
     with urllib.request.urlopen(cfg['origin']+'/api/version', timeout=30, context=context) as response:
         v = json.load(response)
-    if v['sourceCommit']!=cfg['sourceCommit']: raise ValueError('Public endpoint does not serve this installation')
+    manifest_hash = hashlib.sha256((state/'source-manifest.json').read_bytes()).hexdigest()
+    if v['sourceCommit']!=cfg['sourceCommit'] or v['sourceManifestSHA256']!=manifest_hash: raise ValueError('Public endpoint does not serve this installation')
     with urllib.request.urlopen(cfg['origin']+'/api/login-config', timeout=30, context=context) as response: json.load(response)
     print('HTTPS, version and login endpoint passed. This does not replace employee, business, restart or restore acceptance.')
 
