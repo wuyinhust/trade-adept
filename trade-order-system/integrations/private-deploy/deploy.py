@@ -132,6 +132,18 @@ def prepare(args):
         raise ValueError('State directory already exists. Use install to resume; do not recreate or overwrite credentials.')
     if not re.fullmatch(r'/[a-zA-Z0-9_./-]+', str(state)) or '..' in state.parts or state.resolve()!=state:
         raise ValueError('Use a canonical absolute state path without spaces or symlinks')
+    if sys.version_info < (3, 11): raise ValueError('Python 3.11 or later is required')
+    for port in (80, 443, 3087, 3088):
+        with socket.socket() as probe:
+            try: probe.bind(('127.0.0.1', port))
+            except OSError: raise ValueError('Port '+str(port)+' is occupied; resolve the conflict before preparing') from None
+    if shutil.disk_usage(state.parent).free < 20 * 1024**3:
+        raise ValueError('At least 20 GiB free space is required for initial image build and volumes')
+    username = args.admin_username or 'owner-'+secrets.token_hex(4)
+    if not re.fullmatch('[a-z][a-z0-9._-]{2,63}', username) or username in ('administrator', 'guest'):
+        raise ValueError('Invalid administrator username')
+    password = getpass.getpass('Private administrator password: ') if args.ask_password else secrets.token_urlsafe(32)
+    if not 12 <= len(password) <= 128: raise ValueError('Password must contain 12-128 characters')
     # The checkout, not a developer machine's external files, is the source of truth.
     commit = run(['git', '-c', 'safe.directory='+str(ROOT), 'rev-parse', 'HEAD'], cwd=ROOT, capture=True)
     if not re.fullmatch('[a-f0-9]{40}', commit): raise ValueError('Cannot identify source commit')
@@ -152,11 +164,6 @@ def prepare(args):
     write(state / 'source-manifest.json', manifest_text, 0o644)
     version = json.loads((release / 'trade-order-system/package.json').read_text())['version']
     write(release / 'trade-order-system/release-build.json', {'version': version, 'sourceCommit': commit, 'sourceManifestSHA256': digest}, 0o644)
-    username = args.admin_username or 'owner-'+secrets.token_hex(4)
-    if not re.fullmatch('[a-z][a-z0-9._-]{2,63}', username) or username in ('administrator', 'guest'):
-        raise ValueError('Invalid administrator username')
-    password = getpass.getpass('Private administrator password: ') if args.ask_password else secrets.token_urlsafe(32)
-    if not 12 <= len(password) <= 128: raise ValueError('Password must contain 12-128 characters')
     cfg = {'domain': args.domain, 'origin': 'https://'+args.domain, 'tenant': args.tenant, 'name': args.name,
            'site': args.tenant+'.internal', 'project': 'tradept-'+args.tenant, 'sourceCommit': commit,
            'image': 'tradept-private:'+commit[:12]+'-'+digest[:12], 'tls': args.tls,

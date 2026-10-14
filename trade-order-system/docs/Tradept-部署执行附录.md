@@ -2,6 +2,14 @@
 
 返回 [guide](guide.md)。你负责执行；主人只提供选择、认证和企业资料。每完成一步，简短说明结果，再继续。本文是可执行操作的索引和模板，命令须适配已冻结的正式版本与目标服务器。不要把所有命令转交给主人。
 
+## 默认入口：先用仓库自带安装器
+
+新企业默认按[自动安装入口](https://github.com/wuyinhust/trade-adept/tree/main/trade-order-system/integrations/private-deploy)执行；对应本地文件为 `trade-order-system/integrations/private-deploy/README.md`。它包含公开依赖下载及校验、基础软件安装、固定单站点配置、空企业和管理员初始化、systemd、HTTPS 与安装检查，不需要向开发方索取离线包。
+
+安装器生成 `/opt/tradept-private/` 下的配置、源码快照和私有凭据，以 Docker 命名卷持久化业务数据，并使用 Caddy 管理 HTTPS。先读该入口，完成安装后继续本文第 6、7 节的企业资料与验收；安装受阻时遵循第 8 节请示规则。
+
+下面第 1–5 节保留为高级手工部署和排障参考，目录、Nginx 和启动方式与默认安装器不同；不要把两套流程混在同一实例执行。已有企业升级须先制定迁移方案，不重跑首次初始化。
+
 ## 1. 部署范围与材料
 
 目标：一家企业、一台企业自有或企业腾讯云账号下的独立服务器、一个 Frappe site／业务数据库。企业可以有多个法人公司。Tradept 网页、Python 网关、ERPNext／Frappe、`tradept_core`、MariaDB、Redis、workers、scheduler、websocket 和 HTTPS 均在这台服务器运行；业务数据不转存 CloudBase。

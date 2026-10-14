@@ -63,6 +63,8 @@ assert any(x['id']=='acceptance' for x in request('/api/administrator')['departm
 # Back up actual application data and attachments, then restore to an isolated site.
 shutil.copyfile(Path(__file__).with_name('restore_probe.py'),state/'control/restore_probe.py')
 deploy.dc(state,'stop','scheduler','queue-long','queue-short')
+deploy.dc(state,'exec','-T','backend','/home/frappe/frappe-bench/env/bin/python','-c',
+          "from pathlib import Path; p=Path('sites/smoke.internal/public/files/install-proof.txt'); p.parent.mkdir(parents=True,exist_ok=True); p.write_text('Tradept restore proof')")
 deploy.dc(state,'exec','-T','backend','bench','--site',cfg['site'],'backup','--with-files')
 deploy.dc(state,'run','--rm','--no-deps','init','/home/frappe/frappe-bench/env/bin/python','/run/tradept/restore_probe.py')
 deploy.dc(state,'up','-d','--no-deps','scheduler','queue-long','queue-short')

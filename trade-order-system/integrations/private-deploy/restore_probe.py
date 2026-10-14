@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 cfg=json.loads(Path('/run/tradept/private.json').read_text())
 assert cfg['domain']=='tradept.test' and cfg['tenant']=='smoke' and cfg['tls']=='internal'
-bench=Path('/home/frappe/frappe-bench');os.chdir(bench)
+bench=Path('/home/frappe/frappe-bench');os.chdir(bench/'sites')
 source=bench/'sites'/cfg['site'];dest='smoke-restore.internal'
 assert not (bench/'sites'/dest).exists()
 backups=source/'private/backups'
@@ -26,6 +26,7 @@ frappe.init(site=dest,sites_path=str(bench/'sites'));frappe.connect();frappe.set
 work=json.loads(frappe.db.get_value('Trade Workspace','workspace','configuration'))
 assert work['id']=='smoke' and work['departments']['acceptance']['name']=='Installation acceptance'
 assert frappe.db.count('Trade User Profile')==1
+assert (bench/'sites'/dest/'public/files/install-proof.txt').read_text()=='Tradept restore proof'
 assert frappe.db.exists('Company','Tradept Installation Test')
 frappe.destroy()
 print('PASS: isolated database restore preserves company, administrator and saved department.')

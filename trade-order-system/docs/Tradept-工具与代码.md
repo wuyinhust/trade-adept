@@ -27,7 +27,7 @@ py -3 -m venv "$env:USERPROFILE\.venvs\tradept-tccli"
 & "$env:USERPROFILE\.venvs\tradept-tccli\Scripts\tccli.exe" --version
 ```
 
-Windows 后续用完整路径调用 tccli，前面保留 `&`；macOS／Linux 新开终端后重新激活环境，或直接用可执行文件的完整路径。服务器内部另装 Docker Engine、Compose 插件、Python 3、Nginx 等，见[执行附录](Tradept-部署执行附录.md)。
+Windows 后续用完整路径调用 tccli，前面保留 `&`；macOS／Linux 新开终端后重新激活环境，或直接用可执行文件的完整路径。服务器默认使用 Ubuntu 24.04；Docker、Compose、Python 和 Caddy 按[执行附录](Tradept-部署执行附录.md)中的自动入口安装。
 
 ## 2. 连接企业腾讯云账号
 
@@ -44,34 +44,35 @@ tccli lighthouse DescribeRegions --region ap-guangzhou
 
 `configure` 中地域可先填 `ap-guangzhou`，输出格式填 `json`；后续每条地区相关命令显式传所选 `--region`。只读查询成功才算工具可用。权限失败就说明缺少哪个服务权限，不让主人反复重装。不要用主账号密钥，不在对话、命令参数、代码仓库或交接表中放密码和 SecretKey。
 
-## 3. 取得正式版本
+## 3. 取得可部署版本
 
-部署代码仓库：[wuyinhust/trade-adept](https://github.com/wuyinhust/trade-adept)。产品名称仍为 tradept，下面 clone 命令的本地目录也命名为 `tradept`；应用目录为仓库内 `trade-order-system/`。仓库访问失败时，请主人登录获授权的 GitHub 身份或让开发方授予只读访问；不要把访问令牌写进 URL。
+对外交付仓库：[wuyinhust/trade-adept](https://github.com/wuyinhust/trade-adept)；[wuyinhust/tradept](https://github.com/wuyinhust/tradept) 同步保留相同安装能力。使用主人给出的获授权仓库，访问失败先处理权限，不自动切换另一个私有仓库。产品名称仍为 tradept。新安装入口在 `trade-order-system/integrations/private-deploy/`。
 
-如已安装 gh，你先查询 Release：
+先读取仓库根 README 和全部部署附件。用已登录 gh 克隆，查询提交和安装测试，例如（仓库变量按主人给出的地址填写）：
 
 ```sh
+TRADEPT_REPO=wuyinhust/trade-adept
 gh auth status
-gh release list --repo wuyinhust/trade-adept --limit 10
-gh release view <已选正式标签> --repo wuyinhust/trade-adept --json tagName,isDraft,isPrerelease,assets,url
-git clone --branch <已选正式标签> --single-branch git@github.com:wuyinhust/trade-adept.git tradept
-git -C tradept rev-parse HEAD
-gh release download <已选正式标签> --repo wuyinhust/trade-adept --dir <本次部署材料目录>
+gh repo clone "$TRADEPT_REPO" tradept
+TRADEPT_COMMIT=$(git -C tradept rev-parse HEAD)
+gh run list --repo "$TRADEPT_REPO" --workflow private-deploy.yml \
+  --commit "$TRADEPT_COMMIT" --limit 5 --json status,conclusion,headSha,url
 ```
 
-没有 SSH GitHub 身份时用已登录 gh 的 `gh repo clone wuyinhust/trade-adept tradept`，再检出所选标签。没有 gh 时按 GitHub 官方安装方式安装，或从获授权的 Release 页面取得相同材料。
+选择 `Private deployment from source` 已成功的完整提交 SHA，并在部署电脑和服务器都检出同一个 SHA；没有成功记录时先检查流水线，不能拿别的提交或单元测试的成功代替。部署期间固定提交，不自动跟随 main 升级。正式标签若包含安装器且同一提交通过检查，也可按标签选择。旧 v0.4.1 只有历史构建入口，不是本次新安装器的交付版本。
 
-核对正式标签、完整提交、源码清单、SHA256、CPU 架构及发布验收。固定该版本，不直接部署 main，不把本地 `package.json` 的版本号当成正式发布证据。不在附件中固定“最新版本”；每次部署重新核对。
+新安装器走**从源码直接构建**的路径，不依赖 Release 附件或开发者电脑上的 wheels。先在部署电脑执行材料检查：
 
-Release、标签和附件以 `trade-adept` 仓库的实际结果为准；代码相同不代表 Release 附件也已同步。若缺少 Release 或附件，请开发方提供该仓库相同提交的正式交付包及校验清单，不自动切回 `wuyinhust/tradept`。
+```sh
+cd tradept
+python3 trade-order-system/integrations/private-deploy/deploy.py materials --cache /tmp/tradept-wheels
+```
 
-下载与目标架构对应的完整镜像或离线构建材料。只有源码 ZIP 不够；缺少镜像、匹配哈希的 wheels 或构建说明时，先列清缺项并向开发方索取。不要猜镜像地址、跳过哈希校验或把测试数据库当安装包。
+Windows 将缓存目录改为当前账户可写路径。安装器从公开 URL 下载三份 wheels，按仓库清单验证 SHA256；基础服务使用固定镜像摘要。Docker Hub 连通性及目标架构也须核对。材料核验和目标环境检查放在付款之前；实际下载失败就说明原因并修复网络，不引导主人先花钱。两台机器分别校验自己下载的材料，不把一次本地下载当成服务器网络已可用。
 
-**这一检查必须在付款之前完成。** 材料未齐时向主人说明缺项，继续整理选择，但不引导付款。已有服务器也先通过材料检查再安装。2026-10-14 检查发现 `v0.4.1` Release 的 `assets` 为空；详见[流程核查记录](Tradept-部署流程核查-20261014.md)。后续部署重新查询，不把这条历史状态当永久结论。
+随后按[自动安装入口](https://github.com/wuyinhust/trade-adept/tree/main/trade-order-system/integrations/private-deploy)执行 prepare、install、check；实际运行使用已经冻结的本地提交中的文件。旧 `unified_build.py` 为历史离线构建路径，固定依赖不同，不与新清单混用。未修改的源码、企业 logo 补丁及最终实际文件清单分别记录，不能把定制版本冒充原版。
 
-至少记录：正式标签与完整提交、源码校验清单、ERPNext／Frappe 版本、目标 CPU 架构、镜像摘要与获取方式，或全部离线 wheels 及其固定哈希。选择替换后端 logo 时，即使有预构建镜像，也需要重建材料。构建脚本 `unified_build.py` 的 `WHEELS` 是核验依据；镜像获取失败、架构不符或构建材料缺失都应在此暴露。
-
-先保存本 README 及全部部署附件；检出旧标签可能不含新写的部署文档。部署动作以所选标签的实际接口为准，不能为了保留新文档改为安装未冻结的 main。
+GitHub 权限、云账号、DNS／SSH 授权仍由主人提供；“只给仓库地址”意味着 AI 能从仓库取得完整技术路径，不表示无须主人选择、付款或提供企业资料。
 
 ## 4. 管理员和服务器凭据
 

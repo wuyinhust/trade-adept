@@ -23,6 +23,11 @@ jobs:
           sudo python3 trade-order-system/integrations/private-deploy/deploy.py prepare --domain tradept.test --tenant smoke --name 'Installation acceptance' --tls internal
       - name: Build and install the complete stack
         run: sudo python3 trade-order-system/integrations/private-deploy/deploy.py install
+      - name: Same-version resume preserves administrator credentials
+        run: |
+          sudo sha256sum /opt/tradept-private/initial-admin.json > /tmp/admin-before.sha256
+          sudo python3 trade-order-system/integrations/private-deploy/deploy.py install
+          sudo sha256sum --check /tmp/admin-before.sha256
       - name: Actual HTTPS login, setup, persistence and restore
         run: sudo python3 trade-order-system/integrations/private-deploy/smoke.py /opt/tradept-private
       - name: Redacted initialization diagnostics

@@ -12,7 +12,7 @@ BENCH = Path('/home/frappe/frappe-bench')
 def main():
     cfg = json.loads((CONTROL / 'private.json').read_text())
     site = cfg['site']
-    os.chdir(BENCH)
+    os.chdir(BENCH / 'sites')
     common = BENCH / 'sites/common_site_config.json'
     values = json.loads(common.read_text()) if common.exists() else {}
     values.update(db_host='db', db_port=3306, redis_cache='redis://redis-cache:6379',
