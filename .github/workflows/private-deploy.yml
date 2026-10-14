@@ -3,6 +3,8 @@ on:
   push:
     branches: [main, 'deploy/**']
     paths:
+      - 'README.md'
+      - 'docs/**'
       - 'trade-order-system/**'
       - 'local-preview/vendor/**'
       - '.github/workflows/private-deploy.yml'

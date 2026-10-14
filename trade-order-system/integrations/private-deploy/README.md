@@ -12,11 +12,11 @@
 python3 trade-order-system/integrations/private-deploy/deploy.py materials --cache /tmp/tradept-wheels
 ```
 
-三份公开 wheels 均以 `dependencies.json` 固定的 URL 和 SHA256 校验；ERPNext、MariaDB、Redis、Caddy 固定镜像摘要。先核对 Docker Hub 能访问、目标架构可拉取、域名和所选套餐符合需求，再付款。公网部署 DNS 指向服务器；80／443 用于证书及业务，SSH 限运维地址。数据库、Redis 和内部接口不对公网开放。
+三份公开 wheels 均以 `dependencies.json` 固定的 URL 和 SHA256 校验；ERPNext、MariaDB、Redis、Caddy 固定镜像摘要。采购前先在部署电脑核对材料、镜像及套餐条件；目标服务器购买后，再实际检查其出站下载和镜像拉取能力。已有服务器则提前检查。公网部署 DNS 指向服务器；80／443 用于证书及业务，SSH 限运维地址。数据库、Redis 和内部接口不对公网开放。
 
 ## 2. 在服务器安装
 
-通过已授权 GitHub 身份克隆同一完整提交，或由部署电脑传输该提交的完整仓库（含 `local-preview/vendor`）。不要把 GitHub 凭据放进代码或 URL。首次先检查 80、443、3087、3088 无冲突；安装器只用于新企业，不能覆盖现有生产部署。
+通过已授权 GitHub 身份克隆同一完整提交，或由部署电脑传输该提交的完整 Git 仓库（包含 `.git` 和 `local-preview/vendor`）。安装器使用 `git rev-parse` 和 `git ls-files`；GitHub 的 Download ZIP 不含 `.git`，不能直接拿来安装。传输副本不得在 Git remote URL 中留密码或访问令牌；连接凭据由企业另行配置。不要把 GitHub 凭据放进代码或 URL。先在服务器仓库根目录确认 `git rev-parse HEAD` 等于冻结 SHA，运行一次 `deploy.py materials`（使用本文的完整脚本路径），并从 `dependencies.json` 读取、拉取四个固定摘要镜像；失败先排查网络，不替换来源或摘要。首次再检查 80、443、3087、3088 无冲突；安装器只用于新企业，不能覆盖现有生产部署。
 
 ```sh
 sudo sh trade-order-system/integrations/private-deploy/install-prerequisites.sh
@@ -49,7 +49,7 @@ sudo docker compose -p tradept-enterprise -f /opt/tradept-private/compose.json l
 
 `initialize.log` 可能含原生工具输出或凭据，仅本机受限查看。对外反馈先脱敏。升级前备份；本安装器当前只负责首次安装及同一版本的中断恢复，不要把新版本 checkout 覆盖正在运行的 source。
 
-Caddy 保存证书并自动续期；监测到期和 HTTPS，确认 80／443、DNS、出站连接一直满足验证条件。公网大陆域名在备案允许之前不开网站。等备案期间可经私有网络使用 `--tls internal` 演练，并仅向企业受管设备安装该次 Caddy CA；它不会自动成为浏览器信任的公网证书。内部模式签发后可导出公开 CA 证书，供 check 验证：
+Caddy 保存证书并自动续期；监测到期和 HTTPS，确认 80／443、DNS、出站连接一直满足验证条件。公网大陆域名在备案允许之前不开网站。等备案期间可经私有网络使用 `--tls internal` 演练：prepare 仍填最终企业域名，在企业内网或受管设备解析它，防火墙将 80／443 限定为授权内网／VPN／运维来源，不能开放到全网；并仅向企业受管设备安装该次 Caddy CA；它不会自动成为浏览器信任的公网证书。内部模式签发后可导出公开 CA 证书，供 check 验证：
 
 ```sh
 sudo docker compose -p tradept-enterprise -f /opt/tradept-private/compose.json \
@@ -57,6 +57,17 @@ sudo docker compose -p tradept-enterprise -f /opt/tradept-private/compose.json \
 ```
 
 正式公网部署使用默认 `public`，不要把内部证书测试通过当成公网证书已签发。
+
+### 从内部证书切换到正式公网证书
+
+只适用于**相同域名、相同站点和现有数据卷**。备案条件满足后，核对公网 DNS 指向本机及证书验证所需的 80／443 入口。保留私有备份后，修改运行配置（不是应用源码）：
+
+1. 在 `/opt/tradept-private/Caddyfile` 中仅移除 `tls internal` 那一行，保留域名和代理目标。
+2. 用固定项目的 `docker compose ... exec -T https caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` 检查配置，再运行同路径的 `caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`。`...` 替换为本次 `-p <项目名> -f <state>/compose.json`。
+3. 等待证书签发，用不含 `-k`、不指定私有 CA 的 `curl --fail https://<企业域名>/api/version` 验证系统信任的证书；失败时排查 DNS、端口和 Caddy 日志，未通过不宣布上线。
+4. 成功后只把 `<state>/control/private.json` 的 `tls` 从 `internal` 改成 `public`，保留其余内容及 0600 权限，不输出文件中的密钥。再运行同一提交的 `deploy.py check`。
+
+不重新运行 prepare、不更换企业 ID、不删卷，也不重置管理员。失败时可恢复 Caddyfile、reload 并继续原私有通道。需要更换域名时另行制定迁移方案，不能只改一个地址。
 
 ## 4. 测试范围
 

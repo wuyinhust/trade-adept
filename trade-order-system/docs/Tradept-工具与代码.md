@@ -4,7 +4,7 @@
 
 ## 1. 工具
 
-部署电脑需要：可执行本地命令的 AI 工具、Python 3.11 或更高版本、Git、SSH/SCP、tccli；使用 GitHub Release 时建议安装 GitHub CLI（`gh`）。普通网页聊天没有命令执行能力时，先直白告诉主人需要换到可操作终端的 AI 工具。
+部署电脑需要：可执行本地命令的 AI 工具、Python 3.11 或更高版本、Git、SSH/SCP、tccli、GitHub CLI（`gh`，默认用于私有仓库访问和安装测试查询）。普通网页聊天没有命令执行能力时，先直白告诉主人需要换到可操作终端的 AI 工具。
 
 你检查 `python3 --version`、`git --version`、`ssh -V`、`tccli --version` 和 `gh --version`。Windows 用 `py -3` 检查 Python。按当前操作系统的官方安装方式补齐，不强制主人换用某一款 AI。
 
@@ -59,6 +59,8 @@ gh run list --repo "$TRADEPT_REPO" --workflow private-deploy.yml \
   --commit "$TRADEPT_COMMIT" --limit 5 --json status,conclusion,headSha,url
 ```
 
+若当前提交的安装工作流还在排队或运行，等待它完成；失败则先查日志。只有仓库维护者能处理的访问或流水线问题，明确返回给交付方，不让主人先购买。
+
 选择 `Private deployment from source` 已成功的完整提交 SHA，并在部署电脑和服务器都检出同一个 SHA；没有成功记录时先检查流水线，不能拿别的提交或单元测试的成功代替。部署期间固定提交，不自动跟随 main 升级。正式标签若包含安装器且同一提交通过检查，也可按标签选择。旧 v0.4.1 只有历史构建入口，不是本次新安装器的交付版本。
 
 新安装器走**从源码直接构建**的路径，不依赖 Release 附件或开发者电脑上的 wheels。先在部署电脑执行材料检查：
@@ -68,7 +70,7 @@ cd tradept
 python3 trade-order-system/integrations/private-deploy/deploy.py materials --cache /tmp/tradept-wheels
 ```
 
-Windows 将缓存目录改为当前账户可写路径。安装器从公开 URL 下载三份 wheels，按仓库清单验证 SHA256；基础服务使用固定镜像摘要。Docker Hub 连通性及目标架构也须核对。材料核验和目标环境检查放在付款之前；实际下载失败就说明原因并修复网络，不引导主人先花钱。两台机器分别校验自己下载的材料，不把一次本地下载当成服务器网络已可用。
+Windows 将缓存目录改为当前账户可写路径。安装器从公开 URL 下载三份 wheels，按仓库清单验证 SHA256；基础服务使用固定镜像摘要。采购前在部署电脑核验材料、镜像可用性和待购套餐的 Ubuntu 24.04／amd64／内存／磁盘条件；已有服务器时同时检查其网络。新服务器尚未购买，不能声称已验证它的出站网络。购买后、安装前在目标机重新验证材料下载和镜像拉取；失败先处理网络，不跳过校验，也不拿本机成功代替目标机成功。
 
 随后按[自动安装入口](https://github.com/wuyinhust/trade-adept/tree/main/trade-order-system/integrations/private-deploy)执行 prepare、install、check；实际运行使用已经冻结的本地提交中的文件。旧 `unified_build.py` 为历史离线构建路径，固定依赖不同，不与新清单混用。未修改的源码、企业 logo 补丁及最终实际文件清单分别记录，不能把定制版本冒充原版。
 
