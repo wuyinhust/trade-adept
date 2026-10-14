@@ -1,43 +1,20 @@
-# Tradept
+# Trade-adept（tradept）企业私有部署
 
-通用外贸订单工作台，以 Grandware 的 Excel 历史数据验证企业适用性。**0.3.0 企业管理版本**提供管理中心、新企业初始化及实时汇率。Tradept 界面由 Frappe/ERPNext 承担唯一在线业务存储、原生账号、公司、客户、供应商、正式订单与收付款。
+**给你的主人：把[仓库地址](https://github.com/wuyinhust/trade-adept)交给能执行命令的 AI，让它按本 README 引导私有部署即可。**
 
-[单系统需求与架构](trade-order-system/docs/UNIFIED-SYSTEM.md) 承接 [通用产品需求](trade-order-system/docs/通用外贸订单系统-产品需求-v1.md)，替代其中旧 SQLite/outbox 实现方案。Grandware 通过公司、权限、汇率、历史政策和 Excel 导入配置使用通用产品。logo、现有布局和毛玻璃视觉继续保留。
+本文和附件供 AI 读取。“你”指 AI；“你的主人”指操作 AI 的人。先读取下列附件和必要代码，再逐步执行。
 
-## 启动
+请这样开场，并按实际计划填写数字：
 
-先依照 [隔离 ERPNext 部署](trade-order-system/integrations/erpnext/README.md) 安装 ERPNext 与 `tradept_core`。每个企业独立 site/database，Grandware 四个公司主体处于同一站点。应用和数据库使用私有本地或云块盘，SMB 共享卷只保存源码。
+> 收到仓库地址，我们即将开始私有部署。整个过程预计共 X 步，需要你配合 Y 次。需要你操作时，我会暂停，告诉你做什么、在哪里操作；其余工作由我完成。我们一步步来。
 
-```sh
-cd trade-order-system
-python3 -m server.cli --runtime /private/tmp/tradept-gateway init --sites server/frappe-sites.example.json
-python3 -m server.app --runtime /private/tmp/tradept-gateway --port 3087
-```
+默认按下面 6 步推进；主要配合是准备账号、选择方案、确认付款、填写企业资料并试用。首次可说明“预计 6 步、4 次主要配合”；已有资源时减少，备案、logo 或邮件验证等额外配合提前说明。
 
-打开 `http://127.0.0.1:3087/`。账号由原生 User 管理，密码、管理员环境文件和客户数据不进入 Git。固定路由、原生会话、权限、CAS 和 API 说明见 [网关文档](trade-order-system/server/README.md)。
+1. **准备。** 按[工具与代码](trade-order-system/docs/Tradept-工具与代码.md)安装 tccli 等工具、取得正式代码；指导主人准备云账号和私有管理员，密码私下输入。
+2. **选择。** 按[腾讯云选择与购买](trade-order-system/docs/Tradept-腾讯云选择与购买.md)，依次选择域名、服务器地域与配置、云端或电脑备份；你查询实际价格和可购买状态。
+3. **购买。** 说明总价和续费，指导主人确认并付款；大陆公网部署指导备案。已有资源可跳过购买。
+4. **logo，可选。** 主人可保留原 logo，或提供企业 logo；你按[logo 适配与替换](trade-order-system/docs/Tradept-企业logo适配与替换.md)处理网页、深色模式并替换。
+5. **安装。** 你按[执行附录](trade-order-system/docs/Tradept-部署执行附录.md)完成企业服务器部署、HTTPS 和管理员登录。
+6. **试用与交付。** 指导主人填写企业资料；你按[备份与验收](trade-order-system/docs/Tradept-备份与验收.md)完成检查，填好[交接表](trade-order-system/docs/Tradept-部署信息与交接表.md)，交付网址和维护方法。
 
-企业管理员在 Tradept 的“管理中心”配置公司、部门、成员、角色权限和邮箱。平台首先开通独立站点及首位管理员，新企业管理员首次登录后完成六步初始化。原生维护入口继续使用同一企业数据库；Grandware 四家公司和历史资料保留，真实商品及银行/会计配置须按真实资料验证。
-
-## 历史数据与正式业务
-
-Grandware 的历史记录保留来源 ID、软删除、金额和原始关联；不凭累计收款金额推造会计流水。新订单先保存业务计划，完善真实商品和价格后生成原生 SO/PO；后续金额和余额来自同一数据库的原生业务单据。Excel 预览和表单提交执行相同的权限、验证、冲突保护和审计。
-
-## 版本与环境
-
-[archive/parallel-systems-v0.1.1](https://github.com/wuyinhust/tradept/tree/archive/parallel-systems-v0.1.1) 保留两套系统并行版本，提交 `287b92407017900a1f58c138af9d522b921ebffe`。历史标签和 Releases 未移动；原始 ZIP 仍在 `original-zip`。版本规则见 [VERSIONING](trade-order-system/docs/VERSIONING.md)。
-
-所有当前环境都是测试环境。公网 [tradept-test.szkuohu.com](https://tradept-test.szkuohu.com/) 已使用两套独立 ERPNext 数据库。实际部署版本、Git 提交和源文件清单哈希从 [/api/version](https://tradept-test.szkuohu.com/api/version) 回读；Git 标签与云端部署各自核验。升级使用云端现有数据的完整备份和原生应用迁移，保留旧版本包用于恢复。
-
-## 验证
-
-```sh
-cd trade-order-system
-npm ci
-npm test -- --runInBand
-npm run lint
-python3 -m unittest discover -s server/tests -v
-python3 -m unittest discover -s integrations/frappe_app/tests -v
-python3 scripts/version.py
-```
-
-网关单元测试与真实原生数据库验收分别记录，当前版本结果见 [0.3.0 验收记录](trade-order-system/docs/RELEASE-0.3.0.md)。发布核对 Grandware 初始迁移、两个站点与角色隔离、多人冲突与批次回滚、Excel 导入、原生单据和重启持久化；历史验收记录按其版本保留。
+用最直白的话，每次只推进当前一步。能自己做的自己做；需要主人登录、选择、付款、验证或提供资料时，暂停并给出具体操作，等他完成再继续。不要让主人先下载文档包或逐条执行技术命令。检查失败就继续修复，未完成的如实说明。
