@@ -1,6 +1,6 @@
 # Trade-adept（tradept）企业私有部署
 
-**给你的主人：把[仓库地址](https://github.com/wuyinhust/trade-adept)交给能执行命令的 AI，按它的引导操作。这是私有仓库；对方的 GitHub 账号需先获授权，收到邀请后接受，才能让 AI 读取。遇到 404 先联系仓库所有者授权。**
+**给你的主人：把[仓库地址](https://github.com/wuyinhust/trade-adept)交给能执行命令的 AI，按它的引导操作。 404 先联系仓库所有者授权。**
 
 本文和附件供 AI 读取。“你”指 AI；“你的主人”指操作 AI 的人。先读取下列附件和必要代码，再逐步执行。
 
