@@ -26,7 +26,7 @@
 
 通过 SSH 检查发行版、架构、CPU、内存、磁盘余量、现有服务及端口占用。已有业务先备份，重装或格式化前说明实际对象和影响并取得主人确认；新购空服务器直接继续。
 
-在 Ubuntu 上按[Docker 官方安装说明](https://docs.docker.com/engine/install/ubuntu/)安装 Docker Engine 和 Compose 插件，安装 Git、Python 3／venv、Nginx、CA 证书及证书工具。检查：
+在 Ubuntu 上按[Docker 官方安装说明](https://docs.docker.com/engine/install/ubuntu/)安装 Docker Engine 和 Compose 插件，安装 Git、Python 3.11 或更高版本／venv、Nginx、CA 证书及证书工具。检查：
 
 ```sh
 docker --version
@@ -45,6 +45,8 @@ nginx -v
 | `/var/lib/tradept/` | 网关 runtime；目录 0700，归 tradept |
 | `/srv/tradept-data/` | 数据库、sites、附件、队列、日志、本机备份 |
 
+含密钥文件的 0600 必须配合正确所有者：路由文件及 runtime 归运行网关的 `tradept` 用户；Compose 私有 env 由执行 Compose 的运维账户读取；容器内管理员输入文件归实际 Bench 用户。宿主目录与容器 UID/GID 按镜像检查，不能只设 root:root 后让非 root 服务读取，也不要用 0777 绕过权限。
+
 起步可用套餐自带 SSD，不必买独立数据盘。若购买数据盘，你检查为空后按 UUID 挂载；挂载失败时阻止业务启动，避免写回系统盘。数据库、sites 和附件须实际挂载到持久目录或卷，创建空目录不算完成。设置重启策略、开机启动和日志轮转。
 
 ## 3. 安装镜像，准备单站点配置
@@ -60,7 +62,14 @@ python3 integrations/erpnext/unified_build.py \
   --output <全新构建目录>
 ```
 
-再在目标架构运行同版本 `Unified.Containerfile` 的构建命令，或从已构建镜像包 `docker load --input <镜像包>`。构建器依赖固定哈希的 wheels；不要随意下载同版本包替换或删除校验。使用实际交付的基础镜像摘要，不从本文猜镜像仓库地址。
+确认上述命令成功后，在匹配目标 CPU 架构的构建机运行：
+
+```sh
+docker build --file <全新构建目录>/Unified.Containerfile \
+  --tag <本次企业镜像标签> <全新构建目录>
+```
+
+也可从已校验的镜像包 `docker load --input <镜像包>`。用 `docker image inspect <镜像标签> --format '{{.Os}}/{{.Architecture}}'` 对照服务器架构。构建成功后记录镜像 ID／仓库摘要；不要依赖目标机未验证的跨架构模拟。构建器依赖固定哈希的 wheels；不要随意下载同版本包替换或删除校验。使用实际交付的基础镜像摘要，不从本文猜镜像仓库地址。
 
 镜像必须包含 `tradept_core`、JS／CSS、图标、许可证和网站页，backend／frontend 使用同一镜像。核对 ERPNext／Frappe 版本与 Release 一致。不要用临时 `docker cp` 维持应用安装。
 
@@ -72,7 +81,32 @@ python3 integrations/erpnext/unified_build.py \
 - 配套 Nginx map 只允许本企业 Host／site，未知 Host／站点返回拒绝；保留 Compose `$$` 对 Nginx `$` 变量的转义。
 - 把原生 Administrator、数据库口令和 HMAC 密钥存入私有文件，分别生成，不写入代码、构建上下文或命令输出。
 
-先做不回显机密的配置检查，例如 `docker compose --env-file <私有env> -f /etc/tradept/compose.yaml config --quiet`。顺序启动：数据库／Redis → configurator → create-site → 安装 erpnext／tradept_core → 初始化企业 → backend／frontend／websocket／workers／scheduler → 网关／HTTPS。初始化服务成功退出正常，长期服务反复退出需修复。
+整个部署固定同一个 Compose 项目名，防止创建另一组空卷。初始化 shell 使用失败即退出（如 `set -e`），不能让前一条失败被后一条成功掩盖。以下由 AI 替换占位值后在同一 shell 逐段执行，每段通过后才继续：
+
+```sh
+set -e
+tradept_compose() {
+  docker compose --env-file <私有env> -p <固定项目名> \
+    -f /etc/tradept/compose.yaml "$@"
+}
+tradept_compose config --quiet
+tradept_compose up -d --wait --wait-timeout 180 db redis-cache redis-queue
+tradept_compose up --no-deps --exit-code-from configurator configurator
+tradept_compose up --no-deps --exit-code-from create-site create-site
+tradept_compose up -d --no-deps backend
+tradept_compose exec -T backend bench --site <实际site> list-apps
+```
+
+`--wait` 对有 healthcheck 的服务等健康、其他服务只等运行；create-site 仍须检查依赖及建站结果。确认数据库健康、初始化容器以 0 退出、backend 正在运行，才可执行后面的 `exec backend`。配置和建站服务是一次性任务，不能给它们设置永久重启。不要在新站点尚未就绪时一口气 `up -d` 全部服务。依据：[Docker Compose up](https://docs.docker.com/reference/cli/docker/compose/up/)。
+
+完成第 4 节应用安装、企业与管理员初始化，以及第 5 节站点密钥后，再启动业务服务：
+
+```sh
+tradept_compose up -d --no-deps frontend websocket queue-long queue-short scheduler
+tradept_compose ps -a
+```
+
+最后启动网关和 HTTPS。以上 `--no-deps` 仅用于已显式启动依赖的步骤；不用于跳过缺失服务。初始化服务成功退出正常，长期服务反复退出需修复。
 
 ## 4. 建立空企业与私有管理员
 
@@ -84,7 +118,7 @@ docker compose --env-file <私有env> -p <项目名> \
   bench --site <实际site> list-apps
 ```
 
-确认已安装 erpnext、tradept_core；未安装时用同镜像中的 `bench --site <site> install-app tradept_core`，再运行该版本迁移及静态资源构建。
+确认已安装 erpnext、tradept_core；create-site 应已安装 erpnext，缺失时先检查其退出原因。tradept_core 未安装时用同镜像中的 `bench --site <site> install-app tradept_core`，随后 `bench --site <site> migrate`，按版本构建静态资源并再次检查 list-apps。不要因为镜像含有应用文件就认为站点已安装该应用。
 
 空站点只初始化一次。进入同一 backend 的 `bench --site <site> console`，在 Python 上下文调用已有接口：
 
@@ -151,7 +185,20 @@ frappe.db.commit()
 }
 ```
 
-tenant ID 等于 Workspace ID；site 等于实际站点名。同一密钥也写入站点 `tradept_gateway_hmac_key`，不要在可记录的命令参数中放真实值。Nginx 内部映射也须允许这个 site。新部署只保留一个 tenant，不配置 demoMode／demoTenants。
+tenant ID 等于 Workspace ID；site 等于实际站点名。同一密钥也写入站点 `tradept_gateway_hmac_key`，不要在可记录的命令参数中放真实值。Nginx 内部映射也须允许这个 site。当前网关访问 `origin` 时 Host 是 `127.0.0.1:3088`，另外发送固定 `X-Frappe-Site-Name`，所以不能只将 map 改成公网域名。示例内部 map（按实际 site 替换）：
+
+```nginx
+map "$http_host|$http_x_frappe_site_name" $tradept_site_name {
+    default __tradept_invalid_site__;
+    "127.0.0.1:3088|enterprise.internal" enterprise.internal;
+    "127.0.0.1:3088|" enterprise.internal;
+    "localhost:3088|" enterprise.internal;
+}
+```
+
+map 配合仓库 Nginx 模板的无效站点拒绝逻辑；仅限 frontend 回环端口，空 header 的两项用于本机／隧道运维。测试固定 site 可以访问、伪造 site 被拒绝。新部署只保留一个 tenant，不配置 demoMode／demoTenants。
+
+通过所选版本支持的站点配置接口，把私有文件中的密钥写入当前 site，保持 JSON 其余项及文件权限，不打印密钥；重启 backend 及后台服务使配置生效。网关路由文件同样由 `tradept` 可读。不要在 console 中直接敲真实密钥使其进入历史记录。
 
 在服务器应用目录运行：
 

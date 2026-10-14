@@ -34,7 +34,7 @@ scp -i <本机私钥路径> \
   <电脑私有备份目录>/
 ```
 
-下载前后计算 SHA256，确认大小及校验相同。macOS／Linux 可用 Python：
+下载前后计算 SHA256，确认大小及校验相同。macOS／Linux 可用 Python 3.11 或更高版本：
 
 ```sh
 python3 -c 'import hashlib,sys; f=open(sys.argv[1],"rb"); h=hashlib.file_digest(f,"sha256"); print(h.hexdigest())' <备份文件>
@@ -81,7 +81,7 @@ bench --site <隔离恢复site> restore <数据库备份> \
 curl --fail --silent --show-error https://<企业实际域名>/api/version
 ```
 
-缺少发布标识时依正式版本说明生成，不能随手填写哈希。测试订单与账务不要写进正式企业账套；隔离验收后由主人用真实资料试用。
+缺少发布标识时依正式版本说明生成，不能随手填写哈希。v0.4.1 的 `/api/version` 将 `environment` 固定返回 `test`，不能用这个字段判断部署失败或上线成功；当前核验版本、提交和清单。替换 logo 后还须记录企业变更补丁及实际部署文件清单，不能把定制文件冒充未经修改的 Release。测试订单与账务不要写进正式企业账套；隔离验收后由主人用真实资料试用。
 
 未通过时你继续修复，记录具体问题。只有已选模式下必需的项目通过，才标记“可供员工使用”；不要求账号登录部署通过未启用的邮件验收。主人放弃备份时额外标注“未配置备份”。
 

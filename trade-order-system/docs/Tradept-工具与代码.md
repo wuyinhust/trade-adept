@@ -4,7 +4,7 @@
 
 ## 1. 工具
 
-部署电脑需要：可执行本地命令的 AI 工具、Python 3、Git、SSH/SCP、tccli；使用 GitHub Release 时建议安装 GitHub CLI（`gh`）。普通网页聊天没有命令执行能力时，先直白告诉主人需要换到可操作终端的 AI 工具。
+部署电脑需要：可执行本地命令的 AI 工具、Python 3.11 或更高版本、Git、SSH/SCP、tccli；使用 GitHub Release 时建议安装 GitHub CLI（`gh`）。普通网页聊天没有命令执行能力时，先直白告诉主人需要换到可操作终端的 AI 工具。
 
 你检查 `python3 --version`、`git --version`、`ssh -V`、`tccli --version` 和 `gh --version`。Windows 用 `py -3` 检查 Python。按当前操作系统的官方安装方式补齐，不强制主人换用某一款 AI。
 
@@ -66,6 +66,12 @@ gh release download <已选正式标签> --repo wuyinhust/trade-adept --dir <本
 Release、标签和附件以 `trade-adept` 仓库的实际结果为准；代码相同不代表 Release 附件也已同步。若缺少 Release 或附件，请开发方提供该仓库相同提交的正式交付包及校验清单，不自动切回 `wuyinhust/tradept`。
 
 下载与目标架构对应的完整镜像或离线构建材料。只有源码 ZIP 不够；缺少镜像、匹配哈希的 wheels 或构建说明时，先列清缺项并向开发方索取。不要猜镜像地址、跳过哈希校验或把测试数据库当安装包。
+
+**这一检查必须在付款之前完成。** 材料未齐时向主人说明缺项，继续整理选择，但不引导付款。已有服务器也先通过材料检查再安装。2026-10-14 检查发现 `v0.4.1` Release 的 `assets` 为空；详见[流程核查记录](Tradept-部署流程核查-20261014.md)。后续部署重新查询，不把这条历史状态当永久结论。
+
+至少记录：正式标签与完整提交、源码校验清单、ERPNext／Frappe 版本、目标 CPU 架构、镜像摘要与获取方式，或全部离线 wheels 及其固定哈希。选择替换后端 logo 时，即使有预构建镜像，也需要重建材料。构建脚本 `unified_build.py` 的 `WHEELS` 是核验依据；镜像获取失败、架构不符或构建材料缺失都应在此暴露。
+
+先保存本 README 及全部部署附件；检出旧标签可能不含新写的部署文档。部署动作以所选标签的实际接口为准，不能为了保留新文档改为安装未冻结的 main。
 
 ## 4. 管理员和服务器凭据
 

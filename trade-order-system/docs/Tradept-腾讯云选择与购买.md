@@ -20,7 +20,7 @@ tccli domain CheckDomain --DomainName <主人选择的完整域名> --Period 1
 
 上面后缀为示例；低价档先查[官方域名活动](https://cloud.tencent.com/act/pro/domain-sales)，把实际可售后缀代入查询。注册查询读取 `Available`、`Reason`、`Premium`、`RealPrice`、`FeeRenew`；续费还要对照价格列表。域名 API 不要求 Region。查询可注册不是已买到；溢价词或超预算时说明价格并给替代名字。依据：[域名注册查询](https://cloud.tencent.com/document/api/242/38894)、[价格列表](https://cloud.tencent.com/document/api/242/38893)。
 
-主人确定可用域名后，你准备好[域名注册入口](https://dnspod.cloud.tencent.com/)和具体选项：域名、1 年期限、企业实名模板、首年费、续费费及是否自动续费。由主人核对并付款；你回查订单和域名持有状态再记录“已购买”。域名与邮箱是两回事，不必因买域名再买邮箱。
+主人确定可用域名后，先保留候选；等服务器地域、备案资格、备份方案及安装材料确认，再准备好[域名注册入口](https://dnspod.cloud.tencent.com/)和具体选项：域名、1 年期限、企业实名模板、首年费、续费费及是否自动续费。付款前重新查询可注册状态，由主人核对并付款；你回查订单和域名持有状态再记录“已购买”。域名与邮箱是两回事，不必因买域名再买邮箱。
 
 ## 2. 服务器地域
 
@@ -69,6 +69,8 @@ tccli lighthouse InquirePriceCreateInstances \
 需要企业 VPC、扩容或轻量没有合适资源时，改查 CVM：先 `tccli cvm DescribeInstanceTypeConfigs --region <地域>`，再依当天 API 参数生成 `InquiryPriceRunInstances` 的完整请求，包含实例、系统盘、带宽、期限及数量。不要把 CVM 主机裸价当总价。[CVM API 概览](https://cloud.tencent.com/document/product/213/15689)。
 
 最终只给主人看 2–3 个可买方案：地域、CPU／内存、SSD、带宽／流量、首年合计、续费规则、需不需要备案。说明选中的一档及取舍，不默认加数据盘、云数据库或负载均衡。
+
+材料检查通过后，汇总域名、服务器、备份首年总价和续费；大陆方案在付款前确认域名及所选套餐符合当天备案资格。各节的下单动作集中在 README 第 3 步执行。
 
 你在[轻量控制台](https://console.cloud.tencent.com/lighthouse)或 [CVM 控制台](https://console.cloud.tencent.com/cvm)准备具体订单。付款前请主人核对地域、Linux 镜像、配置、数量 1 台、期限、首年总价和续费设置，再由他完成付款。若主人明确授权 API 下单，只针对已确认的完整订单执行。付款后用对应 `DescribeInstances` 确认实例 ID、运行状态、IP 和到期时间；订单成功还不等于应用部署成功。
 
