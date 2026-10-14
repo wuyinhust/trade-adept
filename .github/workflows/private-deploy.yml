@@ -1,0 +1,30 @@
+name: Private deployment from source
+on:
+  push:
+    branches: [main, 'deploy/**']
+    paths:
+      - 'trade-order-system/**'
+      - 'local-preview/vendor/**'
+      - '.github/workflows/private-deploy.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fresh-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer unit tests
+        run: python3 -m unittest discover -s trade-order-system/integrations/private-deploy/tests -v
+      - name: Prepare disposable enterprise
+        run: |
+          echo '127.0.0.1 tradept.test' | sudo tee -a /etc/hosts
+          sudo python3 trade-order-system/integrations/private-deploy/deploy.py prepare --domain tradept.test --tenant smoke --name 'Installation acceptance' --tls internal
+      - name: Build and install the complete stack
+        run: sudo python3 trade-order-system/integrations/private-deploy/deploy.py install
+      - name: Actual HTTPS login, setup, persistence and restore
+        run: sudo python3 trade-order-system/integrations/private-deploy/smoke.py /opt/tradept-private
+      - name: Redacted initialization diagnostics
+        if: failure()
+        run: sudo python3 trade-order-system/integrations/private-deploy/diagnostics.py /opt/tradept-private

@@ -1,0 +1,12 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+COPY --chown=frappe:frappe app /home/frappe/frappe-bench/apps/tradept_core
+COPY wheels /opt/tradept-wheels
+USER frappe
+RUN /home/frappe/frappe-bench/env/bin/python -m pip install --no-index --no-deps /opt/tradept-wheels/*.whl \
+ && /home/frappe/frappe-bench/env/bin/python -m pip install --no-index --no-build-isolation --no-deps -e /home/frappe/frappe-bench/apps/tradept_core
+USER root
+RUN /home/frappe/frappe-bench/env/bin/python -c "from tradept_core.assets import ensure; ensure('/home/frappe/frappe-bench/assets')"
+USER frappe
+ENV PYTHONDONTWRITEBYTECODE=1
