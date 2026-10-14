@@ -3,45 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="部署前了解 Tradept：开发前提、原始需求中的历史问题处理情况，以及相对 v40、v56 的功能更新。">
+<meta name="description" content="Tradept 产品介绍：保留原貌、逻辑优化、代码加固与云端部署；v0.4.1 功能更新及原始需求的历史问题处理情况。">
 <meta name="color-scheme" content="light dark">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-<title>部署前，先了解 Tradept · 产品说明</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Tradept · 产品介绍与版本更新</title>
 <style>
-:root{color-scheme:light dark;--bg:#f5f6f8;--surface:#fff;--ink:#182331;--muted:#526174;--line:#dce2e9;--blue:#075bb8;--tint:#eaf2fc;--shadow:0 14px 44px rgba(26,45,68,.045)}
-*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:100px}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;line-height:1.8}a{color:var(--blue);text-underline-offset:4px}a:focus-visible{outline:3px solid var(--blue);outline-offset:5px;border-radius:4px}.skip{position:absolute;top:-100px;left:20px;background:var(--surface);padding:10px;z-index:20}.skip:focus{top:10px}.wrap{max-width:1060px;margin:auto;padding:0 40px}.masthead{display:flex;justify-content:space-between;align-items:center;gap:20px;padding-top:28px;padding-bottom:26px;border-bottom:1px solid var(--line)}.brand{font-weight:800;font-size:23px;letter-spacing:-.8px}.brand small{font-size:12px;letter-spacing:1.5px;font-weight:600;color:var(--muted);margin-left:14px}.edition{font-size:12px;color:var(--muted)}.hero{padding:64px 0 40px}.eyebrow{color:var(--blue);font-size:12px;letter-spacing:2px;font-weight:700;margin:0 0 14px}h1{font-size:clamp(34px,5vw,52px);letter-spacing:-1.7px;line-height:1.2;margin:0 0 20px;font-weight:750}.intro{max-width:740px;font-size:18px;color:var(--muted);margin:0}.intro strong{color:var(--ink);font-weight:600}.nav{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);display:flex;gap:30px;padding:18px 0;margin-bottom:44px}.nav a{font-size:14px;font-weight:600;text-decoration:none;color:var(--muted);white-space:nowrap}.nav a:hover{color:var(--blue)}.nav span{font-size:11px;color:var(--blue);margin-right:7px}section{margin-bottom:56px}h2{font-size:25px;line-height:1.5;letter-spacing:-.5px;margin:0}.section-heading{display:flex;align-items:baseline;gap:16px;margin-bottom:22px}.section-no{font-size:12px;font-weight:700;color:var(--blue);letter-spacing:1px}.principles{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.principles li{padding:22px;background:var(--surface);border:1px solid var(--line);border-radius:16px}.principles h3{font-size:17px;margin:0 0 9px}.principles p{font-size:14px;color:var(--muted);margin:0}.note{font-size:14px;color:var(--muted);margin:10px 0 22px}.numbered{counter-reset:entry;list-style:none;margin:0;padding:6px 32px;background:var(--surface);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow)}.numbered li{counter-increment:entry;position:relative;padding:24px 0 24px 48px;border-bottom:1px solid var(--line)}.numbered li:last-child{border-bottom:0}.numbered li:before{content:counter(entry,decimal-leading-zero);position:absolute;left:0;top:27px;width:28px;line-height:28px;background:var(--tint);border-radius:8px;text-align:center;font-size:12px;font-weight:700;color:var(--blue)}.numbered h3{font-size:17px;line-height:1.65;margin:0 0 6px;font-weight:650}.numbered p{font-size:15px;color:var(--muted);margin:0}.next{padding:30px 32px;border-left:3px solid var(--blue);background:var(--tint);border-radius:0 16px 16px 0;margin-bottom:48px}.next h2{font-size:21px;margin-bottom:8px}.next p{margin:0;color:var(--muted);font-size:15px}.footer{display:flex;justify-content:space-between;gap:20px;border-top:1px solid var(--line);padding:24px 0 38px;font-size:12px;color:var(--muted)}
-@media(prefers-color-scheme:dark){:root{--bg:#101820;--surface:#18222d;--ink:#edf3fa;--muted:#b3c1d0;--line:#344352;--blue:#85bcff;--tint:#20364e;--shadow:none}}
-@media(max-width:800px){.principles{grid-template-columns:repeat(2,1fr)}.hero{padding-top:44px}.wrap{padding-left:24px;padding-right:24px}}
-@media(max-width:480px){.wrap{padding-left:18px;padding-right:18px}.brand small{display:none}.hero{padding-top:34px;padding-bottom:30px}.intro{font-size:16px}h1{letter-spacing:-1px}.nav{gap:18px;margin-bottom:32px;padding:15px 0}.nav a{font-size:13px}.principles{gap:10px}.principles li{padding:17px 14px}.principles h3{font-size:16px}.section-heading{gap:10px;margin-bottom:16px}h2{font-size:22px}.numbered{padding:0 17px;border-radius:16px}.numbered li{padding:21px 0 21px 38px}.numbered li:before{top:24px;width:25px;line-height:25px}.numbered h3{font-size:16px}.numbered p{font-size:14px}.next{padding:24px 20px}.footer{display:block}.footer a{display:inline-block;margin-top:10px}section{margin-bottom:40px}}
+:root{color-scheme:light dark;--bg:#f5f5f7;--surface:#fff;--ink:#1d1d1f;--muted:#6e6e73;--line:rgba(29,29,31,.08);--blue:#185cf4;--tint:#e9f2ff;--glass:rgba(249,250,252,.9)}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:90px}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;line-height:1.65;letter-spacing:-.015em}a{color:var(--blue);text-underline-offset:4px}a:focus-visible{outline:3px solid var(--blue);outline-offset:5px;border-radius:4px}.skip{position:absolute;top:-100px;left:20px;background:var(--surface);padding:10px;z-index:20}.skip:focus{top:10px}.wrap{max-width:1060px;margin:auto;padding:0 40px}.masthead{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:30px 0 22px;border-bottom:1px solid var(--line)}.brand-logo{display:block;position:relative;width:180px;aspect-ratio:1986/575;overflow:hidden;flex:none}.brand-logo img{position:absolute;width:103.978%;max-width:none;height:auto;left:-2.165%;top:-19.826%}.brand-logo .wordmark{display:none;filter:brightness(0) invert(1);clip-path:inset(0 0 0 25%)}.edition{font-size:13px;font-weight:600;padding:5px 13px;border-radius:20px;color:var(--blue);background:var(--tint)}.hero{padding:42px 0 32px}h1{font-size:clamp(26px,3.1vw,36px);line-height:1.65;letter-spacing:-1px;font-weight:550;margin:0;max-width:930px;text-wrap:pretty}h1 strong{font-weight:750;color:var(--blue)}.nav{position:sticky;top:0;z-index:5;background:var(--glass);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--line);display:flex;gap:30px;padding:16px 0;margin:0 0 36px}.nav a{font-size:14px;font-weight:600;text-decoration:none;color:var(--muted);white-space:nowrap}.nav a:hover{color:var(--blue)}section{margin-bottom:44px}h2{font-size:25px;line-height:1.5;letter-spacing:-.5px;margin:0 0 10px}.principles{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.principles li{padding:20px;background:var(--surface);border:1px solid var(--line);border-radius:18px}.principles h2{font-size:17px;margin:0 0 8px}.principles p{font-size:14px;color:var(--muted);margin:0}.note{font-size:14px;color:var(--muted);margin:0 0 20px}.numbered{counter-reset:entry;list-style:none;margin:0;padding:4px 30px;background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:0 4px 16px rgba(19,34,54,.04)}.numbered li{counter-increment:entry;position:relative;padding:22px 0 22px 44px;border-bottom:1px solid var(--line)}.numbered li:last-child{border-bottom:0}.numbered li:before{content:counter(entry,decimal-leading-zero);position:absolute;left:0;top:25px;width:26px;line-height:26px;background:var(--tint);border-radius:8px;text-align:center;font-size:12px;font-weight:700;color:var(--blue)}.numbered h3{font-size:17px;line-height:1.65;margin:0 0 6px;font-weight:650}.numbered p{font-size:15px;color:var(--muted);margin:0}.footer{border-top:1px solid var(--line);padding:20px 0 32px;font-size:12px;color:var(--muted)}
+@media(prefers-color-scheme:dark){:root{--bg:#151619;--surface:#202226;--ink:#f5f5f7;--muted:#a9abb3;--line:rgba(255,255,255,.1);--blue:#2997ff;--tint:#1b3048;--glass:rgba(30,32,37,.92)}.brand-logo .wordmark{display:block}}
+@media(max-width:800px){.principles{grid-template-columns:repeat(2,1fr)}.wrap{padding-left:24px;padding-right:24px}}
+@media(max-width:480px){.wrap{padding-left:18px;padding-right:18px}.masthead{padding-top:24px}.brand-logo{width:154px}.hero{padding:30px 0 26px}h1{font-size:25px;letter-spacing:-.6px}.nav{gap:24px;margin-bottom:26px;padding:14px 0}.nav a{font-size:13px}.principles{gap:10px}.principles li{padding:16px 14px}.principles h2{font-size:16px}h2{font-size:22px}.numbered{padding:0 16px}.numbered li{padding:20px 0 20px 36px}.numbered li:before{top:23px;width:24px;line-height:24px}.numbered h3{font-size:16px}.numbered p{font-size:14px}section{margin-bottom:34px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-@media print{:root{color-scheme:light;--bg:#fff;--surface:#fff;--ink:#000;--muted:#333;--line:#ccc;--blue:#222;--tint:#f3f3f3;--shadow:none}.wrap{max-width:none;padding:0}.nav,.skip,.footer a{display:none}.hero{padding:24px 0}.numbered{border:0;padding:0}.numbered li,.principles li{break-inside:avoid}section{margin-bottom:28px}.next{break-inside:avoid}h2{break-after:avoid}a{color:inherit}}
+@media print{:root{color-scheme:light;--bg:#fff;--surface:#fff;--ink:#000;--muted:#333;--line:#ccc;--blue:#222;--tint:#f3f3f3}.brand-logo .wordmark{display:none}.wrap{max-width:none;padding:0}.nav,.skip{display:none}.hero{padding:24px 0}.numbered{border:0;padding:0;box-shadow:none}.numbered li,.principles li{break-inside:avoid}section{margin-bottom:28px}h2{break-after:avoid}}
 </style>
 </head>
-<body id="top">
-<a class="skip" href="#main">跳到产品说明</a>
+<body>
+<a class="skip" href="#main">跳到正文</a>
 <div class="wrap">
-<header class="masthead"><div class="brand">Tradept<small>TRADE-ADEPT</small></div><span class="edition">企业私有部署 · 产品说明</span></header>
+<header class="masthead"><span class="brand-logo"><img src="product-overview-assets/tradept-logo.png" alt="Tradept" width="2065" height="762"><img class="wordmark" src="product-overview-assets/tradept-logo.png" alt="" aria-hidden="true" width="2065" height="762"></span><span class="edition">v0.4.1</span></header>
 <main id="main">
-<div class="hero"><p class="eyebrow">开始部署之前</p><h1>先了解产品，再开始部署。</h1><p class="intro">Tradept 以<strong>“保留原貌”与“逻辑优化”</strong>为前提，对原始代码进行<strong>“代码加固”</strong>，并支持<strong>“云端部署”</strong>。</p></div>
-<nav class="nav" aria-label="产品说明目录"><a href="#principles"><span>01</span>开发前提</a><a href="#history"><span>02</span>历史问题</a><a href="#features"><span>03</span>功能更新</a></nav>
-<section id="principles" aria-labelledby="principles-title"><div class="section-heading"><span class="section-no" aria-hidden="true">01</span><h2 id="principles-title">开发前提</h2></div><ul class="principles"><li><h3>保留原貌</h3><p>尽可能保留原产品功能，让熟悉的业务继续使用。</p></li>
-<li><h3>逻辑优化</h3><p>以外贸行业通用需求为标准，优化不合理的设置。</p></li>
-<li><h3>代码加固</h3><p>集成 Frappe/ERPNext 企业管理系统，为原有业务增加后端支撑。</p></li>
-<li><h3>云端部署</h3><p>可部署在企业私有的服务器上。</p></li></ul></section>
-<section id="history" aria-labelledby="history-title"><div class="section-heading"><span class="section-no" aria-hidden="true">02</span><h2 id="history-title">历史问题，逐项说明</h2></div><p class="note">原需求文档关键历史任务清单的解决情况，按原文顺序列出。仍需验证或核对的事项，在对应条目中说明。</p><ol class="numbered" role="list"><li><h3>新建数据刷新后丢失</h3><p>代码已增加保存和冲突保护，仍需测试多人同时保存、断网重试。</p></li>
-<li><h3>删除数据后，刷新页面又重新出现</h3><p>已增加删除标记和后端检查，防止旧数据被重新保存回来。</p></li>
-<li><h3>系统更新后，浏览器仍打开旧版页面</h3><p>新部署已有版本检查和缓存控制。</p></li>
-<li><h3>单证员新建订单或客户后，在列表中看不到</h3><p>已处理默认公司选择和创建人记录。</p></li>
-<li><h3>管理员看不到其他员工创建的数据</h3><p>已取消当前公司选单对管理员的限制，前提是管理员获得了全部访问权限。</p></li>
-<li><h3>香港公司的美元金额被错误乘以汇率，导致利润虚高</h3><p>新计算已修正，历史订单中的错误金额仍需核对。</p></li>
-<li><h3>国内公司的美元费用没有换成人民币，导致利润虚高</h3><p>已区分费用币种，仍需核对各公司使用的计算规则。</p></li>
-<li><h3>退税公式错误，导致利润不准确</h3><p>Grandware 公式已改为“工厂成本 ÷ 1.13 × 退税率”；新企业默认公式不含退税，需要确认是否启用。</p></li>
-<li><h3>两个人同时修改客户联系人，后保存的人覆盖前一个人的修改</h3><p>已增加联系人合并和冲突提示，仍需进行真实多人操作验证。</p></li>
-<li><h3>编辑订单时，无法选到客户已有的联系人</h3><p>已处理联系人编号类型不一致、同名联系人等情况，并有对应测试。</p></li>
-<li><h3>云端旧版本过多，导致系统加载不到最新数据</h3><p>已更换存储方式，消除原来的原因；新系统的数据快照仍需增加定期清理规则。</p></li>
-<li><h3>打开页面后，一直显示“正在加载”，无法进入系统</h3><p>已调整加载遮罩，正常完成或发生错误时都会关闭。</p></li>
-<li><h3>浏览器安全策略拦截保存请求，导致数据无法保存</h3><p>已改为通过同一网站的后端接口保存，消除原先缺少 CloudBase 域名许可的问题。</p></li></ol></section>
-<section id="features" aria-labelledby="features-title"><div class="section-heading"><span class="section-no" aria-hidden="true">03</span><h2 id="features-title">功能更新</h2></div><p class="note">从原 Grandware v40、v56，到当前 Tradept。</p><ol class="numbered" role="list"><li><h3>企业和公司管理</h3><p>原版围绕 Grandware 固定四家公司设计；当前可配置不同企业、公司和部门，各企业使用独立数据库。</p></li>
+<section id="principles" aria-labelledby="product-title">
+<div class="hero"><h1 id="product-title">Tradept 以<strong>“保留原貌”与“逻辑优化”</strong>为前提，对原始代码进行<strong>“代码加固”</strong>，并支持<strong>“云端部署”</strong>。</h1></div>
+<ul class="principles"><li><h2>保留原貌</h2><p>尽可能保留原产品功能。</p></li><li><h2>逻辑优化</h2><p>以外贸行业通用需求为标准，优化不合理的设置。</p></li><li><h2>代码加固</h2><p>集成 Frappe/ERPNext 企业管理系统，为原有业务增加后端支撑。</p></li><li><h2>云端部署</h2><p>可部署在企业私有的服务器上。</p></li></ul>
+</section>
+<nav class="nav" aria-label="页面目录"><a href="#principles">产品介绍</a><a href="#features">版本更新</a><a href="#history">历史问题</a></nav>
+<section id="features" aria-labelledby="features-title"><h2 id="features-title">版本更新</h2><p class="note">相对 Grandware v40 / v56 的功能变化。</p><ol class="numbered" role="list"><li><h3>企业和公司管理</h3><p>原版围绕 Grandware 固定四家公司设计；当前可配置不同企业、公司和部门，各企业使用独立数据库。</p></li>
 <li><h3>账号和登录</h3><p>原版主要使用前端账号判断和 CloudBase 匿名连接；当前使用后端真实账号登录，由管理员管理成员，支持不依赖邮箱验证的账号登录。</p></li>
 <li><h3>角色和权限</h3><p>原版主要在页面上过滤数据、隐藏成本；当前由后端检查公司、团队、个人及财务权限，直接调用接口也受到限制。</p></li>
 <li><h3>管理员设置</h3><p>原版设置主要包含云连接、汇率和数据管理；当前新增管理中心，可管理公司、部门、成员、角色及邮箱，并提供首次初始化引导。</p></li>
@@ -54,9 +40,21 @@
 <li><h3>多人保存</h3><p>原版通过追加整份数据、再合并旧版本实现协作；当前使用数据库事务和版本检查，遇到冲突会提示并保留草稿，避免静默覆盖。</p></li>
 <li><h3>Excel 导入和历史资料</h3><p>原版以字段匹配、校验后导入为主；当前增加导入预览和确认，区分历史参考与新业务，不会把历史累计金额直接当成真实会计凭证。</p></li>
 <li><h3>备份和私有部署</h3><p>原版主要依赖 CloudBase 托管；当前增加操作审计、数据快照、数据库及文件备份恢复，并提供从仓库开始的企业私有部署流程。</p></li></ol></section>
-<aside class="next" aria-labelledby="next-title"><h2 id="next-title">看完后，回到 AI 对话继续。</h2><p>AI 会说明部署步骤，以及需要你配合的地方，再引导你准备账号、选择服务器、完成安装和试用。</p></aside>
+<section id="history" aria-labelledby="history-title"><h2 id="history-title">历史问题处理情况</h2><p class="note">按原需求文档顺序。</p><ol class="numbered" role="list"><li><h3>新建数据刷新后丢失</h3><p>代码已增加保存和冲突保护，仍需测试多人同时保存、断网重试。</p></li>
+<li><h3>删除数据后，刷新页面又重新出现</h3><p>已增加删除标记和后端检查，防止旧数据被重新保存回来。</p></li>
+<li><h3>系统更新后，浏览器仍打开旧版页面</h3><p>新部署已有版本检查和缓存控制。</p></li>
+<li><h3>单证员新建订单或客户后，在列表中看不到</h3><p>已处理默认公司选择和创建人记录。</p></li>
+<li><h3>管理员看不到其他员工创建的数据</h3><p>已取消当前公司选单对管理员的限制，前提是管理员获得了全部访问权限。</p></li>
+<li><h3>香港公司的美元金额被错误乘以汇率，导致利润虚高</h3><p>新计算已修正，历史订单中的错误金额仍需核对。</p></li>
+<li><h3>国内公司的美元费用没有换成人民币，导致利润虚高</h3><p>已区分费用币种，仍需核对各公司使用的计算规则。</p></li>
+<li><h3>退税公式错误，导致利润不准确</h3><p>Grandware 公式已改为“工厂成本 ÷ 1.13 × 退税率”；新企业默认公式不含退税，需要确认是否启用。</p></li>
+<li><h3>两个人同时修改客户联系人，后保存的人覆盖前一个人的修改</h3><p>已增加联系人合并和冲突提示，仍需进行真实多人操作验证。</p></li>
+<li><h3>编辑订单时，无法选到客户已有的联系人</h3><p>已处理联系人编号类型不一致、同名联系人等情况，并有对应测试。</p></li>
+<li><h3>云端旧版本过多，导致系统加载不到最新数据</h3><p>已更换存储方式，消除原来的原因；新系统的数据快照仍需增加定期清理规则。</p></li>
+<li><h3>打开页面后，一直显示“正在加载”，无法进入系统</h3><p>已调整加载遮罩，正常完成或发生错误时都会关闭。</p></li>
+<li><h3>浏览器安全策略拦截保存请求，导致数据无法保存</h3><p>已改为通过同一网站的后端接口保存，消除原先缺少 CloudBase 域名许可的问题。</p></li></ol></section>
 </main>
-<footer class="footer"><span>Tradept 0.4.1 · 产品说明<br>仓库随附页面，可离线阅读。</span><a href="#top">回到顶部 ↑</a></footer>
+<footer class="footer">Tradept · 企业外贸管理系统</footer>
 </div>
 </body>
 </html>
